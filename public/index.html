@@ -105,6 +105,28 @@ tr.fila--cerrado{background:#FBFEFC}
 tr.fila--cerrado td:first-child{box-shadow:inset 3px 0 0 var(--verde)}
 tr.fila--solicitar_oc td:first-child{box-shadow:inset 3px 0 0 var(--ambar)}
 
+/* ---------- cotizaciones ---------- */
+.cot__cab{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;padding:16px}
+.lineas{width:100%;border-collapse:collapse}
+.lineas th{font-size:.64rem;padding:8px 10px}
+.lineas td{padding:6px 8px;vertical-align:middle;border-bottom:1px solid var(--papel-2)}
+.lineas input,.lineas select{padding:7px 9px;font-size:.86rem}
+.lineas td.num input{text-align:right}
+.lineas .quitar{background:none;border:0;color:var(--texto-2);cursor:pointer;font-size:1.1rem;
+  line-height:1;padding:4px 7px;border-radius:3px}
+.lineas .quitar:hover{color:var(--rojo);background:var(--rojo-suave)}
+.col-desc{min-width:260px} .col-cant{width:92px} .col-uni{width:96px}
+.col-precio{width:124px} .col-sub{width:124px} .col-x{width:40px}
+.sumas{margin-left:auto;min-width:290px;padding:14px 16px;background:var(--papel-2);border-radius:4px}
+.sumas div{display:flex;justify-content:space-between;gap:20px;padding:5px 0;font-size:.92rem}
+.sumas .total{border-top:1px solid var(--raya);margin-top:7px;padding-top:10px;
+  font-family:var(--display);font-size:1.5rem;font-weight:700;align-items:baseline}
+.e-borrador{background:var(--gris-suave);color:var(--gris)}
+.e-enviada{background:var(--cian-suave);color:var(--cian)}
+.e-aceptada{background:var(--verde-suave);color:var(--verde)}
+.e-rechazada{background:var(--rojo-suave);color:var(--rojo)}
+.vencida{color:var(--ambar);font-size:.76rem}
+
 /* ---------- entrada ---------- */
 .puerta{min-height:100%;display:grid;place-items:center;padding:24px 16px;background:var(--tinta)}
 .puerta__caja{width:100%;max-width:400px;background:#fff;border-radius:5px;
@@ -168,6 +190,15 @@ details.detalle[open]>summary::before{content:"▾ "}
 "use strict";
 
 const $ = (s, r = document) => r.querySelector(s);
+
+/** Escribe en un cartel de estado conservando su clase .mensaje: asignar
+ *  className a secas la borraba, y el siguiente intento ya no encontraba el
+ *  elemento. tipo: "", "ok" o "error". */
+function decir(el, texto, tipo = "") {
+  if (!el) return;
+  el.className = "mensaje" + (tipo ? " " + tipo : "");
+  el.textContent = texto;
+}
 const clp = n => "$" + (Math.round(n || 0)).toLocaleString("es-CL");
 const fecha = s => s ? s.split("-").reverse().join("-") : "—";
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
@@ -346,13 +377,13 @@ function conectarPanel() {
       ev.preventDefault();
       const msj = f.querySelector(".mensaje");
       const datos = Object.fromEntries(new FormData(f));
-      msj.className = "mensaje"; msj.textContent = "Guardando…";
+      decir(msj, "Guardando…");
       try {
         const r = await pedir(`/ciclos/${f.dataset.ciclo}`, { method: "PATCH", body: JSON.stringify(datos) });
-        msj.className = "ok"; msj.textContent = "Guardado · " + ROTULO[r.estado];
+        decir(msj, "Guardado · " + ROTULO[r.estado], "ok");
         await recargar({ repintar: false });
         setTimeout(() => { if (estado.vista === "panel") pintarPanel(); }, 650);
-      } catch (e) { msj.className = "error"; msj.textContent = e.message; }
+      } catch (e) { decir(msj, e.message, "error"); }
     };
   });
   document.querySelectorAll("[data-asignar]").forEach(s => {
@@ -398,13 +429,13 @@ function pintarNuevoServicio() {
   $("#f-servicio").onsubmit = async ev => {
     ev.preventDefault();
     const f = ev.target, msj = f.querySelector(".mensaje");
-    msj.className = "mensaje"; msj.textContent = "Guardando…";
+    decir(msj, "Guardando…");
     try {
       await pedir("/servicios", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(f))) });
-      msj.className = "ok"; msj.textContent = "Servicio creado";
+      decir(msj, "Servicio creado", "ok");
       f.reset();
       await recargar({ repintar: false }); ir("panel");
-    } catch (e) { msj.className = "error"; msj.textContent = e.message; }
+    } catch (e) { decir(msj, e.message, "error"); }
   };
 }
 
@@ -461,13 +492,13 @@ function pintarNuevoExtra() {
   $("#f-extra").onsubmit = async ev => {
     ev.preventDefault();
     const f = ev.target, msj = f.querySelector(".mensaje");
-    msj.className = "mensaje"; msj.textContent = "Guardando…";
+    decir(msj, "Guardando…");
     try {
       const r = await pedir("/extras", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(f))) });
-      msj.className = "ok"; msj.textContent = `Registrado · ${clp(r.monto_neto)} neto`;
+      decir(msj, `Registrado · ${clp(r.monto_neto)} neto`, "ok");
       f.reset(); recalcular();
       await recargar({ repintar: false });
-    } catch (e) { msj.className = "error"; msj.textContent = e.message; }
+    } catch (e) { decir(msj, e.message, "error"); }
   };
 }
 
@@ -488,12 +519,384 @@ async function pintarBitacora() {
 }
 
 // ------------------------------------------------------------- marco
-const VISTAS = {
-  panel: { rotulo: "Panel", pintar: pintarPanel },
-  servicio: { rotulo: "Nuevo servicio", pintar: pintarNuevoServicio },
-  extra: { rotulo: "Registrar extra", pintar: pintarNuevoExtra },
-  bitacora: { rotulo: "Bitácora", pintar: pintarBitacora },
+// ------------------------------------------------------------- cotizaciones
+const CONDICIONES_POR_DEFECTO =
+  "Valores netos, no incluyen IVA. Facturación mensual contra orden de compra. " +
+  "El servicio considera personal acreditado, uniformado y con los elementos de " +
+  "protección que corresponden al puesto.";
+
+let borrador = null;
+
+function cotizacionNueva() {
+  return {
+    cliente_nombre: "", cliente_rut: "", cliente_contacto: "", cliente_email: "",
+    instalacion: "", validez_dias: 30,
+    condiciones: CONDICIONES_POR_DEFECTO, observaciones: "",
+    items: [{ descripcion: "", unidad: "", cantidad: 1, precio_unitario: 0 }],
+  };
+}
+
+const sumasDe = items => {
+  const neto = items.reduce((t, i) =>
+    t + Math.round((Number(i.precio_unitario) || 0) * (Number(i.cantidad) || 0)), 0);
+  const iva = Math.round(neto * 0.19);
+  return { neto, iva, total: neto + iva };
 };
+
+async function pintarCotizaciones() {
+  $("#app").innerHTML = `<p class="cargando">Cargando…</p>`;
+  const { cotizaciones } = await pedir("/cotizaciones");
+  $("#app").innerHTML = `
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:18px;flex-wrap:wrap">
+      <h2 style="font-size:1.5rem">Cotizaciones</h2>
+      <button class="bt" id="nueva" style="margin-left:auto">Nueva cotización</button>
+    </div>
+    <section class="caja">
+      ${cotizaciones.length ? `<div class="desliza"><table><thead><tr>
+        <th>N°</th><th>Fecha</th><th>Cliente</th><th>Instalación</th><th>Estado</th>
+        <th class="num">Neto</th><th class="num">Total con IVA</th><th></th>
+      </tr></thead><tbody>
+        ${cotizaciones.map(c => `<tr>
+          <td class="num nowrap"><b>${esc(c.numero)}</b></td>
+          <td class="num nowrap">${fecha(c.fecha)}
+            ${c.vencida && c.estado === "enviada" ? `<span class="sub vencida">vencida</span>` : ""}</td>
+          <td>${esc(c.cliente_nombre)}<span class="sub">${c.n_items} línea${c.n_items === 1 ? "" : "s"}</span></td>
+          <td>${esc(c.instalacion || "—")}</td>
+          <td><span class="sello e-${c.estado}">${esc(c.estado)}</span></td>
+          <td class="num">${clp(c.neto)}</td>
+          <td class="num"><b>${clp(c.total)}</b><span class="sub">IVA ${clp(c.iva)}</span></td>
+          <td class="nowrap"><button class="bt bt--fino bt--chico" data-abrir="${c.id}">Abrir</button></td>
+        </tr>`).join("")}
+      </tbody></table></div>`
+      : `<p class="vacio">Todavía no hay cotizaciones. Cree la primera con el botón de arriba.</p>`}
+    </section>`;
+  $("#nueva").onclick = () => { borrador = cotizacionNueva(); pintarEditor(); };
+  document.querySelectorAll("[data-abrir]").forEach(b => {
+    b.onclick = async () => {
+      const { cotizacion } = await pedir(`/cotizaciones/${b.dataset.abrir}`);
+      borrador = cotizacion;
+      pintarEditor();
+    };
+  });
+}
+
+function pintarEditor() {
+  const c = borrador;
+  const nueva = !c.id;
+  const tarifas = estado.catalogos.tarifas;
+  const grupos = [...new Set(tarifas.map(t => t.grupo))];
+
+  $("#app").innerHTML = `
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:18px;flex-wrap:wrap">
+      <h2 style="font-size:1.5rem">${nueva ? "Nueva cotización" : "Cotización " + esc(c.numero)}</h2>
+      ${!nueva ? `<span class="sello e-${c.estado}">${esc(c.estado)}</span>` : ""}
+      <button class="bt bt--fino" id="volver" style="margin-left:auto">Volver</button>
+    </div>
+
+    <section class="caja">
+      <div class="caja__tit"><h2>Cliente</h2></div>
+      <div class="cot__cab">
+        <label class="campo" style="grid-column:span 2"><span>Nombre o razón social</span>
+          <input id="c-nombre" value="${esc(c.cliente_nombre)}" list="lista-clientes" required></label>
+        <datalist id="lista-clientes">
+          ${estado.catalogos.clientes.map(x => `<option value="${esc(x.nombre)}">`).join("")}
+        </datalist>
+        <label class="campo"><span>RUT</span>
+          <input id="c-rut" value="${esc(c.cliente_rut || "")}" placeholder="76.123.456-7"></label>
+        <label class="campo"><span>Contacto</span>
+          <input id="c-contacto" value="${esc(c.cliente_contacto || "")}" placeholder="Nombre de quien recibe"></label>
+        <label class="campo"><span>Correo</span>
+          <input id="c-email" type="email" value="${esc(c.cliente_email || "")}"></label>
+        <label class="campo"><span>Instalación o faena</span>
+          <input id="c-inst" value="${esc(c.instalacion || "")}" list="lista-inst"
+                 placeholder="Dónde se presta el servicio"></label>
+        <datalist id="lista-inst">
+          ${estado.catalogos.instalaciones.map(i => `<option value="${esc(i.nombre)}">`).join("")}
+        </datalist>
+        <label class="campo"><span>Validez (días)</span>
+          <input id="c-validez" type="number" min="1" max="365" value="${c.validez_dias || 30}"></label>
+      </div>
+    </section>
+
+    <section class="caja">
+      <div class="caja__tit"><h2>Detalle</h2>
+        <span class="nota">Elija del tarifario o escriba una línea propia</span></div>
+      <div class="desliza"><table class="lineas"><thead><tr>
+        <th class="col-desc">Descripción</th><th class="col-cant num">Cantidad</th>
+        <th class="col-uni">Unidad</th><th class="col-precio num">Precio unitario</th>
+        <th class="col-sub num">Subtotal</th><th class="col-x"></th>
+      </tr></thead><tbody id="lineas"></tbody></table></div>
+      <div style="padding:14px 16px;display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start">
+        <button class="bt bt--fino bt--chico" id="agregar">+ Agregar línea</button>
+        <select id="del-tarifario" style="max-width:360px">
+          <option value="">Agregar desde el tarifario…</option>
+          ${grupos.map(g => `<optgroup label="${esc(g)}">` +
+            tarifas.filter(t => t.grupo === g).map(t =>
+              `<option value="${t.id}">${esc(t.nombre)} — ${clp(t.precio)}</option>`).join("") +
+            `</optgroup>`).join("")}
+        </select>
+        <div class="sumas" id="sumas"></div>
+      </div>
+    </section>
+
+    <section class="caja">
+      <div class="caja__tit"><h2>Condiciones</h2></div>
+      <div class="cot__cab" style="grid-template-columns:1fr">
+        <label class="campo"><span>Condiciones comerciales</span>
+          <textarea id="c-cond" rows="3">${esc(c.condiciones || "")}</textarea></label>
+        <label class="campo"><span>Observaciones</span>
+          <textarea id="c-obs" rows="2" placeholder="Lo que no calce en el detalle">${esc(c.observaciones || "")}</textarea></label>
+      </div>
+      <div class="pie-form">
+        <button class="bt" id="guardar">${nueva ? "Crear cotización" : "Guardar cambios"}</button>
+        ${!nueva ? `<button class="bt bt--fino" id="pdf">Descargar PDF</button>
+          <select id="c-estado" style="max-width:190px">
+            ${["borrador","enviada","aceptada","rechazada"].map(e =>
+              `<option value="${e}"${e === c.estado ? " selected" : ""}>${e}</option>`).join("")}
+          </select>` : ""}
+        <span class="mensaje"></span>
+      </div>
+    </section>`;
+
+  $("#volver").onclick = () => ir("cotizaciones");
+  $("#agregar").onclick = () => { c.items.push({ descripcion: "", unidad: "", cantidad: 1, precio_unitario: 0 }); pintarLineas(); };
+  $("#del-tarifario").onchange = ev => {
+    const t = estado.catalogos.tarifas.find(x => String(x.id) === ev.target.value);
+    if (!t) return;
+    c.items.push({ descripcion: t.nombre, unidad: t.unidad, cantidad: 1, precio_unitario: t.precio });
+    ev.target.value = ""; pintarLineas();
+  };
+  $("#guardar").onclick = guardarCotizacion;
+  if ($("#pdf")) $("#pdf").onclick = () => generarPDF(c);
+  pintarLineas();
+}
+
+function pintarLineas() {
+  const c = borrador;
+  $("#lineas").innerHTML = c.items.map((i, n) => `<tr>
+    <td class="col-desc"><input data-i="${n}" data-campo="descripcion" value="${esc(i.descripcion)}" placeholder="Qué se cotiza"></td>
+    <td class="col-cant num"><input data-i="${n}" data-campo="cantidad" type="number" min="0.5" step="0.5" value="${i.cantidad}"></td>
+    <td class="col-uni"><input data-i="${n}" data-campo="unidad" value="${esc(i.unidad || "")}" placeholder="turno"></td>
+    <td class="col-precio num"><input data-i="${n}" data-campo="precio_unitario" type="number" min="0" step="1" value="${i.precio_unitario}"></td>
+    <td class="col-sub num"><b>${clp(Math.round((Number(i.precio_unitario)||0) * (Number(i.cantidad)||0)))}</b></td>
+    <td class="col-x"><button class="quitar" data-quitar="${n}" title="Quitar línea">×</button></td>
+  </tr>`).join("");
+
+  $("#lineas").oninput = ev => {
+    const el = ev.target;
+    if (!el.dataset.campo) return;
+    const v = el.dataset.campo === "descripcion" || el.dataset.campo === "unidad"
+      ? el.value : Number(el.value);
+    c.items[el.dataset.i][el.dataset.campo] = v;
+    const fila = el.closest("tr");
+    const it = c.items[el.dataset.i];
+    fila.querySelector(".col-sub b").textContent =
+      clp(Math.round((Number(it.precio_unitario)||0) * (Number(it.cantidad)||0)));
+    pintarSumas();
+  };
+  document.querySelectorAll("[data-quitar]").forEach(b => {
+    b.onclick = () => {
+      if (c.items.length === 1) return;
+      c.items.splice(Number(b.dataset.quitar), 1);
+      pintarLineas();
+    };
+  });
+  pintarSumas();
+}
+
+function pintarSumas() {
+  const s = sumasDe(borrador.items);
+  $("#sumas").innerHTML = `
+    <div><span>Neto</span><b class="num">${clp(s.neto)}</b></div>
+    <div><span>IVA 19%</span><b class="num">${clp(s.iva)}</b></div>
+    <div class="total"><span>Total</span><b class="num">${clp(s.total)}</b></div>`;
+}
+
+async function guardarCotizacion() {
+  const c = borrador, msj = $(".pie-form .mensaje");
+  c.cliente_nombre = $("#c-nombre").value.trim();
+  c.cliente_rut = $("#c-rut").value.trim();
+  c.cliente_contacto = $("#c-contacto").value.trim();
+  c.cliente_email = $("#c-email").value.trim();
+  c.instalacion = $("#c-inst").value.trim();
+  c.validez_dias = Number($("#c-validez").value);
+  c.condiciones = $("#c-cond").value.trim();
+  c.observaciones = $("#c-obs").value.trim();
+  if ($("#c-estado")) c.estado = $("#c-estado").value;
+
+  decir(msj, "Guardando…");
+  try {
+    if (c.id) {
+      await pedir(`/cotizaciones/${c.id}`, { method: "PATCH", body: JSON.stringify(c) });
+      decir(msj, "Guardada", "ok");
+    } else {
+      const r = await pedir("/cotizaciones", { method: "POST", body: JSON.stringify(c) });
+      const { cotizacion } = await pedir(`/cotizaciones/${r.cotizacion.id}`);
+      borrador = cotizacion;
+      pintarEditor();
+      decir($(".pie-form .mensaje"), `Creada con el N° ${cotizacion.numero}`, "ok");
+    }
+  } catch (e) { decir(msj, e.message, "error"); }
+}
+
+// ------------------------------------------------------------- PDF
+const JSPDF = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+
+function cargarScript(url) {
+  return new Promise((listo, falla) => {
+    if (document.querySelector(`script[src="${url}"]`)) return listo();
+    const s = document.createElement("script");
+    s.src = url;
+    s.onload = listo;
+    s.onerror = () => falla(new Error("No se pudo cargar el generador de PDF. ¿Hay internet?"));
+    document.head.appendChild(s);
+  });
+}
+
+/** Carga el logo reducido. A tamaño completo son 140 KB que se incrustan en
+ *  cada PDF y lo dejan en más de un mega; a 150 px se ve igual de nítido en
+ *  los 20 mm que ocupa en la hoja. */
+const cargarLogo = (src, lado = 150) => new Promise(listo => {
+  const i = new Image();
+  i.onload = () => {
+    const c = document.createElement("canvas");
+    c.width = c.height = lado;
+    c.getContext("2d").drawImage(i, 0, 0, lado, lado);
+    listo(c.toDataURL("image/png"));
+  };
+  i.onerror = () => listo(null);     // sin logo, el PDF se arma igual
+  i.src = src;
+});
+
+async function generarPDF(c) {
+  const msj = $(".pie-form .mensaje");
+  decir(msj, "Armando el PDF…");
+  try {
+    await cargarScript(JSPDF);
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: "mm", format: "a4" });
+    const A = 210, M = 16;
+    const der = A - M;
+    const gris = [110, 110, 134], tinta = [19, 0, 82];
+    let y = 16;
+
+    const logo = await cargarLogo("logo.png");
+    if (logo) doc.addImage(logo, "PNG", M, y - 2, 20, 20);
+
+    doc.setFont("helvetica", "bold").setFontSize(15).setTextColor(...tinta);
+    doc.text("SEGURIDAD GARRIDOS", M + (logo ? 24 : 0), y + 5);
+    doc.setFont("helvetica", "normal").setFontSize(8.5).setTextColor(...gris);
+    doc.text("GLOBSEG SPA · RUT 78.095.104-4", M + (logo ? 24 : 0), y + 10);
+    doc.text("Seguridad privada: guardias, rondas, cámaras y eventos.", M + (logo ? 24 : 0), y + 14);
+
+    doc.setFont("helvetica", "bold").setFontSize(13).setTextColor(...tinta);
+    doc.text("COTIZACIÓN", der, y + 4, { align: "right" });
+    doc.setFontSize(11);
+    doc.text("N° " + c.numero, der, y + 10, { align: "right" });
+    doc.setFont("helvetica", "normal").setFontSize(8.5).setTextColor(...gris);
+    doc.text("Fecha: " + fecha(c.fecha), der, y + 15, { align: "right" });
+    doc.text("Válida por " + c.validez_dias + " días", der, y + 19, { align: "right" });
+
+    y += 27;
+    doc.setDrawColor(...tinta).setLineWidth(0.5).line(M, y, der, y);
+    y += 7;
+
+    doc.setFont("helvetica", "bold").setFontSize(8).setTextColor(...gris);
+    doc.text("CLIENTE", M, y);
+    y += 5;
+    doc.setFont("helvetica", "bold").setFontSize(11).setTextColor(...tinta);
+    doc.text(c.cliente_nombre, M, y);
+    doc.setFont("helvetica", "normal").setFontSize(9).setTextColor(60, 60, 80);
+    const datos = [
+      c.cliente_rut && "RUT " + c.cliente_rut,
+      c.cliente_contacto, c.cliente_email,
+    ].filter(Boolean);
+    if (datos.length) { y += 5; doc.text(datos.join("  ·  "), M, y); }
+    if (c.instalacion) { y += 5; doc.text("Instalación: " + c.instalacion, M, y); }
+
+    y += 9;
+    doc.setFillColor(231, 235, 227).rect(M, y, der - M, 8, "F");
+    doc.setFont("helvetica", "bold").setFontSize(8).setTextColor(...tinta);
+    doc.text("DETALLE", M + 2, y + 5.5);
+    doc.text("CANT.", der - 76, y + 5.5, { align: "right" });
+    doc.text("P. UNITARIO", der - 40, y + 5.5, { align: "right" });
+    doc.text("SUBTOTAL", der - 2, y + 5.5, { align: "right" });
+    y += 12;
+
+    doc.setFont("helvetica", "normal").setFontSize(9).setTextColor(30, 25, 60);
+    for (const i of c.items) {
+      const lineas = doc.splitTextToSize(i.descripcion, 92);
+      if (y + lineas.length * 4.6 > 262) { doc.addPage(); y = 22; }
+      doc.text(lineas, M + 2, y);
+      const cant = i.cantidad + (i.unidad ? " " + i.unidad : "");
+      doc.text(String(cant), der - 76, y, { align: "right" });
+      doc.text(clp(i.precio_unitario), der - 40, y, { align: "right" });
+      doc.setFont("helvetica", "bold");
+      doc.text(clp(i.subtotal), der - 2, y, { align: "right" });
+      doc.setFont("helvetica", "normal");
+      y += lineas.length * 4.6 + 3;
+      doc.setDrawColor(207, 214, 201).setLineWidth(0.15).line(M, y - 1.5, der, y - 1.5);
+    }
+
+    y += 4;
+    if (y > 232) { doc.addPage(); y = 22; }
+    const x1 = der - 62, x2 = der - 2;
+    doc.setFontSize(9.5).setTextColor(...gris);
+    doc.text("Neto", x1, y);
+    doc.setTextColor(30, 25, 60).text(clp(c.neto), x2, y, { align: "right" });
+    y += 5.5;
+    doc.setTextColor(...gris).text("IVA 19%", x1, y);
+    doc.setTextColor(30, 25, 60).text(clp(c.iva), x2, y, { align: "right" });
+    y += 3;
+    doc.setDrawColor(...tinta).setLineWidth(0.4).line(x1, y, x2, y);
+    y += 6.5;
+    doc.setFont("helvetica", "bold").setFontSize(12.5).setTextColor(...tinta);
+    doc.text("TOTAL", x1, y);
+    doc.text(clp(c.total), x2, y, { align: "right" });
+
+    y += 12;
+    for (const [rotulo, texto] of [["CONDICIONES", c.condiciones], ["OBSERVACIONES", c.observaciones]]) {
+      if (!texto) continue;
+      const lineas = doc.splitTextToSize(texto, der - M);
+      if (y + lineas.length * 4.2 > 272) { doc.addPage(); y = 22; }
+      doc.setFont("helvetica", "bold").setFontSize(8).setTextColor(...gris);
+      doc.text(rotulo, M, y);
+      y += 5;
+      doc.setFont("helvetica", "normal").setFontSize(8.8).setTextColor(60, 60, 80);
+      doc.text(lineas, M, y);
+      y += lineas.length * 4.2 + 6;
+    }
+
+    const n = doc.internal.getNumberOfPages();
+    for (let p = 1; p <= n; p++) {
+      doc.setPage(p);
+      doc.setFont("helvetica", "normal").setFontSize(7.5).setTextColor(...gris);
+      doc.text("Seguridad Garridos · GLOBSEG SPA · RUT 78.095.104-4", M, 288);
+      doc.text(`Página ${p} de ${n}`, der, 288, { align: "right" });
+    }
+
+    // \w no incluye letras acentuadas: sin la u y el rango, "Energía" quedaba
+    // como "Energa" en el nombre del archivo.
+    const limpio = c.cliente_nombre
+      .replace(/[^\p{L}\p{N}\s-]/gu, "").replace(/\s+/g, " ").trim().slice(0, 40);
+    doc.save(`Cotizacion-${c.numero}-${limpio}.pdf`);
+    decir(msj, "PDF descargado", "ok");
+  } catch (e) {
+    decir(msj, e.message, "error");
+  }
+}
+
+const VISTAS = {
+  panel: { rotulo: "Panel", pintar: pintarPanel, modulo: "facturacion" },
+  cotizaciones: { rotulo: "Cotizaciones", pintar: pintarCotizaciones, modulo: "cotizaciones" },
+  servicio: { rotulo: "Nuevo servicio", pintar: pintarNuevoServicio, modulo: "facturacion" },
+  extra: { rotulo: "Registrar extra", pintar: pintarNuevoExtra, modulo: "facturacion" },
+  bitacora: { rotulo: "Bitácora", pintar: pintarBitacora, modulo: "facturacion" },
+};
+
+// Cada quien ve solo las pestañas de los módulos a los que tiene acceso.
+const vistasPermitidas = () =>
+  Object.entries(VISTAS).filter(([, v]) => !v.modulo || estado.usuario.permisos.includes(v.modulo));
 
 function ir(vista) {
   estado.vista = vista;
@@ -523,16 +926,16 @@ function pintarIngreso(mensaje) {
     </form>
   </div></div>`;
   const f = document.getElementById("f-entrar");
-  if (mensaje) { const m = f.querySelector(".mensaje"); m.className = "error"; m.textContent = mensaje; }
+  if (mensaje) { const m = f.querySelector(".mensaje"); decir(m, mensaje, "error"); }
   f.onsubmit = async ev => {
     ev.preventDefault();
     const m = f.querySelector(".mensaje"), bt = f.querySelector("button");
-    m.className = "mensaje"; m.textContent = "Entrando…"; bt.disabled = true;
+    decir(m, "Entrando…"); bt.disabled = true;
     try {
       await pedir("/sesion", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(f))) });
       location.reload();
     } catch (e) {
-      m.className = "error"; m.textContent = e.message;
+      decir(m, e.message, "error");
       bt.disabled = false;
       f.clave.value = ""; f.clave.focus();
     }
@@ -563,15 +966,15 @@ function pintarCambioClave(usuario) {
     ev.preventDefault();
     const m = f.querySelector(".mensaje"), bt = f.querySelector("button");
     if (f.nueva.value !== f.repetir.value) {
-      m.className = "error"; m.textContent = "Las dos contraseñas nuevas no coinciden";
+      decir(m, "Las dos contraseñas nuevas no coinciden", "error");
       f.repetir.focus(); return;
     }
-    m.className = "mensaje"; m.textContent = "Guardando…"; bt.disabled = true;
+    decir(m, "Guardando…"); bt.disabled = true;
     try {
       await pedir("/clave", { method: "POST",
         body: JSON.stringify({ actual: f.actual.value, nueva: f.nueva.value }) });
       location.reload();
-    } catch (e) { m.className = "error"; m.textContent = e.message; bt.disabled = false; }
+    } catch (e) { decir(m, e.message, "error"); bt.disabled = false; }
   };
 }
 
@@ -594,12 +997,20 @@ async function arrancar() {
       await pedir("/sesion", { method: "DELETE" }).catch(() => {});
       location.reload();
     };
-    $("#pestanas").innerHTML = Object.entries(VISTAS)
+    const permitidas = vistasPermitidas();
+    if (!permitidas.length) {
+      $("#app").innerHTML = aviso("ojo", "Su cuenta todavía no tiene módulos asignados",
+        "Su rol es «" + esc(usuario.rol) + "». El módulo correspondiente aún no está construido.");
+      return;
+    }
+    $("#pestanas").innerHTML = permitidas
       .map(([k, v]) => `<button data-vista="${k}">${v.rotulo}</button>`).join("");
     document.querySelectorAll("#pestanas button").forEach(b => { b.onclick = () => ir(b.dataset.vista); });
 
-    [estado.panel, estado.catalogos] = await Promise.all([pedir("/panel"), pedir("/catalogos")]);
-    ir("panel");
+    // Los catálogos los usan los dos módulos; el panel solo quien lo tenga.
+    estado.catalogos = await pedir("/catalogos");
+    if (usuario.permisos.includes("facturacion")) estado.panel = await pedir("/panel");
+    ir(permitidas[0][0]);
   } catch (e) {
     $("#app").innerHTML = aviso("mal", "No se pudo entrar", e.message);
   }

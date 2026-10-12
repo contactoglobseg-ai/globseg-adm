@@ -13,6 +13,7 @@ import { buscar, primero, insertar, insertarSinDuplicar, actualizar, anotar, Err
   from './datos.js';
 import { ingresar, cambiarClave, crearSesion, leerSesion, cookieSesion, cookieBorrada }
   from './sesion.js';
+import * as cotiz from './cotizaciones.js';
 
 const IVA = 0.19;
 
@@ -181,19 +182,49 @@ async function api(request, env, url, usuario) {
     return error('Tiene que cambiar su contraseña antes de usar el sistema', 403);
   }
 
+  // Catálogos: los usan los dos módulos, así que basta con cualquiera de ellos.
+  if (ruta === '/catalogos' && metodo === 'GET') {
+    if (!puede(usuario, 'facturacion') && !puede(usuario, 'cotizaciones')) {
+      return error('Sin acceso a este módulo', 403);
+    }
+    const [tarifas, instalaciones, clientes] = await Promise.all([
+      buscar(env, 'tarifas?select=*&activo=is.true&order=grupo.asc,precio.asc'),
+      buscar(env, 'v_instalaciones?select=id,nombre,comuna,cliente&activa=is.true&order=nombre.asc'),
+      buscar(env, 'clientes?select=id,nombre,rut,contacto,email&activo=is.true&order=nombre.asc'),
+    ]);
+    return json({ tarifas, instalaciones, clientes });
+  }
+
+  // ---------------------------------------------------------- cotizaciones
+  if (ruta.startsWith('/cotizaciones')) {
+    if (!puede(usuario, 'cotizaciones')) return error('Sin acceso a este módulo', 403);
+
+    if (ruta === '/cotizaciones' && metodo === 'GET') {
+      return json({ cotizaciones: await cotiz.listar(env) });
+    }
+    if (ruta === '/cotizaciones' && metodo === 'POST') {
+      const r = await cotiz.crear(env, usuario, cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json({ ok: true, cotizacion: r.cotizacion }, 201);
+    }
+    const m = ruta.match(/^\/cotizaciones\/(\d+)$/);
+    if (m && metodo === 'GET') {
+      const c = await cotiz.conItems(env, Number(m[1]));
+      return c ? json({ cotizacion: c }) : error('Esa cotización no existe', 404);
+    }
+    if (m && metodo === 'PATCH') {
+      const r = await cotiz.editar(env, usuario, Number(m[1]), cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json({ ok: true });
+    }
+    return error('Ruta no encontrada', 404);
+  }
+
   if (!puede(usuario, 'facturacion')) return error('Sin acceso a este módulo', 403);
 
   if (ruta === '/panel' && metodo === 'GET') {
     await ponerCiclosAlDia(env);
     return json(await panel(env));
-  }
-
-  if (ruta === '/catalogos' && metodo === 'GET') {
-    const [tarifas, instalaciones] = await Promise.all([
-      buscar(env, 'tarifas?select=*&activo=is.true&order=grupo.asc,precio.asc'),
-      buscar(env, 'v_instalaciones?select=id,nombre,comuna,cliente&activa=is.true&order=nombre.asc'),
-    ]);
-    return json({ tarifas, instalaciones });
   }
 
   // Alta de un servicio continuo: acá se elige el día de inicio.

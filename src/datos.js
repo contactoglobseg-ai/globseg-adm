@@ -93,6 +93,13 @@ export const insertarSinDuplicar = (env, tabla, filas, conflicto) =>
 export const actualizar = (env, ruta, campos) =>
   llamar(env, ruta, { metodo: 'PATCH', cuerpo: campos, prefer: 'return=representation' });
 
+/** Borra las filas que calcen con el filtro. El filtro es obligatorio: una
+ *  ruta sin condición borraría la tabla entera. */
+export const borrar = (env, ruta) => {
+  if (!ruta.includes('=')) throw new ErrorDatos('Borrado sin filtro: se rechaza', 500);
+  return llamar(env, ruta, { metodo: 'DELETE' });
+};
+
 /** Escribe en la bitácora sin hacer fallar la operación principal. */
 export async function anotar(env, quien, entidad, entidad_id, accion, detalle) {
   try {
