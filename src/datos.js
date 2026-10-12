@@ -26,11 +26,17 @@ async function llamar(env, ruta, { metodo = 'GET', cuerpo, prefer } = {}) {
   if (!(env.SUPABASE_URL || env.SUPABASE_REST) || !env.SUPABASE_SERVICE_KEY) {
     throw new ErrorDatos('Falta configurar la conexión a Supabase', 500);
   }
+  // Las claves antiguas de Supabase son JWT y van en apikey y en Authorization.
+  // Las nuevas (sb_secret_...) no lo son: mandarlas como Bearer hace que el
+  // servidor las rechace con "Invalid API key", porque ahí espera un JWT.
+  const clave = env.SUPABASE_SERVICE_KEY.trim();
+  const esJWT = clave.split('.').length === 3 && clave.startsWith('ey');
+
   const r = await fetch(raiz(env) + ruta, {
     method: metodo,
     headers: {
-      apikey: env.SUPABASE_SERVICE_KEY,
-      authorization: 'Bearer ' + env.SUPABASE_SERVICE_KEY,
+      apikey: clave,
+      ...(esJWT ? { authorization: 'Bearer ' + clave } : {}),
       'content-type': 'application/json',
       ...(prefer ? { prefer } : {}),
     },
