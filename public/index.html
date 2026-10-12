@@ -1,0 +1,515 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Administración · Seguridad Garridos</title>
+<meta name="robots" content="noindex, nofollow">
+<link rel="icon" href="logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700&family=Archivo:wght@400;500;600;700&display=swap">
+<style>
+/* Pantalla de trabajo: se opera, no se lee. Cromo azul marino de la marca,
+   datos sobre papel claro. El color sirve para el estado, no para decorar. */
+:root{
+  --tinta:#130052; --tinta-prof:#0A0031; --tinta-alta:#1E0A72;
+  --papel:#F4F5F2; --papel-2:#E7EBE3; --raya:#CFD6C9;
+  --sobre-tinta:#F2F0FF; --sobre-tinta-2:#B3ACE4;
+  --texto:#1A1140; --texto-2:#58508C;
+  --verde:#00A866; --verde-suave:#DCF5E9;     /* cerrado */
+  --ambar:#B86E00; --ambar-suave:#FDF0DC;     /* solicitar OC */
+  --cian:#0071A8;  --cian-suave:#DDEEF8;      /* pendiente facturación */
+  --gris:#6A6A86;  --gris-suave:#ECECF2;      /* en curso */
+  --rojo:#B3261E;  --rojo-suave:#FBE4E2;
+  --display:"Big Shoulders Display","Arial Narrow",sans-serif;
+  --cuerpo:"Archivo","Helvetica Neue",Arial,sans-serif;
+  color-scheme:light;
+}
+*,*::before,*::after{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0;height:100%}
+body{background:var(--papel);color:var(--texto);font:400 15px/1.5 var(--cuerpo)}
+::selection{background:var(--tinta);color:#fff}
+:where(a,button,input,select,textarea):focus-visible{outline:2px solid var(--tinta-alta);outline-offset:2px}
+h1,h2,h3{margin:0;font-family:var(--display);font-weight:700;text-transform:uppercase;
+  letter-spacing:.01em;line-height:1}
+p{margin:0}
+.num{font-variant-numeric:tabular-nums}
+
+/* ---------- marco ---------- */
+.barra{background:var(--tinta-prof);color:var(--sobre-tinta);
+  padding:0 clamp(14px,3vw,26px);padding-top:env(safe-area-inset-top,0px);
+  display:flex;align-items:center;gap:18px;flex-wrap:wrap;min-height:58px;
+  position:sticky;top:0;z-index:20}
+.marca{display:flex;align-items:center;gap:10px;margin-right:auto}
+.marca img{width:30px;height:30px}
+.marca b{font-family:var(--display);font-size:1.05rem;text-transform:uppercase;letter-spacing:.02em}
+.marca span{font-size:.64rem;letter-spacing:.16em;text-transform:uppercase;color:var(--sobre-tinta-2);display:block}
+.pestanas{display:flex;gap:2px;flex-wrap:wrap}
+.pestanas button{background:none;border:0;color:var(--sobre-tinta-2);font:600 .85rem var(--cuerpo);
+  padding:9px 13px;border-radius:3px 3px 0 0;cursor:pointer;border-bottom:2px solid transparent}
+.pestanas button:hover{color:#fff;background:rgba(255,255,255,.07)}
+.pestanas button[aria-current="true"]{color:#fff;border-bottom-color:var(--verde)}
+.quien{font-size:.78rem;color:var(--sobre-tinta-2);text-align:right;line-height:1.3}
+.quien b{display:block;color:var(--sobre-tinta);font-weight:600;font-size:.85rem}
+
+main{padding:clamp(16px,2.5vw,28px);max-width:1500px;margin-inline:auto}
+.cargando{padding:60px 0;text-align:center;color:var(--texto-2)}
+
+/* ---------- avisos ---------- */
+.aviso{border-radius:4px;padding:14px 16px;margin-bottom:18px;display:flex;gap:12px;
+  align-items:flex-start;font-size:.92rem;line-height:1.5}
+.aviso b{display:block;font-weight:600;margin-bottom:2px}
+.aviso--mal{background:var(--rojo-suave);color:#7A1A14;border:1px solid #F0C5C1}
+.aviso--ojo{background:var(--ambar-suave);color:#7A4A00;border:1px solid #EBD3AE}
+.aviso--bien{background:var(--verde-suave);color:#07603C;border:1px solid #B6E3CD}
+.aviso svg{width:20px;height:20px;flex:none;margin-top:1px}
+
+/* ---------- tarjetas de resumen ---------- */
+.resumen{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:20px}
+.ficha{background:#fff;border:1px solid var(--raya);border-radius:4px;padding:14px 16px}
+.ficha dt{font-size:.68rem;letter-spacing:.13em;text-transform:uppercase;color:var(--texto-2);font-weight:600}
+.ficha dd{margin:7px 0 0;font-family:var(--display);font-size:2rem;line-height:1;font-weight:700}
+.ficha small{display:block;margin-top:5px;font-size:.76rem;color:var(--texto-2)}
+.ficha--ojo dd{color:var(--ambar)} .ficha--plata dd{color:var(--tinta)}
+
+/* ---------- tablas ---------- */
+.caja{background:#fff;border:1px solid var(--raya);border-radius:4px;overflow:hidden;margin-bottom:22px}
+.caja__tit{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  padding:12px 16px;background:var(--papel-2);border-bottom:1px solid var(--raya)}
+.caja__tit h2{font-size:1rem}
+.caja__tit .nota{font-size:.8rem;color:var(--texto-2);margin-left:auto}
+.desliza{overflow-x:auto}
+.desliza table{min-width:1080px}
+.sub{color:var(--texto-2);font-size:.8rem;display:block;margin-top:2px}
+.nowrap{white-space:nowrap}
+td b{display:block}
+table{border-collapse:collapse;width:100%;font-size:.88rem}
+th{text-align:left;font-size:.67rem;letter-spacing:.11em;text-transform:uppercase;
+  color:var(--texto-2);font-weight:600;padding:9px 12px;border-bottom:1px solid var(--raya);white-space:nowrap}
+td{padding:11px 12px;border-bottom:1px solid var(--papel-2);vertical-align:top}
+tbody tr:last-child td{border-bottom:0}
+tbody tr:hover{background:#FAFBF9}
+td.num,th.num{text-align:right}
+.vacio{padding:26px 16px;text-align:center;color:var(--texto-2);font-size:.9rem}
+
+/* ---------- estados ---------- */
+.sello{display:inline-block;font-size:.66rem;letter-spacing:.09em;text-transform:uppercase;
+  font-weight:700;padding:4px 8px;border-radius:3px;white-space:nowrap}
+.e-solicitar_oc{background:var(--ambar-suave);color:var(--ambar)}
+.e-pendiente_facturacion{background:var(--cian-suave);color:var(--cian)}
+.e-cerrado{background:var(--verde-suave);color:var(--verde)}
+.e-en_curso{background:var(--gris-suave);color:var(--gris)}
+tr.fila--cerrado{background:#FBFEFC}
+tr.fila--cerrado td:first-child{box-shadow:inset 3px 0 0 var(--verde)}
+tr.fila--solicitar_oc td:first-child{box-shadow:inset 3px 0 0 var(--ambar)}
+
+/* ---------- controles ---------- */
+.bt{display:inline-flex;align-items:center;gap:7px;font:600 .84rem var(--cuerpo);
+  padding:9px 14px;border-radius:3px;border:1px solid transparent;cursor:pointer;
+  background:var(--tinta);color:#fff;transition:background-color .14s}
+.bt:hover{background:var(--tinta-alta)}
+.bt--fino{background:#fff;color:var(--tinta);border-color:var(--raya)}
+.bt--fino:hover{background:var(--papel-2)}
+.bt--chico{padding:6px 10px;font-size:.78rem}
+.bt[disabled]{opacity:.5;cursor:not-allowed}
+label.campo{display:flex;flex-direction:column;gap:5px;font-size:.78rem;color:var(--texto-2);min-width:0}
+label.campo>span{font-weight:600;letter-spacing:.04em;text-transform:uppercase;font-size:.68rem}
+input,select,textarea{font:400 .9rem var(--cuerpo);color:var(--texto);background:#fff;
+  border:1px solid var(--raya);border-radius:3px;padding:8px 10px;width:100%;caret-color:var(--tinta)}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--tinta-alta);box-shadow:0 0 0 3px rgba(30,10,114,.1)}
+.rejilla{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;padding:16px}
+.pie-form{padding:0 16px 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.error{color:var(--rojo);font-size:.82rem;font-weight:500}
+.ok{color:var(--verde);font-size:.82rem;font-weight:600}
+details.detalle{border-top:1px solid var(--papel-2)}
+details.detalle>summary{cursor:pointer;padding:9px 12px;font-size:.8rem;color:var(--tinta);
+  font-weight:600;list-style:none}
+details.detalle>summary::-webkit-details-marker{display:none}
+details.detalle>summary::before{content:"▸ ";display:inline-block;transition:transform .15s}
+details.detalle[open]>summary::before{content:"▾ "}
+</style>
+</head>
+<body>
+
+<header class="barra">
+  <div class="marca">
+    <img src="logo.png" alt="">
+    <span>
+      <b>Administración</b>
+      <span>Seguridad Garridos</span>
+    </span>
+  </div>
+  <nav class="pestanas" id="pestanas" aria-label="Secciones"></nav>
+  <div class="quien" id="quien"></div>
+</header>
+
+<main id="app">
+  <p class="cargando">Cargando…</p>
+</main>
+
+<script>
+"use strict";
+
+const $ = (s, r = document) => r.querySelector(s);
+const clp = n => "$" + (Math.round(n || 0)).toLocaleString("es-CL");
+const fecha = s => s ? s.split("-").reverse().join("-") : "—";
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+const ROTULO = {
+  solicitar_oc: "Solicitar OC",
+  pendiente_facturacion: "Pendiente de facturación",
+  cerrado: "Servicio cerrado",
+  en_curso: "En curso",
+};
+
+let estado = { usuario: null, panel: null, catalogos: null, vista: "panel" };
+
+async function pedir(ruta, opciones) {
+  const r = await fetch("/api" + ruta, {
+    headers: { "content-type": "application/json" },
+    ...opciones,
+  });
+  const cuerpo = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(cuerpo.error || `Error ${r.status}`);
+  return cuerpo;
+}
+
+// ------------------------------------------------------------- vistas
+function pintarPanel() {
+  const { ciclos, extras_sueltos: sueltos, resumen: r } = estado.panel;
+  const porEstado = e => ciclos.filter(c => c.estado === e);
+  const pendientes = [...porEstado("solicitar_oc"), ...porEstado("pendiente_facturacion")];
+
+  let html = "";
+
+  if (r.extras_sin_asignar > 0) {
+    html += aviso("mal",
+      `${r.extras_sin_asignar} servicio${r.extras_sin_asignar > 1 ? "s" : ""} extra sin asignar a ningún periodo`,
+      `Suman ${clp(r.neto_extras_sueltos)} neto y no se van a cobrar hasta que los asigne. Están al final de esta pantalla.`);
+  }
+  if (r.solicitar_oc > 0) {
+    html += aviso("ojo",
+      `${r.solicitar_oc} periodo${r.solicitar_oc > 1 ? "s" : ""} cumplió los 30 días`,
+      "Hay que pedir la orden de compra al cliente para poder facturar.");
+  }
+  if (!r.extras_sin_asignar && !r.solicitar_oc && !r.pendiente_facturacion && ciclos.length) {
+    html += aviso("bien", "No hay nada pendiente de cobro", "Todos los periodos cerrados o en curso.");
+  }
+
+  html += `<dl class="resumen">
+    <div class="ficha ficha--plata"><dt>Neto por cobrar</dt><dd class="num">${clp(r.neto_por_cobrar)}</dd>
+      <small>IVA aparte · ${ciclos.filter(c => c.estado !== "cerrado").length} periodos abiertos</small></div>
+    <div class="ficha ficha--ojo"><dt>Solicitar OC</dt><dd class="num">${r.solicitar_oc}</dd>
+      <small>Cumplieron los 30 días</small></div>
+    <div class="ficha"><dt>Pendiente de facturación</dt><dd class="num">${r.pendiente_facturacion}</dd>
+      <small>Con OC, sin factura</small></div>
+    <div class="ficha"><dt>En curso</dt><dd class="num">${r.en_curso}</dd>
+      <small>Periodo corriendo</small></div>
+  </dl>`;
+
+  html += tablaCiclos("Pendientes de cobro", pendientes,
+    "Nada pendiente. Cuando un periodo cumpla 30 días aparece acá.");
+
+  const cerrados = porEstado("cerrado"), enCurso = porEstado("en_curso");
+  if (enCurso.length) html += tablaCiclos("Periodos en curso", enCurso, "");
+  if (cerrados.length) html += tablaCiclos("Cerrados", cerrados, "");
+
+  html += tablaSueltos(sueltos);
+  $("#app").innerHTML = html;
+  conectarPanel();
+}
+
+function aviso(tipo, titulo, texto) {
+  const icono = tipo === "bien"
+    ? '<path d="M4 12.5l5 5 11-11"/>'
+    : '<path d="M12 8v5"/><circle cx="12" cy="16.5" r="1.1" fill="currentColor" stroke="none"/><path d="M10.3 3.9 2.6 17.4A2 2 0 0 0 4.3 20.4h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/>';
+  return `<div class="aviso aviso--${tipo}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${icono}</svg>
+    <div><b>${esc(titulo)}</b>${esc(texto)}</div></div>`;
+}
+
+function tablaCiclos(titulo, filas, vacio) {
+  if (!filas.length && !vacio) return "";
+  const total = filas.reduce((t, c) => t + c.total_neto, 0);
+  let h = `<section class="caja"><div class="caja__tit"><h2>${esc(titulo)}</h2>
+    <span class="nota">${filas.length} · ${clp(total)} neto</span></div>`;
+  if (!filas.length) return h + `<p class="vacio">${esc(vacio)}</p></section>`;
+  h += `<div class="desliza"><table><thead><tr>
+      <th>Instalación</th><th>Servicio</th><th>Periodo</th><th>Estado</th>
+      <th class="num">Base</th><th class="num">Extras</th><th class="num">Neto</th>
+      <th class="num">Total con IVA</th><th>OC</th><th>Factura</th><th></th>
+    </tr></thead><tbody>`;
+  for (const c of filas) {
+    h += `<tr class="fila--${c.estado}">
+      <td><b>${esc(c.instalacion)}</b><span class="sub">${esc(c.cliente)}</span></td>
+      <td>${esc(c.servicio)}</td>
+      <td class="num nowrap">N°${c.numero}<span class="sub nowrap">${fecha(c.desde)} → ${fecha(c.hasta)}</span></td>
+      <td><span class="sello e-${c.estado}">${ROTULO[c.estado]}</span>
+        ${c.estado === "solicitar_oc" && c.dias_desde_cierre > 0
+          ? `<span class="sub" style="color:var(--ambar)">hace ${c.dias_desde_cierre} día${c.dias_desde_cierre > 1 ? "s" : ""}</span>` : ""}</td>
+      <td class="num">${c.monto_neto ? clp(c.monto_neto) : "—"}</td>
+      <td class="num">${c.extras_n ? `${clp(c.extras_neto)}<span class="sub">${c.extras_n} ítem${c.extras_n > 1 ? "s" : ""}</span>` : "—"}</td>
+      <td class="num"><b>${clp(c.total_neto)}</b></td>
+      <td class="num nowrap">${clp(c.total)}<span class="sub">IVA ${clp(c.iva)}</span></td>
+      <td class="nowrap">${c.oc_numero ? esc(c.oc_numero) + `<span class="sub">${fecha(c.oc_fecha)}</span>` : "—"}</td>
+      <td class="nowrap">${c.factura_folio ? esc(c.factura_folio) + `<span class="sub">${fecha(c.factura_fecha)}</span>` : "—"}</td>
+      <td class="nowrap"><button class="bt bt--fino bt--chico" data-editar="${c.id}">${c.estado === "cerrado" ? "Ver" : "Registrar"}</button></td>
+    </tr>
+    <tr hidden data-form="${c.id}"><td colspan="11" style="background:var(--papel-2);padding:0">
+      ${formCiclo(c)}
+    </td></tr>`;
+  }
+  return h + "</tbody></table></div></section>";
+}
+
+function formCiclo(c) {
+  return `<form data-ciclo="${c.id}">
+    <div class="rejilla">
+      <label class="campo"><span>N° de orden de compra</span>
+        <input name="oc_numero" value="${esc(c.oc_numero || "")}" placeholder="OC-12345"></label>
+      <label class="campo"><span>Cuándo llegó la OC</span>
+        <input name="oc_fecha" type="date" value="${esc(c.oc_fecha || "")}"></label>
+      <label class="campo"><span>Folio de factura</span>
+        <input name="factura_folio" value="${esc(c.factura_folio || "")}" placeholder="1234"></label>
+      <label class="campo"><span>Fecha de factura</span>
+        <input name="factura_fecha" type="date" value="${esc(c.factura_fecha || "")}"></label>
+      <label class="campo"><span>Monto base neto</span>
+        <input name="monto_neto" type="number" min="0" step="1" value="${c.monto_neto ?? ""}" placeholder="0"></label>
+      <label class="campo" style="grid-column:1/-1"><span>Notas</span>
+        <input name="notas" value="${esc(c.notas || "")}" placeholder="Lo que haya que recordar de este periodo"></label>
+    </div>
+    <div class="pie-form">
+      <button class="bt" type="submit">Guardar</button>
+      <button class="bt bt--fino" type="button" data-cerrar="${c.id}">Cancelar</button>
+      <span class="mensaje"></span>
+      <span style="margin-left:auto;font-size:.8rem;color:var(--texto-2)">
+        Con OC y folio, el periodo queda cerrado.</span>
+    </div>
+  </form>`;
+}
+
+function tablaSueltos(sueltos) {
+  let h = `<section class="caja"><div class="caja__tit">
+    <h2>Servicios extra sin asignar</h2>
+    <span class="nota">${sueltos.length} · ${clp(sueltos.reduce((t, e) => t + e.monto_neto, 0))} neto</span></div>`;
+  if (!sueltos.length) {
+    h += `<p class="vacio">Todos los servicios extra están asignados a un periodo.</p>`;
+  } else {
+    h += `<div class="desliza"><table><thead><tr><th>Fecha</th><th>Instalación</th><th>Ítem</th>
+      <th class="num">Cant.</th><th class="num">Neto</th><th>Asignar al periodo</th></tr></thead><tbody>`;
+    const abiertos = estado.panel.ciclos.filter(c => c.estado !== "cerrado");
+    for (const e of sueltos) {
+      h += `<tr><td class="num">${fecha(e.fecha)}</td><td>${esc(e.instalacion)}</td>
+        <td>${esc(e.item)}${e.detalle ? `<br><span style="color:var(--texto-2);font-size:.8rem">${esc(e.detalle)}</span>` : ""}</td>
+        <td class="num">${e.cantidad}</td><td class="num"><b>${clp(e.monto_neto)}</b></td>
+        <td><select data-asignar="${e.id}">
+          <option value="">— elegir —</option>
+          ${abiertos.map(c => `<option value="${c.id}">${esc(c.instalacion)} · N°${c.numero} (${fecha(c.desde)})</option>`).join("")}
+        </select></td></tr>`;
+    }
+    h += "</tbody></table></div>";
+  }
+  return h + "</section>";
+}
+
+function conectarPanel() {
+  document.querySelectorAll("[data-editar]").forEach(b => {
+    b.onclick = () => {
+      const fila = $(`[data-form="${b.dataset.editar}"]`);
+      fila.hidden = !fila.hidden;
+      if (!fila.hidden) fila.querySelector("input")?.focus();
+    };
+  });
+  document.querySelectorAll("[data-cerrar]").forEach(b => {
+    b.onclick = () => { $(`[data-form="${b.dataset.cerrar}"]`).hidden = true; };
+  });
+  document.querySelectorAll("form[data-ciclo]").forEach(f => {
+    f.onsubmit = async ev => {
+      ev.preventDefault();
+      const msj = f.querySelector(".mensaje");
+      const datos = Object.fromEntries(new FormData(f));
+      msj.className = "mensaje"; msj.textContent = "Guardando…";
+      try {
+        const r = await pedir(`/ciclos/${f.dataset.ciclo}`, { method: "PATCH", body: JSON.stringify(datos) });
+        msj.className = "ok"; msj.textContent = "Guardado · " + ROTULO[r.estado];
+        await recargar({ repintar: false });
+        setTimeout(() => { if (estado.vista === "panel") pintarPanel(); }, 650);
+      } catch (e) { msj.className = "error"; msj.textContent = e.message; }
+    };
+  });
+  document.querySelectorAll("[data-asignar]").forEach(s => {
+    s.onchange = async () => {
+      if (!s.value) return;
+      try {
+        await pedir(`/extras/${s.dataset.asignar}`, { method: "PATCH", body: JSON.stringify({ ciclo_id: Number(s.value) }) });
+        await recargar();
+      } catch (e) { alert(e.message); }
+    };
+  });
+}
+
+function pintarNuevoServicio() {
+  const inst = estado.catalogos.instalaciones;
+  $("#app").innerHTML = `
+    ${aviso("ojo", "Acá empieza el control de los 30 días",
+      "Al elegir el día de inicio, el sistema crea el primer periodo y, al cumplirse los días del ciclo, lo marca para solicitar la OC.")}
+    <section class="caja" style="max-width:820px">
+      <div class="caja__tit"><h2>Nuevo servicio</h2></div>
+      <form id="f-servicio">
+        <div class="rejilla">
+          <label class="campo" style="grid-column:1/-1"><span>Instalación</span>
+            <select name="instalacion_id" required>
+              <option value="">— elegir —</option>
+              ${inst.map(i => `<option value="${i.id}">${esc(i.nombre)}${i.comuna ? " · " + esc(i.comuna) : ""}</option>`).join("")}
+            </select></label>
+          <label class="campo" style="grid-column:1/-1"><span>Nombre del servicio</span>
+            <input name="nombre" required placeholder="Ej: Vigilancia 24/7 con pareja de patrullaje"></label>
+          <label class="campo"><span>Día de inicio</span>
+            <input name="fecha_inicio" type="date" required value="${new Date().toISOString().slice(0, 10)}"></label>
+          <label class="campo"><span>Días del ciclo</span>
+            <input name="dias_ciclo" type="number" min="1" max="365" value="30" required></label>
+          <label class="campo"><span>Monto base neto del periodo</span>
+            <input name="monto_neto" type="number" min="0" step="1" placeholder="Opcional"></label>
+        </div>
+        <div class="pie-form">
+          <button class="bt" type="submit">Crear servicio</button>
+          <span class="mensaje"></span>
+        </div>
+      </form>
+    </section>`;
+  $("#f-servicio").onsubmit = async ev => {
+    ev.preventDefault();
+    const f = ev.target, msj = f.querySelector(".mensaje");
+    msj.className = "mensaje"; msj.textContent = "Guardando…";
+    try {
+      await pedir("/servicios", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(f))) });
+      msj.className = "ok"; msj.textContent = "Servicio creado";
+      f.reset();
+      await recargar({ repintar: false }); ir("panel");
+    } catch (e) { msj.className = "error"; msj.textContent = e.message; }
+  };
+}
+
+function pintarNuevoExtra() {
+  const { tarifas, instalaciones } = estado.catalogos;
+  const grupos = [...new Set(tarifas.map(t => t.grupo))];
+  const abiertos = estado.panel.ciclos.filter(c => c.estado !== "cerrado");
+  $("#app").innerHTML = `
+    ${aviso("ojo", "Registre el extra el mismo día que ocurre",
+      "Si queda sin asignar a un periodo, aparece en rojo en el panel hasta que se asigne. Así no se pierde ninguno.")}
+    <section class="caja" style="max-width:820px">
+      <div class="caja__tit"><h2>Registrar servicio extraordinario</h2></div>
+      <form id="f-extra">
+        <div class="rejilla">
+          <label class="campo"><span>Instalación</span>
+            <select name="instalacion_id" required><option value="">— elegir —</option>
+              ${instalaciones.map(i => `<option value="${i.id}">${esc(i.nombre)}</option>`).join("")}
+            </select></label>
+          <label class="campo"><span>Fecha del servicio</span>
+            <input name="fecha" type="date" required value="${new Date().toISOString().slice(0, 10)}"></label>
+          <label class="campo" style="grid-column:1/-1"><span>Ítem del tarifario</span>
+            <select name="tarifa_id" required id="sel-tarifa"><option value="">— elegir —</option>
+              ${grupos.map(g => `<optgroup label="${esc(g)}">` +
+                tarifas.filter(t => t.grupo === g).map(t =>
+                  `<option value="${t.id}" data-precio="${t.precio}">${esc(t.nombre)} — ${clp(t.precio)} por ${esc(t.unidad)}</option>`).join("") +
+                "</optgroup>").join("")}
+            </select></label>
+          <label class="campo"><span>Cantidad</span>
+            <input name="cantidad" type="number" min="0.5" step="0.5" value="1" required id="in-cant"></label>
+          <label class="campo"><span>Periodo al que se cobra</span>
+            <select name="ciclo_id"><option value="">Asignar después</option>
+              ${abiertos.map(c => `<option value="${c.id}">${esc(c.instalacion)} · N°${c.numero}</option>`).join("")}
+            </select></label>
+          <label class="campo" style="grid-column:1/-1"><span>Detalle</span>
+            <input name="detalle" placeholder="Ej: 3 horas diarias sábado 30 y domingo 31"></label>
+        </div>
+        <div class="pie-form">
+          <button class="bt" type="submit">Registrar</button>
+          <span class="mensaje"></span>
+          <span style="margin-left:auto;font-weight:600" id="calculo">Neto: —</span>
+        </div>
+      </form>
+    </section>`;
+  const recalcular = () => {
+    const op = $("#sel-tarifa").selectedOptions[0];
+    const precio = Number(op?.dataset.precio || 0), cant = Number($("#in-cant").value || 0);
+    const neto = Math.round(precio * cant);
+    $("#calculo").textContent = neto
+      ? `Neto: ${clp(neto)} · IVA: ${clp(neto * 0.19)} · Total: ${clp(neto * 1.19)}`
+      : "Neto: —";
+  };
+  $("#sel-tarifa").onchange = recalcular;
+  $("#in-cant").oninput = recalcular;
+  $("#f-extra").onsubmit = async ev => {
+    ev.preventDefault();
+    const f = ev.target, msj = f.querySelector(".mensaje");
+    msj.className = "mensaje"; msj.textContent = "Guardando…";
+    try {
+      const r = await pedir("/extras", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(f))) });
+      msj.className = "ok"; msj.textContent = `Registrado · ${clp(r.monto_neto)} neto`;
+      f.reset(); recalcular();
+      await recargar({ repintar: false });
+    } catch (e) { msj.className = "error"; msj.textContent = e.message; }
+  };
+}
+
+async function pintarBitacora() {
+  $("#app").innerHTML = `<p class="cargando">Cargando…</p>`;
+  const { bitacora } = await pedir("/bitacora");
+  $("#app").innerHTML = `<section class="caja">
+    <div class="caja__tit"><h2>Bitácora</h2>
+      <span class="nota">Últimos 100 movimientos · quién hizo qué y cuándo</span></div>
+    ${bitacora.length ? `<div class="desliza"><table><thead><tr>
+      <th>Cuándo</th><th>Quién</th><th>Qué</th><th>Acción</th><th>Detalle</th></tr></thead><tbody>
+      ${bitacora.map(b => `<tr><td class="num" style="white-space:nowrap">${esc(b.cuando)}</td>
+        <td>${esc(b.quien)}</td><td>${esc(b.entidad)} ${b.entidad_id ?? ""}</td>
+        <td>${esc(b.accion)}</td>
+        <td style="color:var(--texto-2);font-size:.82rem">${esc(b.detalle || "")}</td></tr>`).join("")}
+      </tbody></table></div>` : `<p class="vacio">Todavía no hay movimientos.</p>`}
+  </section>`;
+}
+
+// ------------------------------------------------------------- marco
+const VISTAS = {
+  panel: { rotulo: "Panel", pintar: pintarPanel },
+  servicio: { rotulo: "Nuevo servicio", pintar: pintarNuevoServicio },
+  extra: { rotulo: "Registrar extra", pintar: pintarNuevoExtra },
+  bitacora: { rotulo: "Bitácora", pintar: pintarBitacora },
+};
+
+function ir(vista) {
+  estado.vista = vista;
+  document.querySelectorAll("#pestanas button").forEach(b =>
+    b.setAttribute("aria-current", String(b.dataset.vista === vista)));
+  VISTAS[vista].pintar();
+}
+
+async function recargar({ repintar = true } = {}) {
+  estado.panel = await pedir("/panel");
+  // Traer los datos no servía de nada si la pantalla seguía mostrando los viejos.
+  if (repintar && estado.vista === "panel") pintarPanel();
+}
+
+async function arrancar() {
+  try {
+    const { usuario } = await pedir("/yo");
+    estado.usuario = usuario;
+    $("#quien").innerHTML = `<b>${esc(usuario.nombre)}</b>${esc(usuario.rol)}`;
+    $("#pestanas").innerHTML = Object.entries(VISTAS)
+      .map(([k, v]) => `<button data-vista="${k}">${v.rotulo}</button>`).join("");
+    document.querySelectorAll("#pestanas button").forEach(b => { b.onclick = () => ir(b.dataset.vista); });
+
+    [estado.panel, estado.catalogos] = await Promise.all([pedir("/panel"), pedir("/catalogos")]);
+    ir("panel");
+  } catch (e) {
+    $("#app").innerHTML = aviso("mal", "No se pudo entrar", e.message);
+  }
+}
+
+arrancar();
+</script>
+</body>
+</html>

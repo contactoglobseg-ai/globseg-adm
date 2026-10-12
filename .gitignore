@@ -1,0 +1,8 @@
+# Dependencias y estado local de wrangler
+node_modules
+.wrangler
+
+# Simula el correo de Cloudflare Access en pruebas locales: no debe subirse
+.dev.vars
+
+.DS_Store

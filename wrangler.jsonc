@@ -1,0 +1,20 @@
+{
+  // Administración Seguridad Garridos.
+  // database_id se completa cuando se cree la base en Cloudflare.
+  "name": "globseg-adm",
+  "main": "src/index.js",
+  "compatibility_date": "2025-09-01",
+  "observability": { "enabled": true },
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "globseg-adm",
+      "database_id": "PENDIENTE-CREAR-EN-CLOUDFLARE"
+    }
+  ]
+}
