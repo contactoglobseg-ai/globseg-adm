@@ -5,6 +5,15 @@
   "name": "globseg-adm",
   "main": "src/index.js",
   "compatibility_date": "2025-09-01",
+
+  // Las variables de texto tienen que vivir acá: cada `wrangler deploy`
+  // reemplaza las del panel por las de este archivo, así que una puesta a mano
+  // en Cloudflare desaparece en el despliegue siguiente. Los secretos no se
+  // tocan, y por eso SUPABASE_SERVICE_KEY y SESION_SECRETO siguen en el panel.
+  // La URL del proyecto no es secreta: va en el código de cualquier app Supabase.
+  "vars": {
+    "SUPABASE_URL": "https://hjoljdjjsobweqbvlijr.supabase.co"
+  },
   "observability": { "enabled": true },
   "assets": {
     "directory": "./public",
