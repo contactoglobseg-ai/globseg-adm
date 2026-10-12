@@ -323,6 +323,23 @@ export default {
     }
 
     try {
+      // Revisa la configuración sin mostrar ningún valor: solo responde
+      // sí o no sobre la forma de las claves. Sirve para no adivinar cuando
+      // la conexión falla.
+      if (url.pathname === '/api/diagnostico') {
+        const k = (env.SUPABASE_SERVICE_KEY || '').trim();
+        return json({
+          url_configurada: !!env.SUPABASE_URL,
+          clave_presente: k.length > 0,
+          clave_es_la_secreta_nueva: k.startsWith('sb_secret_'),
+          clave_es_la_antigua_jwt: k.startsWith('ey') && k.split('.').length === 3,
+          clave_es_la_publica: k.startsWith('sb_publishable_'),
+          clave_tiene_caracteres_raros: /[^\x21-\x7E]/.test(k),
+          clave_parece_recortada: k.length > 0 && k.length < 30,
+          secreto_de_sesion_configurado: !!env.SESION_SECRETO,
+        });
+      }
+
       // Ingreso y salida: son las únicas rutas sin sesión previa.
       if (url.pathname === '/api/sesion') {
         if (request.method === 'POST') {
