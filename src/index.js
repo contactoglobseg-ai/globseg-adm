@@ -357,6 +357,14 @@ export default {
     } catch (e) {
       if (e instanceof ErrorDatos) {
         console.error('Supabase:', e.status, e.message, JSON.stringify(e.detalle));
+        // 42501 es "permission denied" de Postgres. Como al rol público se le
+        // quitó todo acceso a propósito, verlo acá significa casi siempre que
+        // SUPABASE_SERVICE_KEY tiene la clave publishable en vez de la secreta.
+        if (e.detalle?.code === '42501') {
+          return error(
+            'La clave de Supabase configurada no tiene permisos: parece ser la ' +
+            'publishable en vez de la secreta. Revise SUPABASE_SERVICE_KEY.', 500);
+        }
         return error('La base de datos rechazó la operación: ' + e.message, 502);
       }
       console.error(e);
