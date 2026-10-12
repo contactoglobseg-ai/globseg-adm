@@ -30,6 +30,16 @@ async function llamar(env, ruta, { metodo = 'GET', cuerpo, prefer } = {}) {
   // Las nuevas (sb_secret_...) no lo son: mandarlas como Bearer hace que el
   // servidor las rechace con "Invalid API key", porque ahí espera un JWT.
   const clave = env.SUPABASE_SERVICE_KEY.trim();
+
+  // Una clave con caracteres que no son texto imprimible viene, casi siempre,
+  // de copiar lo que el panel muestra enmascarado (sb_secret_44zUI••••) en vez
+  // de usar su botón de copiar. Decirlo ahorra buscarlo en el error del servidor.
+  if (/[^\x21-\x7E]/.test(clave)) {
+    throw new ErrorDatos(
+      'La clave de Supabase tiene caracteres inválidos: parece copiada de la ' +
+      'versión enmascarada que muestra el panel. Use el botón de copiar.', 500);
+  }
+
   const esJWT = clave.split('.').length === 3 && clave.startsWith('ey');
 
   const r = await fetch(raiz(env) + ruta, {
