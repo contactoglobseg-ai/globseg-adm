@@ -12,7 +12,12 @@
 
 import { primero, actualizar } from './datos.js';
 
-const ITERACIONES = 210000;
+// Cloudflare Workers no admite más de 100.000 iteraciones de PBKDF2. Es el
+// techo de la plataforma, no una elección: lo que falta de costo de cálculo se
+// compensa con el bloqueo de la cuenta a los 5 intentos fallidos, que es lo que
+// de verdad frena un ataque por fuerza bruta contra un servicio en línea.
+const ITERACIONES = 100000;
+const MAX_ITERACIONES_PLATAFORMA = 100000;
 const DURACION_SESION = 60 * 60 * 10;      // 10 horas
 const MAX_INTENTOS = 5;
 const BLOQUEO_MINUTOS = 15;
@@ -52,6 +57,13 @@ export async function claveCorrecta(clave, guardada) {
   if (partes.length !== 5 || partes[0] !== 'pbkdf2' || partes[1] !== 'sha256') return false;
   const iteraciones = Number(partes[2]);
   if (!Number.isInteger(iteraciones) || iteraciones < 1000) return false;
+  if (iteraciones > MAX_ITERACIONES_PLATAFORMA) {
+    // Un hash guardado con más iteraciones de las que la plataforma puede
+    // calcular no se puede verificar: hay que regenerarlo.
+    throw new Error(
+      `La contraseña guardada usa ${iteraciones} iteraciones y aquí el máximo ` +
+      `es ${MAX_ITERACIONES_PLATAFORMA}. Hay que regenerar las contraseñas.`);
+  }
   const derivada = await derivar(clave, deB64(partes[3]), iteraciones);
   return igualesEnTiempoConstante(derivada, partes[4]);
 }
