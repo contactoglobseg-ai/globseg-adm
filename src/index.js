@@ -1,9 +1,9 @@
 /**
  * Administración Seguridad Garridos — Worker
  *
- * Identidad: la entrega Cloudflare Access en la cabecera
- * Cf-Access-Authenticated-User-Email. Acá no se guardan ni se validan
- * contraseñas. En desarrollo local se simula con la variable CORREO_DEV.
+ * Identidad: cuenta propia con usuario y contraseña (ver sesion.js). La
+ * contraseña nunca se guarda, solo su derivación PBKDF2, y la sesión viaja en
+ * una cookie firmada, HttpOnly y SameSite=Strict.
  *
  * Datos: Supabase (Postgres). El control de quién ve qué vive acá, no en la
  * base: las tablas están cerradas y solo este Worker las abre.
@@ -11,6 +11,8 @@
 
 import { buscar, primero, insertar, insertarSinDuplicar, actualizar, anotar, ErrorDatos }
   from './datos.js';
+import { ingresar, cambiarClave, crearSesion, leerSesion, cookieSesion, cookieBorrada }
+  from './sesion.js';
 
 const IVA = 0.19;
 
@@ -55,13 +57,18 @@ const entero = (v) => {
 
 // ---------------------------------------------------------------- identidad
 async function identificar(request, env) {
-  const correo = request.headers.get('Cf-Access-Authenticated-User-Email') || env.CORREO_DEV;
-  if (!correo) return null;
+  const nombre = await leerSesion(request, env);
+  if (!nombre) return null;
   const u = await primero(env,
-    `usuarios?select=email,nombre,rol&activo=is.true&email=eq.${encodeURIComponent(correo.toLowerCase())}`);
-  if (!u) return { email: correo, desconocido: true };
+    `usuarios?select=*&activo=is.true&usuario=eq.${encodeURIComponent(nombre)}`);
+  if (!u) return null;   // cuenta borrada o desactivada con la sesión abierta
   return { ...u, permisos: PERMISOS[u.rol] || [] };
 }
+
+const sinClave = (u) => ({
+  usuario: u.usuario, nombre: u.nombre, rol: u.rol,
+  debe_cambiar_clave: u.debe_cambiar_clave, permisos: u.permisos,
+});
 
 const puede = (usuario, modulo) => !!usuario?.permisos?.includes(modulo);
 
@@ -160,7 +167,19 @@ async function api(request, env, url, usuario) {
     ? await request.json().catch(() => ({}))
     : {};
 
-  if (ruta === '/yo') return json({ usuario });
+  if (ruta === '/yo') return json({ usuario: sinClave(usuario) });
+
+  if (ruta === '/clave' && metodo === 'POST') {
+    const r = await cambiarClave(env, usuario, cuerpo.actual, cuerpo.nueva);
+    if (r.error) return error(r.error, r.status);
+    await anotar(env, usuario.usuario, 'usuario', null, 'cambió su contraseña', null);
+    return json({ ok: true });
+  }
+
+  // Con la contraseña inicial sin cambiar, lo único permitido es cambiarla.
+  if (usuario.debe_cambiar_clave) {
+    return error('Tiene que cambiar su contraseña antes de usar el sistema', 403);
+  }
 
   if (!puede(usuario, 'facturacion')) return error('Sin acceso a este módulo', 403);
 
@@ -304,11 +323,36 @@ export default {
     }
 
     try {
-      const usuario = await identificar(request, env);
-      if (!usuario) return error('Sin sesión. Entre por la dirección de administración.', 401);
-      if (usuario.desconocido) {
-        return error(`El correo ${usuario.email} no está habilitado en el sistema.`, 403);
+      // Ingreso y salida: son las únicas rutas sin sesión previa.
+      if (url.pathname === '/api/sesion') {
+        if (request.method === 'POST') {
+          const datos = await request.json().catch(() => ({}));
+          const r = await ingresar(env, datos.usuario, datos.clave);
+          if (r.error) return error(r.error, r.status);
+          const cookie = await crearSesion(r.usuario, env);
+          const seguro = url.protocol === 'https:';
+          await anotar(env, r.usuario.usuario, 'usuario', null, 'ingresó', null);
+          return new Response(JSON.stringify({
+            ok: true,
+            usuario: { usuario: r.usuario.usuario, nombre: r.usuario.nombre,
+                       rol: r.usuario.rol, debe_cambiar_clave: r.usuario.debe_cambiar_clave },
+          }), {
+            headers: { 'content-type': 'application/json; charset=utf-8',
+                       'set-cookie': cookieSesion(cookie, 60 * 60 * 10, seguro),
+                       'cache-control': 'no-store' },
+          });
+        }
+        if (request.method === 'DELETE') {
+          return new Response(JSON.stringify({ ok: true }), {
+            headers: { 'content-type': 'application/json; charset=utf-8',
+                       'set-cookie': cookieBorrada(url.protocol === 'https:'),
+                       'cache-control': 'no-store' },
+          });
+        }
       }
+
+      const usuario = await identificar(request, env);
+      if (!usuario) return error('Sin sesión', 401);
       return await api(request, env, url, usuario);
     } catch (e) {
       if (e instanceof ErrorDatos) {

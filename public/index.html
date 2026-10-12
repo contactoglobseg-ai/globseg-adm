@@ -105,6 +105,21 @@ tr.fila--cerrado{background:#FBFEFC}
 tr.fila--cerrado td:first-child{box-shadow:inset 3px 0 0 var(--verde)}
 tr.fila--solicitar_oc td:first-child{box-shadow:inset 3px 0 0 var(--ambar)}
 
+/* ---------- entrada ---------- */
+.puerta{min-height:100%;display:grid;place-items:center;padding:24px 16px;background:var(--tinta)}
+.puerta__caja{width:100%;max-width:400px;background:#fff;border-radius:5px;
+  box-shadow:0 24px 60px -24px rgba(4,0,22,.7);overflow:hidden}
+.puerta__tit{background:var(--tinta-prof);color:var(--sobre-tinta);padding:22px 24px;
+  display:flex;align-items:center;gap:12px}
+.puerta__tit img{width:40px;height:40px}
+.puerta__tit b{display:block;font-family:var(--display);font-size:1.2rem;text-transform:uppercase}
+.puerta__tit span{display:block;font-size:.66rem;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--sobre-tinta-2);margin-top:3px}
+.puerta form{padding:24px;display:flex;flex-direction:column;gap:14px}
+.puerta .campo>span{color:var(--texto-2)}
+.puerta .bt{justify-content:center;padding:12px}
+.puerta__aviso{margin:0 24px 22px;padding:12px 14px;border-radius:4px;font-size:.84rem;line-height:1.5}
+
 /* ---------- controles ---------- */
 .bt{display:inline-flex;align-items:center;gap:7px;font:600 .84rem var(--cuerpo);
   padding:9px 14px;border-radius:3px;border:1px solid transparent;cursor:pointer;
@@ -493,11 +508,92 @@ async function recargar({ repintar = true } = {}) {
   if (repintar && estado.vista === "panel") pintarPanel();
 }
 
+function pintarIngreso(mensaje) {
+  document.body.innerHTML = `<div class="puerta"><div class="puerta__caja">
+    <div class="puerta__tit"><img src="logo.png" alt="">
+      <span><b>Administración</b><span>Seguridad Garridos</span></span></div>
+    <form id="f-entrar">
+      <label class="campo"><span>Usuario</span>
+        <input name="usuario" autocomplete="username" autocapitalize="none"
+               spellcheck="false" required autofocus></label>
+      <label class="campo"><span>Contraseña</span>
+        <input name="clave" type="password" autocomplete="current-password" required></label>
+      <button class="bt" type="submit">Entrar</button>
+      <span class="mensaje"></span>
+    </form>
+  </div></div>`;
+  const f = document.getElementById("f-entrar");
+  if (mensaje) { const m = f.querySelector(".mensaje"); m.className = "error"; m.textContent = mensaje; }
+  f.onsubmit = async ev => {
+    ev.preventDefault();
+    const m = f.querySelector(".mensaje"), bt = f.querySelector("button");
+    m.className = "mensaje"; m.textContent = "Entrando…"; bt.disabled = true;
+    try {
+      await pedir("/sesion", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(f))) });
+      location.reload();
+    } catch (e) {
+      m.className = "error"; m.textContent = e.message;
+      bt.disabled = false;
+      f.clave.value = ""; f.clave.focus();
+    }
+  };
+}
+
+function pintarCambioClave(usuario) {
+  document.body.innerHTML = `<div class="puerta"><div class="puerta__caja">
+    <div class="puerta__tit"><img src="logo.png" alt="">
+      <span><b>Cambie su contraseña</b><span>${esc(usuario.nombre)}</span></span></div>
+    <form id="f-clave">
+      <label class="campo"><span>Contraseña actual</span>
+        <input name="actual" type="password" autocomplete="current-password" required autofocus></label>
+      <label class="campo"><span>Contraseña nueva</span>
+        <input name="nueva" type="password" autocomplete="new-password" required></label>
+      <label class="campo"><span>Repita la nueva</span>
+        <input name="repetir" type="password" autocomplete="new-password" required></label>
+      <button class="bt" type="submit">Guardar y entrar</button>
+      <span class="mensaje"></span>
+    </form>
+    <div class="puerta__aviso" style="background:var(--ambar-suave);color:#7A4A00">
+      Al menos 8 caracteres, mezclando letras y números. Es suya: nadie más,
+      yo incluido, puede verla después de guardada.
+    </div>
+  </div></div>`;
+  const f = document.getElementById("f-clave");
+  f.onsubmit = async ev => {
+    ev.preventDefault();
+    const m = f.querySelector(".mensaje"), bt = f.querySelector("button");
+    if (f.nueva.value !== f.repetir.value) {
+      m.className = "error"; m.textContent = "Las dos contraseñas nuevas no coinciden";
+      f.repetir.focus(); return;
+    }
+    m.className = "mensaje"; m.textContent = "Guardando…"; bt.disabled = true;
+    try {
+      await pedir("/clave", { method: "POST",
+        body: JSON.stringify({ actual: f.actual.value, nueva: f.nueva.value }) });
+      location.reload();
+    } catch (e) { m.className = "error"; m.textContent = e.message; bt.disabled = false; }
+  };
+}
+
 async function arrancar() {
+  let usuario;
   try {
-    const { usuario } = await pedir("/yo");
+    ({ usuario } = await pedir("/yo"));
+  } catch (e) {
+    return pintarIngreso(e.message.includes("Sin sesión") ? "" : e.message);
+  }
+  if (usuario.debe_cambiar_clave) return pintarCambioClave(usuario);
+
+  try {
     estado.usuario = usuario;
-    $("#quien").innerHTML = `<b>${esc(usuario.nombre)}</b>${esc(usuario.rol)}`;
+    $("#quien").innerHTML =
+      `<b>${esc(usuario.nombre)}</b>${esc(usuario.usuario)} · ${esc(usuario.rol)} · ` +
+      `<a href="#" id="salir" style="color:var(--sobre-tinta-2);text-decoration:underline">salir</a>`;
+    $("#salir").onclick = async ev => {
+      ev.preventDefault();
+      await pedir("/sesion", { method: "DELETE" }).catch(() => {});
+      location.reload();
+    };
     $("#pestanas").innerHTML = Object.entries(VISTAS)
       .map(([k, v]) => `<button data-vista="${k}">${v.rotulo}</button>`).join("");
     document.querySelectorAll("#pestanas button").forEach(b => { b.onclick = () => ir(b.dataset.vista); });
