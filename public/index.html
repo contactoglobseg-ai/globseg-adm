@@ -902,7 +902,13 @@ function ir(vista) {
   estado.vista = vista;
   document.querySelectorAll("#pestanas button").forEach(b =>
     b.setAttribute("aria-current", String(b.dataset.vista === vista)));
-  VISTAS[vista].pintar();
+  // Varias vistas son asíncronas: si fallan y nadie atrapa el error, la
+  // pantalla se queda en blanco sin decir por qué. Mejor mostrar el motivo.
+  Promise.resolve()
+    .then(() => VISTAS[vista].pintar())
+    .catch(e => {
+      $("#app").innerHTML = aviso("mal", "No se pudo cargar esta sección", e.message);
+    });
 }
 
 async function recargar({ repintar = true } = {}) {
