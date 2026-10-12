@@ -119,7 +119,7 @@ create index if not exists idx_bitacora_cuando on bitacora(cuando desc);
 -- ---------------------------------------------------------------- vista
 
 -- El panel en una sola consulta, con los extras ya sumados a cada periodo.
-create or replace view v_ciclos as
+create or replace view v_ciclos with (security_invoker = true) as
 select
   c.*,
   s.nombre                        as servicio,
@@ -141,13 +141,13 @@ left join lateral (
 ) e on true;
 
 -- Los extras con el nombre de la instalación ya resuelto.
-create or replace view v_extras as
+create or replace view v_extras with (security_invoker = true) as
 select e.*, i.nombre as instalacion
 from extras e
 join instalaciones i on i.id = e.instalacion_id;
 
 -- Las instalaciones con su cliente.
-create or replace view v_instalaciones as
+create or replace view v_instalaciones with (security_invoker = true) as
 select i.id, i.nombre, i.comuna, i.region, i.activa, cl.nombre as cliente
 from instalaciones i
 join clientes cl on cl.id = i.cliente_id;
