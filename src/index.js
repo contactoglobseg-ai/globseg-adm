@@ -3,14 +3,17 @@
  *
  * Identidad: la entrega Cloudflare Access en la cabecera
  * Cf-Access-Authenticated-User-Email. Acá no se guardan ni se validan
- * contraseñas: si alguien llega sin esa cabecera en producción, no entra.
- * En desarrollo local se simula con la variable CORREO_DEV.
+ * contraseñas. En desarrollo local se simula con la variable CORREO_DEV.
+ *
+ * Datos: Supabase (Postgres). El control de quién ve qué vive acá, no en la
+ * base: las tablas están cerradas y solo este Worker las abre.
  */
+
+import { buscar, primero, insertar, insertarSinDuplicar, actualizar, anotar, ErrorDatos }
+  from './datos.js';
 
 const IVA = 0.19;
 
-// Qué puede ver cada rol. El módulo de facturación lo ven gerencia y
-// operaciones; el resto llega cuando existan sus módulos.
 const PERMISOS = {
   gerencia:    ['facturacion', 'cotizaciones', 'personal', 'documentos', 'rrhh'],
   operaciones: ['facturacion', 'personal', 'documentos'],
@@ -19,14 +22,13 @@ const PERMISOS = {
 };
 
 // ---------------------------------------------------------------- fechas
-// Se trabaja con YYYY-MM-DD en aritmética simple, sin zonas horarias:
-// un periodo de facturación es un día de calendario, no un instante.
+// YYYY-MM-DD con aritmética simple, sin zonas horarias: un periodo de
+// facturación es un día de calendario, no un instante.
 const hoyISO = () => new Date().toISOString().slice(0, 10);
 
 function sumarDias(iso, dias) {
   const [a, m, d] = iso.split('-').map(Number);
-  const t = Date.UTC(a, m - 1, d) + dias * 86400000;
-  return new Date(t).toISOString().slice(0, 10);
+  return new Date(Date.UTC(a, m - 1, d) + dias * 86400000).toISOString().slice(0, 10);
 }
 
 function diasEntre(desde, hasta) {
@@ -46,12 +48,6 @@ const json = (datos, status = 200) =>
 
 const error = (mensaje, status = 400) => json({ error: mensaje }, status);
 
-async function anotar(env, quien, entidad, entidad_id, accion, detalle) {
-  await env.DB.prepare(
-    'INSERT INTO bitacora (quien, entidad, entidad_id, accion, detalle) VALUES (?,?,?,?,?)'
-  ).bind(quien, entidad, entidad_id ?? null, accion, detalle ?? null).run();
-}
-
 const entero = (v) => {
   const n = Math.round(Number(v));
   return Number.isFinite(n) ? n : null;
@@ -61,9 +57,8 @@ const entero = (v) => {
 async function identificar(request, env) {
   const correo = request.headers.get('Cf-Access-Authenticated-User-Email') || env.CORREO_DEV;
   if (!correo) return null;
-  const u = await env.DB.prepare(
-    'SELECT email, nombre, rol FROM usuarios WHERE email = ? AND activo = 1'
-  ).bind(correo.toLowerCase()).first();
+  const u = await primero(env,
+    `usuarios?select=email,nombre,rol&activo=is.true&email=eq.${encodeURIComponent(correo.toLowerCase())}`);
   if (!u) return { email: correo, desconocido: true };
   return { ...u, permisos: PERMISOS[u.rol] || [] };
 }
@@ -74,101 +69,85 @@ const puede = (usuario, modulo) => !!usuario?.permisos?.includes(modulo);
 /**
  * Mantiene al día los periodos de facturación:
  *  - crea el primero de cada servicio activo;
- *  - cuando un periodo termina, lo pasa a "solicitar_oc" y abre el siguiente.
- * Se ejecuta al entrar, así que no depende de ninguna tarea programada.
+ *  - cuando un periodo termina, lo pasa a "solicitar_oc" y abre el siguiente;
+ *  - un servicio cargado con fecha retroactiva recupera todos sus periodos
+ *    en esta misma pasada.
+ * Corre al entrar al panel, así que no depende de ninguna tarea programada.
  */
 async function ponerCiclosAlDia(env) {
   const hoy = hoyISO();
-  const { results: servicios } = await env.DB.prepare(
-    'SELECT id, fecha_inicio, dias_ciclo, monto_neto FROM servicios WHERE activo = 1'
-  ).all();
+  const servicios = await buscar(env,
+    'servicios?select=id,fecha_inicio,dias_ciclo,monto_neto&activo=is.true');
 
-  const ordenes = [];
+  const nuevos = [];
+  const cierres = [];
+
   for (const s of servicios) {
-    const ultimo = await env.DB.prepare(
-      'SELECT numero, hasta, estado FROM ciclos WHERE servicio_id = ? ORDER BY numero DESC LIMIT 1'
-    ).bind(s.id).first();
+    const ultimo = await primero(env,
+      `ciclos?select=numero,hasta,estado&servicio_id=eq.${s.id}&order=numero.desc`);
 
-    // Un periodo ya terminado que seguía "en_curso" pasa a pedir OC.
     if (ultimo && ultimo.estado === 'en_curso' && diasEntre(ultimo.hasta, hoy) >= 0) {
-      ordenes.push(
-        env.DB.prepare(
-          "UPDATE ciclos SET estado = 'solicitar_oc', actualizado_en = datetime('now') WHERE servicio_id = ? AND numero = ?"
-        ).bind(s.id, ultimo.numero)
-      );
+      cierres.push({ servicio_id: s.id, numero: ultimo.numero });
     }
 
     let numero = ultimo ? ultimo.numero : 0;
     let desde  = ultimo ? sumarDias(ultimo.hasta, 1) : s.fecha_inicio;
 
-    // Un servicio dado de alta con fecha retroactiva puede deber varios
-    // periodos: se generan todos en esta misma pasada.
     const tope = numero + 500;   // freno ante una fecha de inicio absurda
     while (diasEntre(desde, hoy) >= 0 && numero < tope) {
       numero += 1;
       const hasta = sumarDias(desde, s.dias_ciclo - 1);
-      ordenes.push(
-        env.DB.prepare(
-          `INSERT OR IGNORE INTO ciclos (servicio_id, numero, desde, hasta, estado, monto_neto)
-           VALUES (?,?,?,?,?,?)`
-        ).bind(s.id, numero, desde, hasta,
-               diasEntre(hasta, hoy) >= 0 ? 'solicitar_oc' : 'en_curso',
-               s.monto_neto ?? null)
-      );
+      nuevos.push({
+        servicio_id: s.id, numero, desde, hasta,
+        estado: diasEntre(hasta, hoy) >= 0 ? 'solicitar_oc' : 'en_curso',
+        monto_neto: s.monto_neto ?? null,
+      });
       desde = sumarDias(hasta, 1);
     }
   }
-  if (ordenes.length) await env.DB.batch(ordenes);
-  return ordenes.length;
+
+  for (const c of cierres) {
+    await actualizar(env, `ciclos?servicio_id=eq.${c.servicio_id}&numero=eq.${c.numero}`,
+      { estado: 'solicitar_oc', actualizado_en: new Date().toISOString() });
+  }
+  if (nuevos.length) {
+    await insertarSinDuplicar(env, 'ciclos', nuevos, 'servicio_id,numero');
+  }
+  return nuevos.length + cierres.length;
 }
 
-// ---------------------------------------------------------------- consultas
-async function panel(env) {
-  const hoy = hoyISO();
+// ---------------------------------------------------------------- panel
+const ORDEN = { solicitar_oc: 1, pendiente_facturacion: 2, en_curso: 3, cerrado: 4 };
 
-  const { results: ciclos } = await env.DB.prepare(`
-    SELECT c.*, s.nombre AS servicio, i.nombre AS instalacion, i.comuna,
-           cl.nombre AS cliente,
-           (SELECT COALESCE(SUM(e.monto_neto),0) FROM extras e WHERE e.ciclo_id = c.id) AS extras_neto,
-           (SELECT COUNT(*) FROM extras e WHERE e.ciclo_id = c.id) AS extras_n
-      FROM ciclos c
-      JOIN servicios s     ON s.id = c.servicio_id
-      JOIN instalaciones i ON i.id = s.instalacion_id
-      JOIN clientes cl     ON cl.id = i.cliente_id
-     ORDER BY CASE c.estado
-                WHEN 'solicitar_oc' THEN 1
-                WHEN 'pendiente_facturacion' THEN 2
-                WHEN 'en_curso' THEN 3
-                ELSE 4 END,
-              c.hasta ASC`).all();
+async function panel(env) {
+  const [ciclos, sueltos] = await Promise.all([
+    buscar(env, 'v_ciclos?select=*'),
+    buscar(env, 'v_extras?select=*&ciclo_id=is.null&order=fecha.asc'),
+  ]);
 
   for (const c of ciclos) {
-    c.total_neto = (c.monto_neto || 0) + (c.extras_neto || 0);
+    // La vista entrega neto e IVA; el total se arma acá para no repetir la
+    // regla del 19% en dos lugares distintos.
+    c.total_neto = Number(c.total_neto) || 0;
+    c.extras_neto = Number(c.extras_neto) || 0;
     c.iva = Math.round(c.total_neto * IVA);
     c.total = c.total_neto + c.iva;
-    c.dias_desde_cierre = diasEntre(c.hasta, hoy);
   }
+  ciclos.sort((a, b) =>
+    (ORDEN[a.estado] - ORDEN[b.estado]) || a.hasta.localeCompare(b.hasta));
 
-  // Extras que no están asignados a ningún periodo: la fuga que motivó esto.
-  const { results: sueltos } = await env.DB.prepare(`
-    SELECT e.*, i.nombre AS instalacion
-      FROM extras e
-      JOIN instalaciones i ON i.id = e.instalacion_id
-     WHERE e.ciclo_id IS NULL
-     ORDER BY e.fecha ASC`).all();
-
-  const suma = (lista) => lista.reduce((t, c) => t + (c.total_neto || 0), 0);
+  const abiertos = ciclos.filter((c) => c.estado !== 'cerrado');
   return {
-    hoy,
+    hoy: hoyISO(),
     ciclos,
     extras_sueltos: sueltos,
     resumen: {
       solicitar_oc:          ciclos.filter((c) => c.estado === 'solicitar_oc').length,
       pendiente_facturacion: ciclos.filter((c) => c.estado === 'pendiente_facturacion').length,
       en_curso:              ciclos.filter((c) => c.estado === 'en_curso').length,
-      neto_por_cobrar:       suma(ciclos.filter((c) => c.estado !== 'cerrado')),
+      neto_por_cobrar:       abiertos.reduce((t, c) => t + c.total_neto, 0),
       extras_sin_asignar:    sueltos.length,
-      neto_extras_sueltos:   sueltos.reduce((t, e) => t + (e.monto_neto || 0), 0),
+      neto_extras_sueltos:   sueltos.reduce((t, e) => t + (Number(e.monto_neto) || 0), 0),
     },
   };
 }
@@ -192,12 +171,10 @@ async function api(request, env, url, usuario) {
 
   if (ruta === '/catalogos' && metodo === 'GET') {
     const [tarifas, instalaciones] = await Promise.all([
-      env.DB.prepare('SELECT * FROM tarifas WHERE activo = 1 ORDER BY grupo, precio').all(),
-      env.DB.prepare(`SELECT i.id, i.nombre, i.comuna, cl.nombre AS cliente
-                        FROM instalaciones i JOIN clientes cl ON cl.id = i.cliente_id
-                       WHERE i.activa = 1 ORDER BY i.nombre`).all(),
+      buscar(env, 'tarifas?select=*&activo=is.true&order=grupo.asc,precio.asc'),
+      buscar(env, 'v_instalaciones?select=id,nombre,comuna,cliente&activa=is.true&order=nombre.asc'),
     ]);
-    return json({ tarifas: tarifas.results, instalaciones: instalaciones.results });
+    return json({ tarifas, instalaciones });
   }
 
   // Alta de un servicio continuo: acá se elige el día de inicio.
@@ -206,6 +183,7 @@ async function api(request, env, url, usuario) {
     if (!entero(instalacion_id)) return error('Falta la instalación');
     if (!nombre?.trim()) return error('Falta el nombre del servicio');
     if (!esFecha(fecha_inicio)) return error('La fecha de inicio no es válida');
+
     // Ausente significa "el de siempre"; un valor presente se valida tal cual,
     // nunca se corrige en silencio.
     const vacio = dias_ciclo === undefined || dias_ciclo === null || dias_ciclo === '';
@@ -214,23 +192,26 @@ async function api(request, env, url, usuario) {
       return error('El ciclo debe ser un número de días entre 1 y 365');
     }
 
-    const r = await env.DB.prepare(
-      `INSERT INTO servicios (instalacion_id, nombre, fecha_inicio, dias_ciclo, monto_neto, creado_por)
-       VALUES (?,?,?,?,?,?)`
-    ).bind(entero(instalacion_id), nombre.trim(), fecha_inicio, dias,
-           entero(monto_neto), usuario.email).run();
+    const inst = await primero(env, `instalaciones?select=id&id=eq.${entero(instalacion_id)}`);
+    if (!inst) return error('Esa instalación no existe');
 
-    await anotar(env, usuario.email, 'servicio', r.meta.last_row_id, 'creado',
-                 `${nombre.trim()} desde ${fecha_inicio}, ciclo de ${dias} días`);
+    const [creado] = await insertar(env, 'servicios', {
+      instalacion_id: entero(instalacion_id), nombre: nombre.trim(),
+      fecha_inicio, dias_ciclo: dias, monto_neto: entero(monto_neto),
+      creado_por: usuario.email,
+    });
+
+    await anotar(env, usuario.email, 'servicio', creado.id, 'creado',
+                 `${creado.nombre} desde ${fecha_inicio}, ciclo de ${dias} días`);
     await ponerCiclosAlDia(env);
-    return json({ ok: true, id: r.meta.last_row_id }, 201);
+    return json({ ok: true, id: creado.id }, 201);
   }
 
   // Registrar la OC y el folio. Acá vive la máquina de estados.
   const mCiclo = ruta.match(/^\/ciclos\/(\d+)$/);
   if (mCiclo && metodo === 'PATCH') {
     const id = Number(mCiclo[1]);
-    const actual = await env.DB.prepare('SELECT * FROM ciclos WHERE id = ?').bind(id).first();
+    const actual = await primero(env, `ciclos?select=*&id=eq.${id}`);
     if (!actual) return error('Ese periodo no existe', 404);
 
     const campos = {};
@@ -240,24 +221,22 @@ async function api(request, env, url, usuario) {
     if ('monto_neto' in cuerpo) campos.monto_neto = entero(cuerpo.monto_neto);
 
     for (const k of ['oc_fecha', 'factura_fecha']) {
-      if (campos[k] && !esFecha(campos[k])) return error(`La fecha de ${k.split('_')[0]} no es válida`);
+      if (campos[k] && !esFecha(campos[k])) {
+        return error(`La fecha de ${k.startsWith('oc') ? 'la OC' : 'la factura'} no es válida`);
+      }
     }
 
     const fin = { ...actual, ...campos };
-    // Cerrado solo cuando están los tres datos que pediste.
+    // Cerrado solo cuando están los tres datos: N° de OC, fecha de OC y folio.
     let estado;
     if (fin.factura_folio && fin.oc_numero && fin.oc_fecha) estado = 'cerrado';
     else if (fin.oc_numero && fin.oc_fecha)                 estado = 'pendiente_facturacion';
     else if (diasEntre(fin.hasta, hoyISO()) >= 0)           estado = 'solicitar_oc';
     else                                                    estado = 'en_curso';
     campos.estado = estado;
+    campos.actualizado_en = new Date().toISOString();
 
-    const llaves = Object.keys(campos);
-    await env.DB.prepare(
-      `UPDATE ciclos SET ${llaves.map((k) => `${k} = ?`).join(', ')}, actualizado_en = datetime('now')
-        WHERE id = ?`
-    ).bind(...llaves.map((k) => campos[k]), id).run();
-
+    await actualizar(env, `ciclos?id=eq.${id}`, campos);
     await anotar(env, usuario.email, 'ciclo', id, `estado: ${actual.estado} → ${estado}`,
                  JSON.stringify(campos));
     return json({ ok: true, estado });
@@ -271,41 +250,45 @@ async function api(request, env, url, usuario) {
     const cant = Number(cantidad);
     if (!Number.isFinite(cant) || cant <= 0) return error('La cantidad debe ser mayor que cero');
 
-    const t = await env.DB.prepare('SELECT * FROM tarifas WHERE id = ?').bind(entero(tarifa_id)).first();
+    const inst = await primero(env, `instalaciones?select=id&id=eq.${entero(instalacion_id)}`);
+    if (!inst) return error('Esa instalación no existe');
+
+    const t = await primero(env, `tarifas?select=*&id=eq.${entero(tarifa_id)}`);
     if (!t) return error('Ese ítem del tarifario no existe');
 
-    const neto = Math.round(t.precio * cant);
-    const r = await env.DB.prepare(
-      `INSERT INTO extras (instalacion_id, ciclo_id, fecha, tarifa_id, item, cantidad,
-                           precio_unitario, monto_neto, detalle, creado_por)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`
-    ).bind(entero(instalacion_id), entero(ciclo_id), fecha, t.id, t.nombre, cant,
-           t.precio, neto, detalle?.trim() || null, usuario.email).run();
+    const neto = Math.round(Number(t.precio) * cant);
+    const [creado] = await insertar(env, 'extras', {
+      instalacion_id: entero(instalacion_id),
+      ciclo_id: ciclo_id ? entero(ciclo_id) : null,
+      fecha, tarifa_id: t.id, item: t.nombre, cantidad: cant,
+      precio_unitario: t.precio, monto_neto: neto,
+      detalle: detalle?.trim() || null, creado_por: usuario.email,
+    });
 
-    await anotar(env, usuario.email, 'extra', r.meta.last_row_id, 'registrado',
+    await anotar(env, usuario.email, 'extra', creado.id, 'registrado',
                  `${t.nombre} x${cant} = ${neto} el ${fecha}`);
-    return json({ ok: true, id: r.meta.last_row_id, monto_neto: neto }, 201);
+    return json({ ok: true, id: creado.id, monto_neto: neto }, 201);
   }
 
   // Asignar un extra suelto a un periodo, para que se cobre.
   const mExtra = ruta.match(/^\/extras\/(\d+)$/);
   if (mExtra && metodo === 'PATCH') {
     const id = Number(mExtra[1]);
-    const ciclo_id = cuerpo.ciclo_id === null ? null : entero(cuerpo.ciclo_id);
+    const ciclo_id = cuerpo.ciclo_id === null || cuerpo.ciclo_id === ''
+      ? null : entero(cuerpo.ciclo_id);
     if (ciclo_id !== null) {
-      const c = await env.DB.prepare('SELECT id FROM ciclos WHERE id = ?').bind(ciclo_id).first();
+      const c = await primero(env, `ciclos?select=id&id=eq.${ciclo_id}`);
       if (!c) return error('Ese periodo no existe', 404);
     }
-    await env.DB.prepare('UPDATE extras SET ciclo_id = ? WHERE id = ?').bind(ciclo_id, id).run();
+    const filas = await actualizar(env, `extras?id=eq.${id}`, { ciclo_id });
+    if (!filas.length) return error('Ese servicio extra no existe', 404);
     await anotar(env, usuario.email, 'extra', id, 'asignado a periodo', String(ciclo_id));
     return json({ ok: true });
   }
 
   if (ruta === '/bitacora' && metodo === 'GET') {
-    const { results } = await env.DB.prepare(
-      'SELECT * FROM bitacora ORDER BY id DESC LIMIT 100'
-    ).all();
-    return json({ bitacora: results });
+    const bitacora = await buscar(env, 'bitacora?select=*&order=id.desc&limit=100');
+    return json({ bitacora });
   }
 
   return error('Ruta no encontrada', 404);
@@ -320,21 +303,19 @@ export default {
       return env.ASSETS.fetch(request);
     }
 
-    let usuario;
     try {
-      usuario = await identificar(request, env);
-    } catch (e) {
-      return error('La base de datos no respondió: ' + e.message, 500);
-    }
-
-    if (!usuario) return error('Sin sesión. Entre por la dirección de administración.', 401);
-    if (usuario.desconocido) {
-      return error(`El correo ${usuario.email} no está habilitado en el sistema.`, 403);
-    }
-
-    try {
+      const usuario = await identificar(request, env);
+      if (!usuario) return error('Sin sesión. Entre por la dirección de administración.', 401);
+      if (usuario.desconocido) {
+        return error(`El correo ${usuario.email} no está habilitado en el sistema.`, 403);
+      }
       return await api(request, env, url, usuario);
     } catch (e) {
+      if (e instanceof ErrorDatos) {
+        console.error('Supabase:', e.status, e.message, JSON.stringify(e.detalle));
+        return error('La base de datos rechazó la operación: ' + e.message, 502);
+      }
+      console.error(e);
       return error('Error inesperado: ' + e.message, 500);
     }
   },

@@ -1,6 +1,7 @@
 {
   // Administración Seguridad Garridos.
-  // database_id se completa cuando se cree la base en Cloudflare.
+  // Los datos viven en Supabase. SUPABASE_URL y SUPABASE_SERVICE_KEY se
+  // configuran como secretos del Worker en Cloudflare, nunca en este archivo.
   "name": "globseg-adm",
   "main": "src/index.js",
   "compatibility_date": "2025-09-01",
@@ -9,12 +10,5 @@
     "directory": "./public",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application"
-  },
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "globseg-adm",
-      "database_id": "PENDIENTE-CREAR-EN-CLOUDFLARE"
-    }
-  ]
+  }
 }
