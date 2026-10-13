@@ -24,6 +24,7 @@ const TIPOS = {
   contactos:    { permiso: 'facturacion',  singular: 'contacto',       plural: 'contactos' },
   ciclos:       { permiso: 'facturacion',  singular: 'periodo',        plural: 'periodos' },
   servicios:    { permiso: 'facturacion',  singular: 'servicio',       plural: 'servicios' },
+  instalaciones:{ permiso: 'facturacion',  singular: 'instalación',    plural: 'instalaciones' },
   extras:       { permiso: 'facturacion',  singular: 'servicio extra', plural: 'servicios extra' },
 };
 
@@ -57,6 +58,7 @@ export async function aplicar(env, usuario, puede, cuerpo) {
     contactos:    contactos,
     ciclos:       ciclos,
     servicios:    servicios,
+    instalaciones: instalaciones,
     extras:       extras,
   }[cuerpo.tipo];
 
@@ -276,6 +278,59 @@ async function servicios(env, usuario, ids, cuerpo) {
   }
 
   return { error: 'Esa acción no existe para servicios', status: 400 };
+}
+
+// ------------------------------------------------------------ instalaciones
+/**
+ * El catálogo que alimenta los desplegables. Dar de baja una instalación la
+ * saca de las listas sin tocar nada de lo ya registrado; borrarla solo se
+ * puede si de verdad no cuelga nada de ella, porque servicios y extras la
+ * referencian con `on delete restrict` y la base lo rechazaría igual, pero con
+ * un error que nadie entiende.
+ */
+async function instalaciones(env, usuario, ids, cuerpo) {
+  const filas = await buscar(env, `instalaciones?select=id,nombre,activa&id=${lista(ids)}`);
+  const omitidos = faltantes(ids, filas, 'instalación');
+  const presentes = filas.map((i) => i.id);
+
+  if (cuerpo.accion === 'activa') {
+    if (typeof cuerpo.valor !== 'boolean') return { error: 'Falta decir si queda activa', status: 400 };
+    if (presentes.length) {
+      await actualizar(env, `instalaciones?id=${lista(presentes)}`, { activa: cuerpo.valor });
+      await anotar(env, usuario.usuario, 'instalacion', null,
+                   cuerpo.valor ? 'reactivadas en lote' : 'dadas de baja en lote',
+                   filas.map((i) => i.nombre).join(', ').slice(0, 400));
+    }
+    return { hechos: presentes.length, omitidos };
+  }
+
+  if (cuerpo.accion === 'borrar') {
+    const consulta = presentes.length ? presentes : [0];
+    const [servicios, extras] = await Promise.all([
+      buscar(env, `servicios?select=instalacion_id&instalacion_id=${lista(consulta)}`),
+      buscar(env, `extras?select=instalacion_id&instalacion_id=${lista(consulta)}`),
+    ]);
+    const usos = new Map();
+    for (const f of [...servicios, ...extras]) {
+      usos.set(f.instalacion_id, (usos.get(f.instalacion_id) || 0) + 1);
+    }
+
+    const van = [];
+    for (const i of filas) {
+      const n = usos.get(i.id);
+      if (n) {
+        omitidos.push({ id: i.id, razon: `"${i.nombre}" tiene ${n} registro${n > 1 ? 's' : ''} colgando (servicios o extras): dele de baja para sacarla de las listas sin perder nada` });
+      } else van.push(i);
+    }
+    if (van.length) {
+      await borrar(env, `instalaciones?id=${lista(van.map((i) => i.id))}`);
+      await anotar(env, usuario.usuario, 'instalacion', null, 'borradas en lote',
+                   van.map((i) => i.nombre).join(', ').slice(0, 400));
+    }
+    return { hechos: van.length, omitidos };
+  }
+
+  return { error: 'Esa acción no existe para instalaciones', status: 400 };
 }
 
 // ------------------------------------------------------------------- extras

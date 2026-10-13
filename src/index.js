@@ -316,6 +316,72 @@ async function api(request, env, url, usuario) {
     return json(await panel(env));
   }
 
+  // Instalaciones: el catálogo que alimenta los desplegables de toda la app.
+  // Se edita acá para no tener que entrar a la base a corregir un nombre.
+  if (ruta === '/instalaciones' && metodo === 'GET') {
+    const [inst, servicios, extras] = await Promise.all([
+      buscar(env, 'v_instalaciones?select=*&order=nombre.asc'),
+      buscar(env, 'servicios?select=instalacion_id,activo'),
+      buscar(env, 'extras?select=instalacion_id'),
+    ]);
+    const cuenta = (filas, campo) => {
+      const m = new Map();
+      for (const f of filas) m.set(f[campo], (m.get(f[campo]) || 0) + 1);
+      return m;
+    };
+    const cs = cuenta(servicios, 'instalacion_id');
+    const ce = cuenta(extras, 'instalacion_id');
+    return json({
+      instalaciones: inst.map((i) => ({
+        ...i,
+        servicios: cs.get(i.id) || 0,
+        extras: ce.get(i.id) || 0,
+      })),
+    });
+  }
+
+  const mInst = ruta.match(/^\/instalaciones\/(\d+)$/);
+  if (mInst && metodo === 'PATCH') {
+    const id = Number(mInst[1]);
+    const actual = await primero(env, `instalaciones?select=*&id=eq.${id}`);
+    if (!actual) return error('Esa instalación no existe', 404);
+
+    const campos = {};
+    if ('nombre' in cuerpo) {
+      const n = (cuerpo.nombre || '').trim();
+      if (!n) return error('Falta el nombre de la instalación');
+      if (n.length > 160) return error('El nombre de la instalación es demasiado largo');
+      campos.nombre = n;
+    }
+    for (const k of ['comuna', 'region']) {
+      if (k in cuerpo) campos[k] = (cuerpo[k] || '').trim() || null;
+    }
+    if ('activa' in cuerpo) campos.activa = !!cuerpo.activa;
+
+    let cliente_id = actual.cliente_id;
+    if ('cliente' in cuerpo && (cuerpo.cliente || '').trim()) {
+      const cl = await resolverCliente(env, usuario, cuerpo.cliente);
+      cliente_id = cl.id;
+      if (cl.id !== actual.cliente_id) campos.cliente_id = cl.id;
+    }
+
+    // Dos instalaciones del mismo cliente no pueden llamarse igual: la base lo
+    // rechazaría con un error ilegible, así que se avisa antes y con nombre.
+    const nombreFinal = campos.nombre ?? actual.nombre;
+    const choca = await primero(env,
+      `instalaciones?select=id,nombre&cliente_id=eq.${cliente_id}&nombre=eq.${encodeURIComponent(nombreFinal)}&id=neq.${id}`);
+    if (choca) {
+      return error(`Ese cliente ya tiene una instalación llamada "${choca.nombre}". Use otro nombre o únalas a mano.`, 409);
+    }
+
+    if (!Object.keys(campos).length) return error('No hay nada que cambiar');
+
+    await actualizar(env, `instalaciones?id=eq.${id}`, campos);
+    await anotar(env, usuario.usuario, 'instalacion', id, 'editada',
+                 Object.keys(campos).join(', '));
+    return json({ ok: true });
+  }
+
   // Los servicios continuos, con su instalación y en qué va cada uno.
   if (ruta === '/servicios' && metodo === 'GET') {
     const [servicios, ciclos] = await Promise.all([

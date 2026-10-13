@@ -339,6 +339,18 @@ const ACCIONES = {
         confirmar: n => `¿Eliminar ${n} servicio${n > 1 ? "s" : ""}?\n\nSe borran también todos sus periodos. Los que tengan periodos ya facturados no se borran: a esos deles de baja.` },
     ],
   },
+  instalaciones: {
+    rotulo: n => n === 1 ? "instalación marcada" : "instalaciones marcadas",
+    nombre: n => n === 1 ? "instalación" : "instalaciones",
+    nota: "Dar de baja la saca de las listas sin perder nada de lo registrado.",
+    opciones: [
+      { rot: "Dar de baja", accion: "activa", valor: false, boton: "Dar de baja",
+        confirmar: n => `¿Dar de baja ${n} instalación${n > 1 ? "es" : ""}?\n\nDejan de aparecer en los desplegables. Todo lo registrado se conserva.` },
+      { rot: "Reactivar", accion: "activa", valor: true, boton: "Reactivar" },
+      { rot: "Eliminar", accion: "borrar", peligro: true, boton: "Eliminar", soloBorrador: true,
+        confirmar: n => `¿Eliminar ${n} instalación${n > 1 ? "es" : ""}?\n\nSolo se borran las que no tengan ningún servicio ni servicio extra. Las demás quedan marcadas con el motivo.` },
+    ],
+  },
   cotizaciones: {
     rotulo: n => n === 1 ? "cotización marcada" : "cotizaciones marcadas",
     nombre: n => n === 1 ? "cotización" : "cotizaciones",
@@ -956,6 +968,120 @@ async function pintarServicios() {
   });
 }
 
+/**
+ * Las instalaciones son el catálogo que alimenta los desplegables de todo el
+ * sistema. Hasta acá se creaban al escribir el nombre en un servicio, pero un
+ * nombre mal escrito quedaba en la lista para siempre y había que entrar a la
+ * base para sacarlo.
+ *
+ * Dar de baja es lo que hay que usar casi siempre: la saca de las listas y no
+ * toca nada de lo ya registrado. Borrar solo sirve para las que nacieron por
+ * error y no tienen nada colgando.
+ */
+async function pintarInstalaciones() {
+  $("#app").innerHTML = `<p class="cargando">Cargando…</p>`;
+  const { instalaciones } = await pedir("/instalaciones");
+  const activas = instalaciones.filter(i => i.activa).length;
+
+  $("#app").innerHTML = `
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:18px;flex-wrap:wrap">
+      <h2 style="font-size:1.5rem">Instalaciones</h2>
+      <span class="nota" style="color:var(--texto-2);font-size:.85rem">
+        ${activas} en las listas${instalaciones.length - activas
+          ? ` · ${instalaciones.length - activas} de baja` : ""}</span>
+    </div>
+    ${aviso("ojo", "Esta es la lista que sale en los desplegables",
+      "Las instalaciones se crean solas al escribir el nombre en un servicio. Acá se corrigen, se sacan de las listas o se borran las que quedaron por error.")}
+    <datalist id="lista-clientes">
+      ${[...new Set(instalaciones.map(i => i.cliente))].map(c => `<option value="${esc(c)}">`).join("")}
+    </datalist>
+    <section class="caja">
+      <div class="caja__tit"><h2>Instalaciones cargadas</h2>
+        <span class="nota">Marque varias para darlas de baja o eliminarlas</span></div>
+      ${instalaciones.length ? `<div class="desliza"><table style="min-width:900px"><thead><tr>
+        ${cabeceraSel("instalaciones")}
+        <th>Instalación</th><th>Cliente</th><th>Dónde</th>
+        <th class="num">Servicios</th><th class="num">Extras</th><th>Situación</th><th></th>
+      </tr></thead><tbody>
+        ${instalaciones.map(i => `<tr${i.activa ? "" : ' style="opacity:.6"'}>
+          ${celdaSel("instalaciones", i.id)}
+          <td><b>${esc(i.nombre)}</b></td>
+          <td>${esc(i.cliente)}</td>
+          <td>${esc(i.comuna || "—")}${i.region ? `<span class="sub">${esc(i.region)}</span>` : ""}</td>
+          <td class="num">${i.servicios || "—"}</td>
+          <td class="num">${i.extras || "—"}</td>
+          <td><span class="sello ${i.activa ? "e-cerrado" : "e-en_curso"}">${
+            i.activa ? "En las listas" : "De baja"}</span></td>
+          <td class="nowrap"><button class="bt bt--fino bt--chico" data-editar-inst="${i.id}">Editar</button></td>
+        </tr>
+        <tr hidden data-form-inst="${i.id}"><td colspan="8" style="background:var(--papel-2);padding:0">
+          ${formInstalacion(i)}
+        </td></tr>`).join("")}
+      </tbody></table></div>`
+      : `<p class="vacio">Todavía no hay instalaciones. Se crean solas cuando Joaquín escribe el nombre del parque al cargar un servicio.</p>`}
+    </section>`;
+
+  conectarSeleccion();
+
+  document.querySelectorAll("[data-editar-inst]").forEach(b => {
+    b.onclick = () => {
+      const fila = $(`[data-form-inst="${b.dataset.editarInst}"]`);
+      fila.hidden = !fila.hidden;
+      if (!fila.hidden) fila.querySelector("input")?.focus();
+    };
+  });
+  document.querySelectorAll("[data-cerrar-inst]").forEach(b => {
+    b.onclick = () => { $(`[data-form-inst="${b.dataset.cerrarInst}"]`).hidden = true; };
+  });
+  document.querySelectorAll("form[data-instalacion]").forEach(f => {
+    f.onsubmit = async ev => {
+      ev.preventDefault();
+      const msj = f.querySelector(".mensaje");
+      const datos = Object.fromEntries(new FormData(f));
+      datos.activa = f.querySelector("[name=activa]").value === "si";
+      decir(msj, "Guardando…");
+      try {
+        await pedir(`/instalaciones/${f.dataset.instalacion}`,
+                    { method: "PATCH", body: JSON.stringify(datos) });
+        estado.catalogos = await pedir("/catalogos");
+        await recargar({ repintar: false });
+        recado("Instalación actualizada");
+        await pintarInstalaciones();
+      } catch (e) { decir(msj, e.message, "error"); }
+    };
+  });
+}
+
+function formInstalacion(i) {
+  const colgando = (i.servicios || 0) + (i.extras || 0);
+  return `<form data-instalacion="${i.id}">
+    <div class="rejilla">
+      <label class="campo" style="grid-column:1/-1"><span>Nombre de la instalación</span>
+        <input name="nombre" required value="${esc(i.nombre)}"></label>
+      <label class="campo"><span>Cliente</span>
+        <input name="cliente" list="lista-clientes" autocomplete="off" value="${esc(i.cliente)}"></label>
+      <label class="campo"><span>Comuna</span>
+        <input name="comuna" value="${esc(i.comuna || "")}" placeholder="Dónde queda"></label>
+      <label class="campo"><span>Región</span>
+        <input name="region" value="${esc(i.region || "")}" placeholder="Opcional"></label>
+      <label class="campo"><span>¿Sale en los desplegables?</span>
+        <select name="activa">
+          <option value="si"${i.activa ? " selected" : ""}>Sí, está en las listas</option>
+          <option value="no"${i.activa ? "" : " selected"}>De baja, no aparece</option>
+        </select></label>
+    </div>
+    <div class="pie-form">
+      <button class="bt" type="submit">Guardar</button>
+      <button class="bt bt--fino" type="button" data-cerrar-inst="${i.id}">Cancelar</button>
+      <span class="mensaje"></span>
+      <span style="margin-left:auto;font-size:.8rem;color:var(--texto-2)">
+        ${colgando
+          ? `Tiene ${colgando} registro${colgando > 1 ? "s" : ""} colgando: cambiar el nombre los acompaña, no los rompe.`
+          : "No tiene nada colgando todavía: se puede borrar si quedó por error."}</span>
+    </div>
+  </form>`;
+}
+
 function formServicio(s) {
   const conPeriodos = s.periodos > 0;
   return `<form data-servicio="${s.id}">
@@ -1499,6 +1625,7 @@ const VISTAS = {
   contactos: { rotulo: "Contactos web", pintar: pintarContactos, modulo: "facturacion" },
   cotizaciones: { rotulo: "Cotizaciones", pintar: pintarCotizaciones, modulo: "cotizaciones" },
   servicio: { rotulo: "Servicios", pintar: pintarServicios, modulo: "facturacion" },
+  instalaciones: { rotulo: "Instalaciones", pintar: pintarInstalaciones, modulo: "facturacion" },
   extra: { rotulo: "Registrar extra", pintar: pintarNuevoExtra, modulo: "facturacion" },
   bitacora: { rotulo: "Bitácora", pintar: pintarBitacora, modulo: "facturacion" },
 };
