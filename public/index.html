@@ -175,6 +175,42 @@ details.detalle>summary{cursor:pointer;padding:9px 12px;font-size:.8rem;color:va
 details.detalle>summary::-webkit-details-marker{display:none}
 details.detalle>summary::before{content:"▸ ";display:inline-block;transition:transform .15s}
 details.detalle[open]>summary::before{content:"▾ "}
+
+/* ---------- selección de varias filas ---------- */
+th.sel,td.sel{width:36px;padding-left:14px;padding-right:0}
+th.sel input,td.sel input{width:15px;height:15px;accent-color:var(--tinta);cursor:pointer;
+  margin:0;padding:0;border-radius:2px}
+tr.marcada{background:var(--cian-suave)}
+tr.marcada:hover{background:#D3E7F4}
+.barra-sel{position:fixed;left:0;right:0;bottom:0;z-index:30;
+  background:var(--tinta-prof);color:var(--sobre-tinta);
+  padding:12px clamp(14px,3vw,26px);padding-bottom:calc(12px + env(safe-area-inset-bottom,0px));
+  box-shadow:0 -3px 16px rgba(19,0,82,.26)}
+.barra-sel__fila{max-width:1500px;margin-inline:auto;
+  display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.barra-sel__n{font-family:var(--display);font-size:1.15rem;line-height:1;white-space:nowrap}
+.barra-sel__n span{display:block;font-family:var(--cuerpo);font-size:.68rem;font-weight:600;
+  letter-spacing:.13em;text-transform:uppercase;color:var(--sobre-tinta-2);margin-top:3px}
+.barra-sel select,.barra-sel input{width:auto;min-width:0;padding:7px 9px;font-size:.84rem}
+.barra-sel .bt{background:#fff;color:var(--tinta-prof);border-color:#fff}
+.barra-sel .bt:hover{background:var(--papel)}
+.barra-sel .bt--fino{background:rgba(255,255,255,.09);color:#fff;border-color:rgba(255,255,255,.3)}
+.barra-sel .bt--fino:hover{background:rgba(255,255,255,.19)}
+.barra-sel .bt--mal{background:#C3312A;border-color:#C3312A;color:#fff}
+.barra-sel .bt--mal:hover{background:#D8463F}
+.barra-sel .mensaje{font-size:.82rem;color:var(--sobre-tinta-2)}
+.barra-sel .mensaje.ok{color:#5BE3A8} .barra-sel .mensaje.error{color:#FFB9B3}
+.omitidos{max-width:1500px;margin:8px auto 0;padding:9px 12px 9px 28px;border-radius:3px;
+  background:rgba(255,255,255,.08);font-size:.81rem;line-height:1.55;color:#FFDFAE;
+  max-height:132px;overflow-y:auto}
+.barra-sel label.campo{gap:3px}
+.barra-sel label.campo>span{color:var(--sobre-tinta-2);font-size:.62rem}
+.recado{position:fixed;left:50%;transform:translateX(-50%);bottom:24px;z-index:50;
+  background:var(--tinta-prof);color:#fff;border-left:3px solid var(--verde);
+  padding:12px 18px;border-radius:4px;font-size:.88rem;font-weight:500;
+  box-shadow:0 6px 22px rgba(19,0,82,.3)}
+.recado--mal{border-left-color:var(--rojo)}
+body.hay-seleccion .recado{bottom:96px}
 </style>
 </head>
 <body>
@@ -235,6 +271,274 @@ function marcaDeFila(c) {
   if (c.estado !== "cerrado") return c.estado === "solicitar_oc" ? "solicitar_oc" : c.estado;
   if (c.pago_estado !== "por_cobrar") return "cobrado";
   return atrasado(c) ? "atrasado" : "facturado";
+}
+
+const hoyISO = () => new Date().toISOString().slice(0, 10);
+
+// ------------------------------------------- seleccionar varias filas a la vez
+/**
+ * Un solo motor para todas las tablas. Cada casilla dice de qué tipo es y qué
+ * id tiene; marcar algo de otro tipo descarta lo anterior, porque las acciones
+ * no son las mismas y mezclarlas solo lleva a equivocarse.
+ *
+ * Lo que el servidor omite vuelve marcado y con el motivo a la vista: así nadie
+ * se queda con la idea de que se hicieron diez cuando se hicieron ocho.
+ */
+const seleccion = { tipo: null, ids: new Set(), op: 0, campos: {}, aviso: null };
+
+const celdaSel = (tipo, id) =>
+  `<td class="sel"><input type="checkbox" data-sel="${tipo}:${id}" aria-label="Seleccionar esta fila"></td>`;
+const cabeceraSel = tipo =>
+  `<th class="sel"><input type="checkbox" data-sel-todo="${tipo}" aria-label="Seleccionar todas"></th>`;
+
+const ACCIONES = {
+  ciclos: {
+    rotulo: n => n === 1 ? "periodo marcado" : "periodos marcados",
+    nota: "Para detener un servicio y sus periodos, vaya a Servicios.",
+    opciones: [
+      { rot: "Marcar como pagado", accion: "pago_estado", valor: "pagado",
+        pide: ["fecha"], boton: "Marcar pagado" },
+      { rot: "Marcar como factorizado", accion: "pago_estado", valor: "factorizado",
+        pide: ["fecha", "factoring"], boton: "Marcar factorizado" },
+      { rot: "Volver a por cobrar", accion: "pago_estado", valor: "por_cobrar",
+        boton: "Volver a por cobrar" },
+    ],
+  },
+  extras: {
+    rotulo: n => n === 1 ? "extra marcado" : "extras marcados",
+    opciones: [
+      { rot: "Asignar a un periodo", accion: "asignar", pide: ["ciclo"], boton: "Asignar" },
+      { rot: "Dejar sin asignar", accion: "asignar", valor: null, boton: "Dejar sueltos" },
+      { rot: "Eliminar", accion: "borrar", peligro: true, boton: "Eliminar",
+        confirmar: n => `¿Eliminar ${n} servicio${n > 1 ? "s" : ""} extra?\n\nEs trabajo que se hizo: borrado, ya no se cobra. Los que estén dentro de un periodo ya facturado no se tocan.` },
+    ],
+  },
+  servicios: {
+    rotulo: n => n === 1 ? "servicio marcado" : "servicios marcados",
+    opciones: [
+      { rot: "Dar de baja", accion: "activo", valor: false, boton: "Dar de baja",
+        confirmar: n => `¿Dar de baja ${n} servicio${n > 1 ? "s" : ""}?\n\nDejan de generarse periodos nuevos. Todo lo registrado se conserva.` },
+      { rot: "Reactivar", accion: "activo", valor: true, boton: "Reactivar" },
+      { rot: "Eliminar", accion: "borrar", peligro: true, boton: "Eliminar",
+        confirmar: n => `¿Eliminar ${n} servicio${n > 1 ? "s" : ""}?\n\nSe borran también todos sus periodos. Los que tengan periodos ya facturados no se borran: a esos deles de baja.` },
+    ],
+  },
+  cotizaciones: {
+    rotulo: n => n === 1 ? "cotización marcada" : "cotizaciones marcadas",
+    opciones: [
+      { rot: "Marcar como enviada", accion: "estado", valor: "enviada", boton: "Marcar enviada" },
+      { rot: "Marcar como aceptada", accion: "estado", valor: "aceptada", boton: "Marcar aceptada",
+        confirmar: n => `¿Marcar ${n} como aceptada${n > 1 ? "s" : ""}?\n\nUna cotización aceptada ya no se puede editar.` },
+      { rot: "Marcar como rechazada", accion: "estado", valor: "rechazada", boton: "Marcar rechazada" },
+      { rot: "Volver a borrador", accion: "estado", valor: "borrador", boton: "Volver a borrador" },
+      { rot: "Eliminar", accion: "borrar", peligro: true, boton: "Eliminar",
+        confirmar: n => `¿Eliminar ${n} cotización${n > 1 ? "es" : ""}?\n\nSe van también sus líneas. Las aceptadas quedan como respaldo y no se borran.` },
+    ],
+  },
+  contactos: {
+    rotulo: n => n === 1 ? "contacto marcado" : "contactos marcados",
+    opciones: [
+      { rot: "Marcar como contactado", accion: "estado", valor: "contactado", boton: "Marcar contactado" },
+      { rot: "Marcar como cotizado", accion: "estado", valor: "cotizado", boton: "Marcar cotizado" },
+      { rot: "Marcar como cerrado", accion: "estado", valor: "cerrado", boton: "Marcar cerrado" },
+      { rot: "Marcar como descartado", accion: "estado", valor: "descartado", boton: "Descartar" },
+      { rot: "Eliminar", accion: "borrar", peligro: true, boton: "Eliminar",
+        confirmar: n => `¿Eliminar ${n} contacto${n > 1 ? "s" : ""}? Son personas que pidieron que las llamaran.` },
+    ],
+  },
+};
+
+/** Vuelve a dibujar marcas y barra sin rehacer la tabla. */
+function repintarSeleccion() {
+  document.querySelectorAll("[data-sel]").forEach(c => {
+    const [tipo, id] = c.dataset.sel.split(":");
+    c.checked = seleccion.tipo === tipo && seleccion.ids.has(Number(id));
+    c.closest("tr")?.classList.toggle("marcada", c.checked);
+  });
+  document.querySelectorAll("[data-sel-todo]").forEach(h => {
+    const dentro = [...h.closest("table").querySelectorAll(`[data-sel^="${h.dataset.selTodo}:"]`)];
+    h.checked = dentro.length > 0 && dentro.every(c => c.checked);
+  });
+  pintarBarraSel();
+}
+
+function cambiarTipo(tipo) {
+  if (seleccion.tipo === tipo) return;
+  seleccion.tipo = tipo;
+  seleccion.ids.clear();
+  seleccion.op = 0;
+  seleccion.aviso = null;
+}
+
+/** Se llama después de pintar cualquier vista con tablas seleccionables. */
+function conectarSeleccion() {
+  const casillas = [...document.querySelectorAll("[data-sel]")];
+
+  // Lo que ya no está en pantalla deja de estar seleccionado: así lo borrado
+  // en la pasada anterior no sigue contando.
+  if (seleccion.tipo) {
+    const vivos = new Set(casillas
+      .filter(c => c.dataset.sel.startsWith(seleccion.tipo + ":"))
+      .map(c => Number(c.dataset.sel.split(":")[1])));
+    seleccion.ids = new Set([...seleccion.ids].filter(id => vivos.has(id)));
+  }
+
+  for (const c of casillas) {
+    const [tipo, id] = c.dataset.sel.split(":");
+    c.onchange = () => {
+      cambiarTipo(tipo);
+      if (c.checked) seleccion.ids.add(Number(id)); else seleccion.ids.delete(Number(id));
+      seleccion.aviso = null;
+      repintarSeleccion();
+    };
+  }
+  document.querySelectorAll("[data-sel-todo]").forEach(h => {
+    const tipo = h.dataset.selTodo;
+    h.onchange = () => {
+      cambiarTipo(tipo);
+      const dentro = [...h.closest("table").querySelectorAll(`[data-sel^="${tipo}:"]`)];
+      for (const c of dentro) {
+        const id = Number(c.dataset.sel.split(":")[1]);
+        if (h.checked) seleccion.ids.add(id); else seleccion.ids.delete(id);
+      }
+      seleccion.aviso = null;
+      repintarSeleccion();
+    };
+  });
+  repintarSeleccion();
+}
+
+function campoSel(cual) {
+  const v = seleccion.campos;
+  if (cual === "fecha") {
+    return `<label class="campo" style="color:var(--sobre-tinta-2)"><span>Fecha en que entró</span>
+      <input type="date" data-campo="fecha" value="${esc(v.fecha || hoyISO())}"></label>`;
+  }
+  if (cual === "factoring") {
+    return `<label class="campo" style="color:var(--sobre-tinta-2)"><span>Empresa de factoring</span>
+      <input data-campo="factoring" value="${esc(v.factoring || "")}" placeholder="Quién compró la factura"></label>`;
+  }
+  if (cual === "ciclo") {
+    const abiertos = (estado.panel?.ciclos || []).filter(c => c.estado !== "cerrado");
+    return `<label class="campo" style="color:var(--sobre-tinta-2)"><span>Periodo</span>
+      <select data-campo="ciclo">
+        <option value="">— elegir —</option>
+        ${abiertos.map(c => `<option value="${c.id}"${String(v.ciclo) === String(c.id) ? " selected" : ""}>${esc(c.instalacion)} · N°${c.numero} (${fecha(c.desde)})</option>`).join("")}
+      </select></label>`;
+  }
+  return "";
+}
+
+function pintarBarraSel() {
+  $("#barra-sel")?.remove();
+  const n = seleccion.ids.size;
+  const def = ACCIONES[seleccion.tipo];
+  if (!n || !def) {
+    document.body.classList.remove("hay-seleccion");
+    $("main").style.paddingBottom = "";
+    return;
+  }
+  if (seleccion.op >= def.opciones.length) seleccion.op = 0;
+  const op = def.opciones[seleccion.op];
+  const a = seleccion.aviso;
+
+  const barra = document.createElement("div");
+  barra.id = "barra-sel";
+  barra.className = "barra-sel";
+  barra.innerHTML = `
+    <div class="barra-sel__fila">
+      <span class="barra-sel__n">${n}<span>${def.rotulo(n)}</span></span>
+      <select id="sel-accion" aria-label="Qué hacer con lo marcado">
+        ${def.opciones.map((o, i) =>
+          `<option value="${i}"${i === seleccion.op ? " selected" : ""}>${esc(o.rot)}</option>`).join("")}
+      </select>
+      ${(op.pide || []).map(campoSel).join("")}
+      <button class="bt${op.peligro ? " bt--mal" : ""}" id="sel-aplicar">${esc(op.boton)}</button>
+      <button class="bt bt--fino" id="sel-nada">Quitar selección</button>
+      <span class="mensaje${a ? (a.hechos ? " ok" : " error") : ""}">${
+        a ? esc(`${a.hechos} listo${a.hechos === 1 ? "" : "s"}${a.omitidos.length ? ` · ${a.omitidos.length} sin tocar` : ""}`)
+          : esc(def.nota || "")}</span>
+    </div>
+    ${a && a.omitidos.length
+      ? `<ul class="omitidos">${a.omitidos.map(o => `<li>${esc(o.razon)}</li>`).join("")}</ul>` : ""}`;
+  document.body.appendChild(barra);
+  document.body.classList.add("hay-seleccion");
+  // Sin este hueco la barra tapa las últimas filas de la tabla.
+  $("main").style.paddingBottom = (barra.offsetHeight + 24) + "px";
+
+  $("#sel-accion").onchange = ev => {
+    seleccion.op = Number(ev.target.value);
+    seleccion.aviso = null;
+    pintarBarraSel();
+    $("#sel-accion").focus();
+  };
+  barra.querySelectorAll("[data-campo]").forEach(c => {
+    c.oninput = () => { seleccion.campos[c.dataset.campo] = c.value; };
+  });
+  $("#sel-nada").onclick = () => {
+    seleccion.ids.clear();
+    seleccion.aviso = null;
+    repintarSeleccion();
+  };
+  $("#sel-aplicar").onclick = aplicarSeleccion;
+}
+
+async function aplicarSeleccion() {
+  const def = ACCIONES[seleccion.tipo];
+  const op = def.opciones[seleccion.op];
+  const ids = [...seleccion.ids];
+  if (!ids.length) return;
+  if (op.confirmar && !confirm(op.confirmar(ids.length))) return;
+
+  const cuerpo = { tipo: seleccion.tipo, accion: op.accion, ids };
+  if ("valor" in op) cuerpo.valor = op.valor;
+  for (const c of op.pide || []) {
+    if (c === "fecha") cuerpo.fecha = seleccion.campos.fecha || hoyISO();
+    if (c === "factoring") cuerpo.factoring = seleccion.campos.factoring || "";
+    if (c === "ciclo") {
+      if (!seleccion.campos.ciclo) {
+        seleccion.aviso = { hechos: 0, omitidos: [{ razon: "Elija a qué periodo asignarlos" }] };
+        return pintarBarraSel();
+      }
+      cuerpo.valor = Number(seleccion.campos.ciclo);
+    }
+  }
+
+  const boton = $("#sel-aplicar");
+  if (boton) { boton.disabled = true; boton.textContent = "Trabajando…"; }
+  try {
+    const r = await pedir("/lote", { method: "POST", body: JSON.stringify(cuerpo) });
+    const omitidos = r.omitidos || [];
+    // Lo que no se pudo hacer queda marcado: así se ve sobre qué hay que volver.
+    seleccion.ids = new Set(omitidos.map(o => o.id).filter(Boolean));
+    seleccion.aviso = { hechos: r.hechos, omitidos };
+    if (!omitidos.length) {
+      recado(`${r.hechos} ${def.rotulo(r.hechos)}: listo`);
+      seleccion.aviso = null;
+    }
+    await refrescarVista();
+  } catch (e) {
+    seleccion.aviso = { hechos: 0, omitidos: [{ razon: e.message }] };
+    pintarBarraSel();
+  }
+}
+
+/** Trae de nuevo los datos de la vista actual y la vuelve a pintar. */
+async function refrescarVista() {
+  if (estado.vista === "panel") await recargar();
+  else ir(estado.vista);
+}
+
+let recadoReloj;
+function recado(texto, tipo = "ok") {
+  $("#recado")?.remove();
+  const el = document.createElement("div");
+  el.id = "recado";
+  el.className = "recado" + (tipo === "mal" ? " recado--mal" : "");
+  el.textContent = texto;
+  document.body.appendChild(el);
+  clearTimeout(recadoReloj);
+  recadoReloj = setTimeout(() => el.remove(), 4200);
 }
 
 let estado = { usuario: null, panel: null, catalogos: null, vista: "panel" };
@@ -314,12 +618,14 @@ function tablaCiclos(titulo, filas, vacio) {
     <span class="nota">${filas.length} · ${clp(total)} neto</span></div>`;
   if (!filas.length) return h + `<p class="vacio">${esc(vacio)}</p></section>`;
   h += `<div class="desliza"><table><thead><tr>
+      ${cabeceraSel("ciclos")}
       <th>Instalación</th><th>Servicio</th><th>Periodo</th><th>Estado</th>
       <th class="num">Base</th><th class="num">Extras</th><th class="num">Neto</th>
       <th class="num">Total con IVA</th><th>OC</th><th>Factura</th><th>Cobranza</th><th></th>
     </tr></thead><tbody>`;
   for (const c of filas) {
     h += `<tr class="fila--${marcaDeFila(c)}">
+      ${celdaSel("ciclos", c.id)}
       <td><b>${esc(c.instalacion)}</b><span class="sub">${esc(c.cliente)}</span></td>
       <td>${esc(c.servicio)}</td>
       <td class="num nowrap">N°${c.numero}<span class="sub nowrap">${fecha(c.desde)} → ${fecha(c.hasta)}</span></td>
@@ -340,7 +646,7 @@ function tablaCiclos(titulo, filas, vacio) {
         ${c.factoring ? `<span class="sub">${esc(c.factoring)}</span>` : ""}`}</td>
       <td class="nowrap"><button class="bt bt--fino bt--chico" data-editar="${c.id}">${c.estado === "cerrado" ? "Ver" : "Registrar"}</button></td>
     </tr>
-    <tr hidden data-form="${c.id}"><td colspan="11" style="background:var(--papel-2);padding:0">
+    <tr hidden data-form="${c.id}"><td colspan="13" style="background:var(--papel-2);padding:0">
       ${formCiclo(c)}
     </td></tr>`;
   }
@@ -400,11 +706,12 @@ function tablaSueltos(sueltos) {
   if (!sueltos.length) {
     h += `<p class="vacio">Todos los servicios extra están asignados a un periodo.</p>`;
   } else {
-    h += `<div class="desliza"><table><thead><tr><th>Fecha</th><th>Instalación</th><th>Ítem</th>
+    h += `<div class="desliza"><table><thead><tr>${cabeceraSel("extras")}
+      <th>Fecha</th><th>Instalación</th><th>Ítem</th>
       <th class="num">Cant.</th><th class="num">Neto</th><th>Asignar al periodo</th></tr></thead><tbody>`;
     const abiertos = estado.panel.ciclos.filter(c => c.estado !== "cerrado");
     for (const e of sueltos) {
-      h += `<tr><td class="num">${fecha(e.fecha)}</td><td>${esc(e.instalacion)}</td>
+      h += `<tr>${celdaSel("extras", e.id)}<td class="num">${fecha(e.fecha)}</td><td>${esc(e.instalacion)}</td>
         <td>${esc(e.item)}${e.detalle ? `<br><span style="color:var(--texto-2);font-size:.8rem">${esc(e.detalle)}</span>` : ""}</td>
         <td class="num">${e.cantidad}</td><td class="num"><b>${clp(e.monto_neto)}</b></td>
         <td><select data-asignar="${e.id}">
@@ -418,6 +725,7 @@ function tablaSueltos(sueltos) {
 }
 
 function conectarPanel() {
+  conectarSeleccion();
   document.querySelectorAll("[data-editar]").forEach(b => {
     b.onclick = () => {
       const fila = $(`[data-form="${b.dataset.editar}"]`);
@@ -453,12 +761,42 @@ function conectarPanel() {
   });
 }
 
-function pintarNuevoServicio() {
+/**
+ * Servicios continuos: el alta y, sobre todo, el listado de lo que ya existe.
+ * Hasta acá solo se podían crear; sin una lista no había cómo corregir un
+ * monto mal puesto ni detener un servicio que terminó, y el panel seguía
+ * abriendo periodos de algo que ya nadie estaba cubriendo.
+ */
+let abrirFormServicio = false;
+
+async function pintarServicios() {
+  $("#app").innerHTML = `<p class="cargando">Cargando…</p>`;
+  const { servicios } = await pedir("/servicios");
   const inst = estado.catalogos.instalaciones;
+  const activos = servicios.filter(s => s.activo).length;
+  const mostrarForm = abrirFormServicio || !servicios.length;
+
+  const listaInst = `<datalist id="lista-inst">
+      ${inst.map(i => `<option value="${esc(i.nombre)}">`).join("")}
+    </datalist>
+    <datalist id="lista-clientes">
+      ${[...new Set(inst.map(i => i.cliente))].map(c => `<option value="${esc(c)}">`).join("")}
+    </datalist>`;
+
   $("#app").innerHTML = `
-    ${aviso("ojo", "Acá empieza el control de los 30 días",
-      "Al elegir el día de inicio, el sistema crea el primer periodo y, al cumplirse los días del ciclo, lo marca para solicitar la OC.")}
-    <section class="caja" style="max-width:820px">
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:18px;flex-wrap:wrap">
+      <h2 style="font-size:1.5rem">Servicios</h2>
+      <span class="nota" style="color:var(--texto-2);font-size:.85rem">
+        ${activos} activo${activos === 1 ? "" : "s"}${servicios.length - activos
+          ? ` · ${servicios.length - activos} de baja` : ""}</span>
+      <button class="bt" id="nuevo-servicio" style="margin-left:auto">
+        ${mostrarForm ? "Ocultar formulario" : "Nuevo servicio"}</button>
+    </div>
+    ${listaInst}
+
+    <section class="caja" style="max-width:860px"${mostrarForm ? "" : " hidden"} id="caja-nuevo">
+      ${aviso("ojo", "Acá empieza el control de los 30 días",
+        "Al elegir el día de inicio, el sistema crea el primer periodo y, al cumplirse los días del ciclo, lo marca para solicitar la OC.")}
       <div class="caja__tit"><h2>Nuevo servicio</h2>
         <span class="nota">Si la instalación no existe todavía, escríbala y se crea sola</span></div>
       <form id="f-servicio">
@@ -466,21 +804,15 @@ function pintarNuevoServicio() {
           <label class="campo" style="grid-column:1/-1"><span>Instalación o parque</span>
             <input name="instalacion" required list="lista-inst" autocomplete="off"
                    placeholder="Ej: PMGD Los Maitenes"></label>
-          <datalist id="lista-inst">
-            ${inst.map(i => `<option value="${esc(i.nombre)}">`).join("")}
-          </datalist>
           <label class="campo"><span>Cliente</span>
             <input name="cliente" list="lista-clientes" autocomplete="off"
                    placeholder="A quién se le factura"></label>
-          <datalist id="lista-clientes">
-            ${[...new Set(inst.map(i => i.cliente))].map(c => `<option value="${esc(c)}">`).join("")}
-          </datalist>
           <label class="campo"><span>Comuna</span>
             <input name="comuna" placeholder="Dónde queda"></label>
           <label class="campo" style="grid-column:1/-1"><span>Nombre del servicio</span>
             <input name="nombre" required placeholder="Ej: Vigilancia 24/7 con pareja de patrullaje"></label>
           <label class="campo"><span>Día de inicio</span>
-            <input name="fecha_inicio" type="date" required value="${new Date().toISOString().slice(0, 10)}"></label>
+            <input name="fecha_inicio" type="date" required value="${hoyISO()}"></label>
           <label class="campo"><span>Días del ciclo</span>
             <input name="dias_ciclo" type="number" min="1" max="365" value="30" required></label>
           <label class="campo"><span>Monto base neto del periodo</span>
@@ -491,18 +823,121 @@ function pintarNuevoServicio() {
           <span class="mensaje"></span>
         </div>
       </form>
+    </section>
+
+    <section class="caja">
+      <div class="caja__tit"><h2>Servicios cargados</h2>
+        <span class="nota">Marque varios para darlos de baja o eliminarlos</span></div>
+      ${servicios.length ? `<div class="desliza"><table style="min-width:980px"><thead><tr>
+        ${cabeceraSel("servicios")}
+        <th>Instalación</th><th>Servicio</th><th>Desde</th><th class="num">Ciclo</th>
+        <th class="num">Monto base</th><th class="num">Periodos</th><th>Situación</th><th></th>
+      </tr></thead><tbody>
+        ${servicios.map(s => `<tr${s.activo ? "" : ' style="opacity:.6"'}>
+          ${celdaSel("servicios", s.id)}
+          <td><b>${esc(s.instalacion)}</b><span class="sub">${esc(s.cliente)}${
+            s.comuna ? " · " + esc(s.comuna) : ""}</span></td>
+          <td>${esc(s.nombre)}</td>
+          <td class="num nowrap">${fecha(s.fecha_inicio)}</td>
+          <td class="num">${s.dias_ciclo} días</td>
+          <td class="num">${s.monto_neto ? clp(s.monto_neto) : "—"}</td>
+          <td class="num">${s.periodos}<span class="sub">${s.periodos_cerrados} facturado${
+            s.periodos_cerrados === 1 ? "" : "s"}</span></td>
+          <td><span class="sello ${s.activo ? "e-cerrado" : "e-en_curso"}">${
+            s.activo ? "Activo" : "De baja"}</span></td>
+          <td class="nowrap"><button class="bt bt--fino bt--chico" data-editar-serv="${s.id}">Editar</button></td>
+        </tr>
+        <tr hidden data-form-serv="${s.id}"><td colspan="9" style="background:var(--papel-2);padding:0">
+          ${formServicio(s)}
+        </td></tr>`).join("")}
+      </tbody></table></div>`
+      : `<p class="vacio">Todavía no hay servicios cargados. Cree el primero con el formulario de arriba.</p>`}
     </section>`;
+
+  conectarSeleccion();
+
+  $("#nuevo-servicio").onclick = () => {
+    abrirFormServicio = !mostrarForm;
+    pintarServicios();
+  };
+
   $("#f-servicio").onsubmit = async ev => {
     ev.preventDefault();
     const f = ev.target, msj = f.querySelector(".mensaje");
     decir(msj, "Guardando…");
     try {
       await pedir("/servicios", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(f))) });
-      decir(msj, "Servicio creado", "ok");
       f.reset();
-      await recargar({ repintar: false }); ir("panel");
+      abrirFormServicio = false;
+      estado.catalogos = await pedir("/catalogos");
+      await recargar({ repintar: false });
+      recado("Servicio creado");
+      await pintarServicios();
     } catch (e) { decir(msj, e.message, "error"); }
   };
+
+  document.querySelectorAll("[data-editar-serv]").forEach(b => {
+    b.onclick = () => {
+      const fila = $(`[data-form-serv="${b.dataset.editarServ}"]`);
+      fila.hidden = !fila.hidden;
+      if (!fila.hidden) fila.querySelector("input")?.focus();
+    };
+  });
+  document.querySelectorAll("[data-cerrar-serv]").forEach(b => {
+    b.onclick = () => { $(`[data-form-serv="${b.dataset.cerrarServ}"]`).hidden = true; };
+  });
+  document.querySelectorAll("form[data-servicio]").forEach(f => {
+    f.onsubmit = async ev => {
+      ev.preventDefault();
+      const msj = f.querySelector(".mensaje");
+      const datos = Object.fromEntries(new FormData(f));
+      datos.activo = f.querySelector("[name=activo]").value === "si";
+      decir(msj, "Guardando…");
+      try {
+        await pedir(`/servicios/${f.dataset.servicio}`, { method: "PATCH", body: JSON.stringify(datos) });
+        estado.catalogos = await pedir("/catalogos");
+        await recargar({ repintar: false });
+        recado("Servicio actualizado");
+        await pintarServicios();
+      } catch (e) { decir(msj, e.message, "error"); }
+    };
+  });
+}
+
+function formServicio(s) {
+  const conPeriodos = s.periodos > 0;
+  return `<form data-servicio="${s.id}">
+    <div class="rejilla">
+      <label class="campo" style="grid-column:1/-1"><span>Nombre del servicio</span>
+        <input name="nombre" required value="${esc(s.nombre)}"></label>
+      <label class="campo"><span>Instalación</span>
+        <input name="instalacion" required list="lista-inst" autocomplete="off"
+               value="${esc(s.instalacion)}"></label>
+      <label class="campo"><span>Cliente</span>
+        <input name="cliente" list="lista-clientes" autocomplete="off" value="${esc(s.cliente)}"></label>
+      <label class="campo"><span>Días del ciclo</span>
+        <input name="dias_ciclo" type="number" min="1" max="365" required value="${s.dias_ciclo}"></label>
+      <label class="campo"><span>Monto base neto</span>
+        <input name="monto_neto" type="number" min="0" step="1" value="${s.monto_neto ?? ""}"
+               placeholder="Opcional"></label>
+      <label class="campo"><span>Día de inicio</span>
+        <input name="fecha_inicio" type="date" value="${esc(s.fecha_inicio)}"${conPeriodos ? " disabled" : ""}></label>
+      <label class="campo"><span>¿Sigue vigente?</span>
+        <select name="activo">
+          <option value="si"${s.activo ? " selected" : ""}>Activo</option>
+          <option value="no"${s.activo ? "" : " selected"}>De baja, no genera más periodos</option>
+        </select></label>
+    </div>
+    <div class="pie-form">
+      <button class="bt" type="submit">Guardar</button>
+      <button class="bt bt--fino" type="button" data-cerrar-serv="${s.id}">Cancelar</button>
+      <span class="mensaje"></span>
+      <span style="margin-left:auto;font-size:.8rem;color:var(--texto-2)">
+        ${conPeriodos
+          ? "La fecha de inicio ya no se mueve: hay periodos corriendo desde ella."
+          : "Todavía sin periodos: se puede corregir todo, incluida la fecha de inicio."}</span>
+    </div>
+  </form>`;
 }
 
 function pintarNuevoExtra() {
@@ -619,10 +1054,12 @@ async function pintarCotizaciones() {
     </div>
     <section class="caja">
       ${cotizaciones.length ? `<div class="desliza"><table><thead><tr>
+        ${cabeceraSel("cotizaciones")}
         <th>N°</th><th>Fecha</th><th>Cliente</th><th>Instalación</th><th>Estado</th>
         <th class="num">Neto</th><th class="num">Total con IVA</th><th></th>
       </tr></thead><tbody>
         ${cotizaciones.map(c => `<tr>
+          ${celdaSel("cotizaciones", c.id)}
           <td class="num nowrap"><b>${esc(c.numero)}</b></td>
           <td class="num nowrap">${fecha(c.fecha)}
             ${c.vencida && c.estado === "enviada" ? `<span class="sub vencida">vencida</span>` : ""}</td>
@@ -636,6 +1073,7 @@ async function pintarCotizaciones() {
       </tbody></table></div>`
       : `<p class="vacio">Todavía no hay cotizaciones. Cree la primera con el botón de arriba.</p>`}
     </section>`;
+  conectarSeleccion();
   $("#nueva").onclick = () => { borrador = cotizacionNueva(); pintarEditor(); };
   document.querySelectorAll("[data-abrir]").forEach(b => {
     b.onclick = async () => {
@@ -968,10 +1406,12 @@ async function pintarContactos() {
     </div>
     <section class="caja">
       ${contactos.length ? `<div class="desliza"><table><thead><tr>
+        ${cabeceraSel("contactos")}
         <th>Llegó</th><th>Nombre</th><th>Contacto</th><th>Qué necesita</th>
         <th>Estado</th><th>Notas</th>
       </tr></thead><tbody>
         ${contactos.map(c => `<tr>
+          ${celdaSel("contactos", c.id)}
           <td class="num nowrap">${esc(String(c.creado_en).slice(8,10))}-${esc(String(c.creado_en).slice(5,7))}-${esc(String(c.creado_en).slice(0,4))}
             <span class="sub">${esc(String(c.creado_en).slice(11,16))}</span></td>
           <td><b>${esc(c.nombre)}</b>${c.empresa ? `<span class="sub">${esc(c.empresa)}</span>` : ""}</td>
@@ -989,6 +1429,7 @@ async function pintarContactos() {
       : `<p class="vacio">Todavía no ha llegado ningún contacto desde la página.</p>`}
     </section>`;
 
+  conectarSeleccion();
   const guardar = async (id, campos) => {
     try { await pedir(`/contactos/${id}`, { method: "PATCH", body: JSON.stringify(campos) }); }
     catch (e) { alert(e.message); }
@@ -1005,7 +1446,7 @@ const VISTAS = {
   panel: { rotulo: "Panel", pintar: pintarPanel, modulo: "facturacion" },
   contactos: { rotulo: "Contactos web", pintar: pintarContactos, modulo: "facturacion" },
   cotizaciones: { rotulo: "Cotizaciones", pintar: pintarCotizaciones, modulo: "cotizaciones" },
-  servicio: { rotulo: "Nuevo servicio", pintar: pintarNuevoServicio, modulo: "facturacion" },
+  servicio: { rotulo: "Servicios", pintar: pintarServicios, modulo: "facturacion" },
   extra: { rotulo: "Registrar extra", pintar: pintarNuevoExtra, modulo: "facturacion" },
   bitacora: { rotulo: "Bitácora", pintar: pintarBitacora, modulo: "facturacion" },
 };
@@ -1015,6 +1456,15 @@ const vistasPermitidas = () =>
   Object.entries(VISTAS).filter(([, v]) => !v.modulo || estado.usuario.permisos.includes(v.modulo));
 
 function ir(vista) {
+  // Cambiar de sección descarta lo marcado: las acciones de la barra no
+  // aplican a lo que se está mirando ahora y quedaría apuntando a otra cosa.
+  if (vista !== estado.vista) {
+    seleccion.tipo = null;
+    seleccion.ids.clear();
+    seleccion.op = 0;
+    seleccion.aviso = null;
+    pintarBarraSel();
+  }
   estado.vista = vista;
   document.querySelectorAll("#pestanas button").forEach(b =>
     b.setAttribute("aria-current", String(b.dataset.vista === vista)));

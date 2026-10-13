@@ -14,6 +14,7 @@ import { buscar, primero, insertar, insertarSinDuplicar, actualizar, anotar, Err
 import { ingresar, cambiarClave, crearSesion, leerSesion, cookieSesion, cookieBorrada }
   from './sesion.js';
 import * as cotiz from './cotizaciones.js';
+import * as lote from './lote.js';
 
 const IVA = 0.19;
 
@@ -132,6 +133,17 @@ async function ponerCiclosAlDia(env) {
  * La comparación es sin mayúsculas ni espacios de sobra, para que "PMGD Rengo"
  * y "pmgd rengo " no terminen siendo dos instalaciones distintas.
  */
+const mismoNombre = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+async function resolverCliente(env, usuario, nombre) {
+  const clientes = await buscar(env, 'clientes?select=id,nombre');
+  const ya = clientes.find((c) => mismoNombre(c.nombre, nombre));
+  if (ya) return ya;
+  const [nuevo] = await insertar(env, 'clientes', { nombre: nombre.trim() });
+  await anotar(env, usuario.usuario, 'cliente', nuevo.id, 'creado', nombre.trim());
+  return nuevo;
+}
+
 async function resolverInstalacion(env, usuario, cuerpo) {
   if (entero(cuerpo.instalacion_id)) {
     const i = await primero(env, `instalaciones?select=id&id=eq.${entero(cuerpo.instalacion_id)}`);
@@ -142,19 +154,12 @@ async function resolverInstalacion(env, usuario, cuerpo) {
   if (!nombre) return { error: 'Escriba el nombre de la instalación' };
   if (nombre.length > 160) return { error: 'El nombre de la instalación es demasiado largo' };
 
-  const igual = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
-
   const instalaciones = await buscar(env, 'instalaciones?select=id,nombre');
-  const ya = instalaciones.find((i) => igual(i.nombre, nombre));
+  const ya = instalaciones.find((i) => mismoNombre(i.nombre, nombre));
   if (ya) return ya;
 
   const nombreCliente = (cuerpo.cliente || '').trim() || 'Sin cliente asignado';
-  const clientes = await buscar(env, 'clientes?select=id,nombre');
-  let cliente = clientes.find((c) => igual(c.nombre, nombreCliente));
-  if (!cliente) {
-    [cliente] = await insertar(env, 'clientes', { nombre: nombreCliente });
-    await anotar(env, usuario.usuario, 'cliente', cliente.id, 'creado', nombreCliente);
-  }
+  const cliente = await resolverCliente(env, usuario, nombreCliente);
 
   const [nueva] = await insertar(env, 'instalaciones', {
     cliente_id: cliente.id,
@@ -245,6 +250,14 @@ async function api(request, env, url, usuario) {
     return json({ tarifas, instalaciones, clientes });
   }
 
+  // Acciones sobre varios registros marcados a la vez. El permiso lo revisa
+  // adentro, porque depende de qué se esté tocando.
+  if (ruta === '/lote' && metodo === 'POST') {
+    const r = await lote.aplicar(env, usuario, puede, cuerpo);
+    if (r.error) return error(r.error, r.status);
+    return json(r);
+  }
+
   // ---------------------------------------------------------- cotizaciones
   if (ruta.startsWith('/cotizaciones')) {
     if (!puede(usuario, 'cotizaciones')) return error('Sin acceso a este módulo', 403);
@@ -275,6 +288,105 @@ async function api(request, env, url, usuario) {
   if (ruta === '/panel' && metodo === 'GET') {
     await ponerCiclosAlDia(env);
     return json(await panel(env));
+  }
+
+  // Los servicios continuos, con su instalación y en qué va cada uno.
+  if (ruta === '/servicios' && metodo === 'GET') {
+    const [servicios, ciclos] = await Promise.all([
+      buscar(env, 'servicios?select=*,instalaciones(nombre,comuna,clientes(nombre))&order=activo.desc,nombre.asc'),
+      buscar(env, 'ciclos?select=servicio_id,estado'),
+    ]);
+    const cuenta = new Map();
+    for (const c of ciclos) {
+      const n = cuenta.get(c.servicio_id) || { total: 0, cerrados: 0, abiertos: 0 };
+      n.total += 1;
+      if (c.estado === 'cerrado') n.cerrados += 1; else n.abiertos += 1;
+      cuenta.set(c.servicio_id, n);
+    }
+    return json({
+      servicios: servicios.map((s) => {
+        const { instalaciones: i, ...resto } = s;
+        const n = cuenta.get(s.id) || { total: 0, cerrados: 0, abiertos: 0 };
+        return {
+          ...resto,
+          instalacion: i?.nombre || '—',
+          comuna: i?.comuna || null,
+          cliente: i?.clientes?.nombre || '—',
+          periodos: n.total, periodos_cerrados: n.cerrados, periodos_abiertos: n.abiertos,
+        };
+      }),
+    });
+  }
+
+  // Editar un servicio ya creado.
+  const mServicio = ruta.match(/^\/servicios\/(\d+)$/);
+  if (mServicio && metodo === 'PATCH') {
+    const id = Number(mServicio[1]);
+    const actual = await primero(env, `servicios?select=*&id=eq.${id}`);
+    if (!actual) return error('Ese servicio no existe', 404);
+
+    const campos = {};
+    if ('nombre' in cuerpo) {
+      const n = (cuerpo.nombre || '').trim();
+      if (!n) return error('Falta el nombre del servicio');
+      campos.nombre = n;
+    }
+    if ('dias_ciclo' in cuerpo) {
+      const d = entero(cuerpo.dias_ciclo);
+      if (d === null || d < 1 || d > 365) {
+        return error('El ciclo debe ser un número de días entre 1 y 365');
+      }
+      campos.dias_ciclo = d;
+    }
+    if ('monto_neto' in cuerpo) {
+      campos.monto_neto = cuerpo.monto_neto === '' || cuerpo.monto_neto === null
+        ? null : entero(cuerpo.monto_neto);
+      if (campos.monto_neto !== null && campos.monto_neto < 0) {
+        return error('El monto no puede ser negativo');
+      }
+    }
+    if ('activo' in cuerpo) campos.activo = !!cuerpo.activo;
+
+    // La fecha de inicio solo se puede corregir mientras no haya periodos: con
+    // periodos encima, moverla no los recalcula y dejaría el servicio diciendo
+    // una cosa y su calendario otra.
+    if ('fecha_inicio' in cuerpo && cuerpo.fecha_inicio !== actual.fecha_inicio) {
+      if (!esFecha(cuerpo.fecha_inicio)) return error('La fecha de inicio no es válida');
+      const ya = await primero(env, `ciclos?select=id&servicio_id=eq.${id}`);
+      if (ya) {
+        return error('Este servicio ya tiene periodos corriendo: la fecha de inicio no se puede mover sin rehacerlos. Dé de baja este servicio y cree uno nuevo con la fecha correcta.', 409);
+      }
+      campos.fecha_inicio = cuerpo.fecha_inicio;
+    }
+
+    if ('instalacion' in cuerpo || 'instalacion_id' in cuerpo) {
+      const inst = await resolverInstalacion(env, usuario, cuerpo);
+      if (inst.error) return error(inst.error, inst.status || 400);
+      campos.instalacion_id = inst.id;
+
+      // Si la instalación ya existía, resolverInstalacion devuelve la de antes
+      // y no mira el cliente. Acá sí se corrige: el campo está en el formulario
+      // de edición justamente para poder cambiarlo.
+      const nombreCliente = (cuerpo.cliente || '').trim();
+      if (nombreCliente) {
+        const actualInst = await primero(env,
+          `v_instalaciones?select=id,cliente&id=eq.${inst.id}`);
+        if (actualInst && !mismoNombre(actualInst.cliente || '', nombreCliente)) {
+          const cl = await resolverCliente(env, usuario, nombreCliente);
+          await actualizar(env, `instalaciones?id=eq.${inst.id}`, { cliente_id: cl.id });
+          await anotar(env, usuario.usuario, 'instalacion', inst.id, 'cambió de cliente',
+                       `${actualInst.cliente} → ${cl.nombre}`);
+        }
+      }
+    }
+
+    if (!Object.keys(campos).length) return error('No hay nada que cambiar');
+
+    await actualizar(env, `servicios?id=eq.${id}`, campos);
+    await anotar(env, usuario.usuario, 'servicio', id, 'editado',
+                 Object.keys(campos).join(', '));
+    if (campos.activo !== false) await ponerCiclosAlDia(env);
+    return json({ ok: true });
   }
 
   // Alta de un servicio continuo: acá se elige el día de inicio.
