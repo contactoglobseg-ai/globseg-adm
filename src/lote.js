@@ -143,8 +143,49 @@ async function contactos(env, usuario, ids, cuerpo) {
 // ------------------------------------------------------------------- ciclos
 async function ciclos(env, usuario, ids, cuerpo) {
   const filas = await buscar(env,
-    `ciclos?select=id,numero,estado,factura_folio,pago_estado&id=${lista(ids)}`);
+    `ciclos?select=id,servicio_id,numero,estado,factura_folio,pago_estado&id=${lista(ids)}`);
   const omitidos = faltantes(ids, filas, 'periodo');
+
+  if (cuerpo.accion === 'borrar') {
+    const avisos = [];
+    const idsVan = filas.map((c) => c.id);
+    if (idsVan.length) {
+      // Si se borra el último periodo de un servicio que sigue activo, el panel
+      // lo vuelve a abrir en la siguiente entrada: el servicio estuvo corriendo
+      // esos días. Hay que decirlo, o parecerá que el borrado no funcionó.
+      const servIds = [...new Set(filas.map((c) => c.servicio_id))];
+      const [servicios, todos] = await Promise.all([
+        buscar(env, `servicios?select=id,nombre,activo&id=${lista(servIds)}`),
+        buscar(env, `ciclos?select=servicio_id,numero&servicio_id=${lista(servIds)}`),
+      ]);
+      const ultimo = new Map();
+      for (const c of todos) {
+        ultimo.set(c.servicio_id, Math.max(ultimo.get(c.servicio_id) ?? 0, c.numero));
+      }
+      for (const s of servicios) {
+        if (!s.activo) continue;
+        const borraElUltimo = filas.some(
+          (c) => c.servicio_id === s.id && c.numero === ultimo.get(s.id));
+        if (borraElUltimo) {
+          avisos.push(`"${s.nombre}" sigue activo, así que el sistema vuelve a abrir su último periodo. Para que no vuelva, dele de baja en Servicios.`);
+        }
+      }
+
+      const facturados = filas.filter((c) => c.estado === 'cerrado');
+      if (facturados.length) {
+        avisos.push(`Se borró${facturados.length > 1 ? 'n' : ''} ${facturados.length} periodo${facturados.length > 1 ? 's' : ''} que ya tenía${facturados.length > 1 ? 'n' : ''} factura registrada (folio ${facturados.map((c) => c.factura_folio).join(', ')}).`);
+      }
+
+      // Los extras no se borran: vuelven a quedar sueltos. Son trabajo hecho que
+      // hay que cobrar en algún lado, y si desaparecieran con el periodo
+      // volvería justo el problema que este sistema resuelve.
+      await actualizar(env, `extras?ciclo_id=${lista(idsVan)}`, { ciclo_id: null });
+      await borrar(env, `ciclos?id=${lista(idsVan)}`);
+      await anotar(env, usuario.usuario, 'ciclo', null, 'borrados',
+                   filas.map((c) => `N°${c.numero}${c.factura_folio ? ' (factura ' + c.factura_folio + ')' : ''}`).join(', '));
+    }
+    return { hechos: idsVan.length, omitidos, avisos };
+  }
 
   if (cuerpo.accion === 'pago_estado') {
     if (!ESTADOS_PAGO.includes(cuerpo.valor)) {

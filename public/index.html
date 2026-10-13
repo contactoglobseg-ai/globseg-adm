@@ -201,8 +201,11 @@ tr.marcada:hover{background:#D3E7F4}
 .barra-sel .mensaje{font-size:.82rem;color:var(--sobre-tinta-2)}
 .barra-sel .mensaje.ok{color:#5BE3A8} .barra-sel .mensaje.error{color:#FFB9B3}
 .omitidos{max-width:1500px;margin:8px auto 0;padding:9px 12px 9px 28px;border-radius:3px;
-  background:rgba(255,255,255,.08);font-size:.81rem;line-height:1.55;color:#FFDFAE;
+  background:rgba(255,255,255,.08);font-size:.81rem;line-height:1.55;color:#FFC2BC;
   max-height:132px;overflow-y:auto}
+/* Lo que no se hizo va en rojo; lo que sí se hizo pero hay que saber, en ámbar. */
+.omitidos--ojo{color:#FFDFAE}
+.barra-sel .bt[disabled]{opacity:.45}
 .barra-sel label.campo{gap:3px}
 .barra-sel label.campo>span{color:var(--sobre-tinta-2);font-size:.62rem}
 .recado{position:fixed;left:50%;transform:translateX(-50%);bottom:24px;z-index:50;
@@ -294,6 +297,7 @@ const cabeceraSel = tipo =>
 const ACCIONES = {
   ciclos: {
     rotulo: n => n === 1 ? "periodo marcado" : "periodos marcados",
+    nombre: n => n === 1 ? "periodo" : "periodos",
     nota: "Para detener un servicio y sus periodos, vaya a Servicios.",
     opciones: [
       { rot: "Marcar como pagado", accion: "pago_estado", valor: "pagado",
@@ -302,47 +306,61 @@ const ACCIONES = {
         pide: ["fecha", "factoring"], boton: "Marcar factorizado" },
       { rot: "Volver a por cobrar", accion: "pago_estado", valor: "por_cobrar",
         boton: "Volver a por cobrar" },
+      { rot: "Eliminar", accion: "borrar", peligro: true, boton: "Eliminar", soloBorrador: true,
+        confirmar: (n, ids) => {
+          const sel = (estado.panel?.ciclos || []).filter(c => ids.includes(c.id));
+          const conFactura = sel.filter(c => c.factura_folio);
+          return `¿Eliminar ${n} periodo${n > 1 ? "s" : ""}?\n\n`
+            + (conFactura.length
+                ? `OJO: ${conFactura.length} ya tiene${conFactura.length > 1 ? "n" : ""} factura registrada (folio ${conFactura.map(c => c.factura_folio).join(", ")}).\n\n`
+                : "")
+            + "Los servicios extra que tengan quedan sin asignar, no se borran.";
+        } },
     ],
   },
   extras: {
     rotulo: n => n === 1 ? "extra marcado" : "extras marcados",
+    nombre: n => n === 1 ? "extra" : "extras",
     opciones: [
       { rot: "Asignar a un periodo", accion: "asignar", pide: ["ciclo"], boton: "Asignar" },
       { rot: "Dejar sin asignar", accion: "asignar", valor: null, boton: "Dejar sueltos" },
-      { rot: "Eliminar", accion: "borrar", peligro: true, boton: "Eliminar",
+      { rot: "Eliminar", accion: "borrar", peligro: true, boton: "Eliminar", soloBorrador: true,
         confirmar: n => `¿Eliminar ${n} servicio${n > 1 ? "s" : ""} extra?\n\nEs trabajo que se hizo: borrado, ya no se cobra. Los que estén dentro de un periodo ya facturado no se tocan.` },
     ],
   },
   servicios: {
     rotulo: n => n === 1 ? "servicio marcado" : "servicios marcados",
+    nombre: n => n === 1 ? "servicio" : "servicios",
     opciones: [
       { rot: "Dar de baja", accion: "activo", valor: false, boton: "Dar de baja",
         confirmar: n => `¿Dar de baja ${n} servicio${n > 1 ? "s" : ""}?\n\nDejan de generarse periodos nuevos. Todo lo registrado se conserva.` },
       { rot: "Reactivar", accion: "activo", valor: true, boton: "Reactivar" },
-      { rot: "Eliminar", accion: "borrar", peligro: true, boton: "Eliminar",
+      { rot: "Eliminar", accion: "borrar", peligro: true, boton: "Eliminar", soloBorrador: true,
         confirmar: n => `¿Eliminar ${n} servicio${n > 1 ? "s" : ""}?\n\nSe borran también todos sus periodos. Los que tengan periodos ya facturados no se borran: a esos deles de baja.` },
     ],
   },
   cotizaciones: {
     rotulo: n => n === 1 ? "cotización marcada" : "cotizaciones marcadas",
+    nombre: n => n === 1 ? "cotización" : "cotizaciones",
     opciones: [
       { rot: "Marcar como enviada", accion: "estado", valor: "enviada", boton: "Marcar enviada" },
       { rot: "Marcar como aceptada", accion: "estado", valor: "aceptada", boton: "Marcar aceptada",
         confirmar: n => `¿Marcar ${n} como aceptada${n > 1 ? "s" : ""}?\n\nUna cotización aceptada ya no se puede editar.` },
       { rot: "Marcar como rechazada", accion: "estado", valor: "rechazada", boton: "Marcar rechazada" },
       { rot: "Volver a borrador", accion: "estado", valor: "borrador", boton: "Volver a borrador" },
-      { rot: "Eliminar", accion: "borrar", peligro: true, boton: "Eliminar",
+      { rot: "Eliminar", accion: "borrar", peligro: true, boton: "Eliminar", soloBorrador: true,
         confirmar: n => `¿Eliminar ${n} cotización${n > 1 ? "es" : ""}?\n\nSe van también sus líneas. Las aceptadas quedan como respaldo y no se borran.` },
     ],
   },
   contactos: {
     rotulo: n => n === 1 ? "contacto marcado" : "contactos marcados",
+    nombre: n => n === 1 ? "contacto" : "contactos",
     opciones: [
       { rot: "Marcar como contactado", accion: "estado", valor: "contactado", boton: "Marcar contactado" },
       { rot: "Marcar como cotizado", accion: "estado", valor: "cotizado", boton: "Marcar cotizado" },
       { rot: "Marcar como cerrado", accion: "estado", valor: "cerrado", boton: "Marcar cerrado" },
       { rot: "Marcar como descartado", accion: "estado", valor: "descartado", boton: "Descartar" },
-      { rot: "Eliminar", accion: "borrar", peligro: true, boton: "Eliminar",
+      { rot: "Eliminar", accion: "borrar", peligro: true, boton: "Eliminar", soloBorrador: true,
         confirmar: n => `¿Eliminar ${n} contacto${n > 1 ? "s" : ""}? Son personas que pidieron que las llamaran.` },
     ],
   },
@@ -433,14 +451,22 @@ function pintarBarraSel() {
   $("#barra-sel")?.remove();
   const n = seleccion.ids.size;
   const def = ACCIONES[seleccion.tipo];
-  if (!n || !def) {
+  // Una advertencia sobre algo que ya se hizo tiene que quedarse en pantalla
+  // aunque no quede nada marcado, o nadie se entera.
+  const soloAvisos = !n && seleccion.aviso?.avisos?.length > 0;
+  if ((!n || !def) && !soloAvisos) {
     document.body.classList.remove("hay-seleccion");
     $("main").style.paddingBottom = "";
     return;
   }
+  if (soloAvisos) return pintarBarraAvisos(def);
   if (seleccion.op >= def.opciones.length) seleccion.op = 0;
   const op = def.opciones[seleccion.op];
   const a = seleccion.aviso;
+  // Borrar lo hace una sola persona. Al resto no se le esconde el botón: se le
+  // muestra apagado y se le dice a quién pedírselo.
+  const vetado = op.soloBorrador && estado.usuario?.puede_borrar !== true;
+  const quienes = estado.quienBorra.length ? estado.quienBorra.join(" o ") : "la gerencia";
 
   const barra = document.createElement("div");
   barra.id = "barra-sel";
@@ -453,14 +479,17 @@ function pintarBarraSel() {
           `<option value="${i}"${i === seleccion.op ? " selected" : ""}>${esc(o.rot)}</option>`).join("")}
       </select>
       ${(op.pide || []).map(campoSel).join("")}
-      <button class="bt${op.peligro ? " bt--mal" : ""}" id="sel-aplicar">${esc(op.boton)}</button>
+      <button class="bt${op.peligro ? " bt--mal" : ""}" id="sel-aplicar"${vetado ? " disabled" : ""}>${esc(op.boton)}</button>
       <button class="bt bt--fino" id="sel-nada">Quitar selección</button>
-      <span class="mensaje${a ? (a.hechos ? " ok" : " error") : ""}">${
-        a ? esc(`${a.hechos} listo${a.hechos === 1 ? "" : "s"}${a.omitidos.length ? ` · ${a.omitidos.length} sin tocar` : ""}`)
+      <span class="mensaje${vetado ? " error" : a ? (a.hechos ? " ok" : " error") : ""}">${
+        vetado ? esc(`Solo ${quienes} puede eliminar. Pídaselo.`)
+        : a ? esc(`${a.hechos} listo${a.hechos === 1 ? "" : "s"}${a.omitidos.length ? ` · ${a.omitidos.length} sin tocar` : ""}`)
           : esc(def.nota || "")}</span>
     </div>
     ${a && a.omitidos.length
-      ? `<ul class="omitidos">${a.omitidos.map(o => `<li>${esc(o.razon)}</li>`).join("")}</ul>` : ""}`;
+      ? `<ul class="omitidos">${a.omitidos.map(o => `<li>${esc(o.razon)}</li>`).join("")}</ul>` : ""}
+    ${a && a.avisos?.length
+      ? `<ul class="omitidos omitidos--ojo">${a.avisos.map(t => `<li>${esc(t)}</li>`).join("")}</ul>` : ""}`;
   document.body.appendChild(barra);
   document.body.classList.add("hay-seleccion");
   // Sin este hueco la barra tapa las últimas filas de la tabla.
@@ -480,7 +509,29 @@ function pintarBarraSel() {
     seleccion.aviso = null;
     repintarSeleccion();
   };
-  $("#sel-aplicar").onclick = aplicarSeleccion;
+  if (!vetado) $("#sel-aplicar").onclick = aplicarSeleccion;
+}
+
+/** La barra cuando ya no queda nada marcado pero algo hay que advertir. */
+function pintarBarraAvisos(def) {
+  const a = seleccion.aviso;
+  const barra = document.createElement("div");
+  barra.id = "barra-sel";
+  barra.className = "barra-sel";
+  barra.innerHTML = `
+    <div class="barra-sel__fila">
+      <span class="barra-sel__n">${a.hechos}<span>${def ? def.nombre(a.hechos) : "registros"}</span></span>
+      <span class="mensaje ok">Hecho. Lea esto antes de seguir:</span>
+      <button class="bt bt--fino" id="sel-nada" style="margin-left:auto">Entendido</button>
+    </div>
+    <ul class="omitidos omitidos--ojo">${a.avisos.map(t => `<li>${esc(t)}</li>`).join("")}</ul>`;
+  document.body.appendChild(barra);
+  document.body.classList.add("hay-seleccion");
+  $("main").style.paddingBottom = (barra.offsetHeight + 24) + "px";
+  $("#sel-nada").onclick = () => {
+    seleccion.aviso = null;
+    repintarSeleccion();
+  };
 }
 
 async function aplicarSeleccion() {
@@ -488,7 +539,7 @@ async function aplicarSeleccion() {
   const op = def.opciones[seleccion.op];
   const ids = [...seleccion.ids];
   if (!ids.length) return;
-  if (op.confirmar && !confirm(op.confirmar(ids.length))) return;
+  if (op.confirmar && !confirm(op.confirmar(ids.length, ids))) return;
 
   const cuerpo = { tipo: seleccion.tipo, accion: op.accion, ids };
   if ("valor" in op) cuerpo.valor = op.valor;
@@ -509,11 +560,12 @@ async function aplicarSeleccion() {
   try {
     const r = await pedir("/lote", { method: "POST", body: JSON.stringify(cuerpo) });
     const omitidos = r.omitidos || [];
+    const avisos = r.avisos || [];
     // Lo que no se pudo hacer queda marcado: así se ve sobre qué hay que volver.
     seleccion.ids = new Set(omitidos.map(o => o.id).filter(Boolean));
-    seleccion.aviso = { hechos: r.hechos, omitidos };
-    if (!omitidos.length) {
-      recado(`${r.hechos} ${def.rotulo(r.hechos)}: listo`);
+    seleccion.aviso = { hechos: r.hechos, omitidos, avisos };
+    if (!omitidos.length && !avisos.length) {
+      recado(`${r.hechos} ${def.nombre(r.hechos)}: listo`);
       seleccion.aviso = null;
     }
     await refrescarVista();
@@ -541,7 +593,7 @@ function recado(texto, tipo = "ok") {
   recadoReloj = setTimeout(() => el.remove(), 4200);
 }
 
-let estado = { usuario: null, panel: null, catalogos: null, vista: "panel" };
+let estado = { usuario: null, quienBorra: [], panel: null, catalogos: null, vista: "panel" };
 
 async function pedir(ruta, opciones) {
   const r = await fetch("/api" + ruta, {
@@ -1551,9 +1603,9 @@ function pintarCambioClave(usuario) {
 }
 
 async function arrancar() {
-  let usuario;
+  let usuario, quien_borra;
   try {
-    ({ usuario } = await pedir("/yo"));
+    ({ usuario, quien_borra } = await pedir("/yo"));
   } catch (e) {
     return pintarIngreso(e.message.includes("Sin sesión") ? "" : e.message);
   }
@@ -1561,6 +1613,7 @@ async function arrancar() {
 
   try {
     estado.usuario = usuario;
+    estado.quienBorra = quien_borra || [];
     $("#quien").innerHTML =
       `<b>${esc(usuario.nombre)}</b>${esc(usuario.usuario)} · ${esc(usuario.rol)}`;
     $("#quien").insertAdjacentHTML("afterend",

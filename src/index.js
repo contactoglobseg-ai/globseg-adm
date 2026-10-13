@@ -70,7 +70,23 @@ async function identificar(request, env) {
 const sinClave = (u) => ({
   usuario: u.usuario, nombre: u.nombre, rol: u.rol,
   debe_cambiar_clave: u.debe_cambiar_clave, permisos: u.permisos,
+  puede_borrar: u.puede_borrar === true,
 });
+
+/**
+ * Nombres de quienes pueden borrar. La pantalla los muestra para que el que no
+ * puede sepa a quién pedírselo, en vez de toparse con un botón apagado.
+ * Si la columna todavía no existe, no se inventa a nadie.
+ */
+async function quienBorra(env) {
+  try {
+    const filas = await buscar(env,
+      'usuarios?select=nombre&puede_borrar=is.true&activo=is.true&order=nombre.asc');
+    return filas.map((f) => f.nombre);
+  } catch {
+    return [];
+  }
+}
 
 const puede = (usuario, modulo) => !!usuario?.permisos?.includes(modulo);
 
@@ -223,7 +239,9 @@ async function api(request, env, url, usuario) {
     ? await request.json().catch(() => ({}))
     : {};
 
-  if (ruta === '/yo') return json({ usuario: sinClave(usuario) });
+  if (ruta === '/yo') {
+    return json({ usuario: sinClave(usuario), quien_borra: await quienBorra(env) });
+  }
 
   if (ruta === '/clave' && metodo === 'POST') {
     const r = await cambiarClave(env, usuario, cuerpo.actual, cuerpo.nueva);
@@ -253,6 +271,14 @@ async function api(request, env, url, usuario) {
   // Acciones sobre varios registros marcados a la vez. El permiso lo revisa
   // adentro, porque depende de qué se esté tocando.
   if (ruta === '/lote' && metodo === 'POST') {
+    // Borrar es lo único que no se puede deshacer leyendo la bitácora, así que
+    // no basta el módulo: hace falta el permiso personal.
+    if (cuerpo.accion === 'borrar' && usuario.puede_borrar !== true) {
+      const quienes = await quienBorra(env);
+      return error(quienes.length
+        ? `Solo ${quienes.join(' o ')} puede eliminar. Pídaselo.`
+        : 'No tiene permiso para eliminar.', 403);
+    }
     const r = await lote.aplicar(env, usuario, puede, cuerpo);
     if (r.error) return error(r.error, r.status);
     return json(r);
