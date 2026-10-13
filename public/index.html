@@ -459,14 +459,24 @@ function pintarNuevoServicio() {
     ${aviso("ojo", "Acá empieza el control de los 30 días",
       "Al elegir el día de inicio, el sistema crea el primer periodo y, al cumplirse los días del ciclo, lo marca para solicitar la OC.")}
     <section class="caja" style="max-width:820px">
-      <div class="caja__tit"><h2>Nuevo servicio</h2></div>
+      <div class="caja__tit"><h2>Nuevo servicio</h2>
+        <span class="nota">Si la instalación no existe todavía, escríbala y se crea sola</span></div>
       <form id="f-servicio">
         <div class="rejilla">
-          <label class="campo" style="grid-column:1/-1"><span>Instalación</span>
-            <select name="instalacion_id" required>
-              <option value="">— elegir —</option>
-              ${inst.map(i => `<option value="${i.id}">${esc(i.nombre)}${i.comuna ? " · " + esc(i.comuna) : ""}</option>`).join("")}
-            </select></label>
+          <label class="campo" style="grid-column:1/-1"><span>Instalación o parque</span>
+            <input name="instalacion" required list="lista-inst" autocomplete="off"
+                   placeholder="Ej: PMGD Los Maitenes"></label>
+          <datalist id="lista-inst">
+            ${inst.map(i => `<option value="${esc(i.nombre)}">`).join("")}
+          </datalist>
+          <label class="campo"><span>Cliente</span>
+            <input name="cliente" list="lista-clientes" autocomplete="off"
+                   placeholder="A quién se le factura"></label>
+          <datalist id="lista-clientes">
+            ${[...new Set(inst.map(i => i.cliente))].map(c => `<option value="${esc(c)}">`).join("")}
+          </datalist>
+          <label class="campo"><span>Comuna</span>
+            <input name="comuna" placeholder="Dónde queda"></label>
           <label class="campo" style="grid-column:1/-1"><span>Nombre del servicio</span>
             <input name="nombre" required placeholder="Ej: Vigilancia 24/7 con pareja de patrullaje"></label>
           <label class="campo"><span>Día de inicio</span>

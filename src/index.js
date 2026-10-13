@@ -124,6 +124,49 @@ async function ponerCiclosAlDia(env) {
   return nuevos.length + cierres.length;
 }
 
+/**
+ * Encuentra la instalación por nombre, o la crea junto con su cliente si no
+ * existe. Así la oficina puede dar de alta un parque nuevo sin que nadie tenga
+ * que cargarlo antes en otra pantalla.
+ *
+ * La comparación es sin mayúsculas ni espacios de sobra, para que "PMGD Rengo"
+ * y "pmgd rengo " no terminen siendo dos instalaciones distintas.
+ */
+async function resolverInstalacion(env, usuario, cuerpo) {
+  if (entero(cuerpo.instalacion_id)) {
+    const i = await primero(env, `instalaciones?select=id&id=eq.${entero(cuerpo.instalacion_id)}`);
+    return i || { error: 'Esa instalación no existe' };
+  }
+
+  const nombre = (cuerpo.instalacion || '').trim();
+  if (!nombre) return { error: 'Escriba el nombre de la instalación' };
+  if (nombre.length > 160) return { error: 'El nombre de la instalación es demasiado largo' };
+
+  const igual = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+  const instalaciones = await buscar(env, 'instalaciones?select=id,nombre');
+  const ya = instalaciones.find((i) => igual(i.nombre, nombre));
+  if (ya) return ya;
+
+  const nombreCliente = (cuerpo.cliente || '').trim() || 'Sin cliente asignado';
+  const clientes = await buscar(env, 'clientes?select=id,nombre');
+  let cliente = clientes.find((c) => igual(c.nombre, nombreCliente));
+  if (!cliente) {
+    [cliente] = await insertar(env, 'clientes', { nombre: nombreCliente });
+    await anotar(env, usuario.usuario, 'cliente', cliente.id, 'creado', nombreCliente);
+  }
+
+  const [nueva] = await insertar(env, 'instalaciones', {
+    cliente_id: cliente.id,
+    nombre,
+    comuna: (cuerpo.comuna || '').trim() || null,
+    region: (cuerpo.region || '').trim() || null,
+  });
+  await anotar(env, usuario.usuario, 'instalacion', nueva.id, 'creada',
+               `${nombre}${cuerpo.comuna ? ' · ' + cuerpo.comuna : ''} para ${nombreCliente}`);
+  return nueva;
+}
+
 // ---------------------------------------------------------------- panel
 const ORDEN = { solicitar_oc: 1, pendiente_facturacion: 2, en_curso: 3, cerrado: 4 };
 
@@ -236,8 +279,7 @@ async function api(request, env, url, usuario) {
 
   // Alta de un servicio continuo: acá se elige el día de inicio.
   if (ruta === '/servicios' && metodo === 'POST') {
-    const { instalacion_id, nombre, fecha_inicio, dias_ciclo, monto_neto } = cuerpo;
-    if (!entero(instalacion_id)) return error('Falta la instalación');
+    const { nombre, fecha_inicio, dias_ciclo, monto_neto } = cuerpo;
     if (!nombre?.trim()) return error('Falta el nombre del servicio');
     if (!esFecha(fecha_inicio)) return error('La fecha de inicio no es válida');
 
@@ -249,11 +291,11 @@ async function api(request, env, url, usuario) {
       return error('El ciclo debe ser un número de días entre 1 y 365');
     }
 
-    const inst = await primero(env, `instalaciones?select=id&id=eq.${entero(instalacion_id)}`);
-    if (!inst) return error('Esa instalación no existe');
+    const inst = await resolverInstalacion(env, usuario, cuerpo);
+    if (inst.error) return error(inst.error, inst.status || 400);
 
     const [creado] = await insertar(env, 'servicios', {
-      instalacion_id: entero(instalacion_id), nombre: nombre.trim(),
+      instalacion_id: inst.id, nombre: nombre.trim(),
       fecha_inicio, dias_ciclo: dias, monto_neto: entero(monto_neto),
       creado_por: usuario.email,
     });

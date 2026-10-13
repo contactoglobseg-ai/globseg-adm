@@ -186,21 +186,9 @@ insert into tarifas (codigo, nombre, unidad, precio, grupo) values
   ('12', 'Combustible',                                 'global', 50000,   'Vehículo')
 on conflict do nothing;
 
--- Instalaciones: salen de "servicios extra ordinarios .docx".
--- El nombre del cliente no aparece en esos documentos: renombrarlo desde la app.
-insert into clientes (nombre) values ('Cliente PMGD — falta confirmar el nombre')
-on conflict do nothing;
-
-insert into instalaciones (cliente_id, nombre, comuna, region)
-select c.id, v.nombre, v.comuna, v.region
-from clientes c,
-     (values ('PMGD San Ramón','Paine','Metropolitana'),
-             ('PMGD Rengo','Rengo','O''Higgins'),
-             ('PMGD Puelche','Los Ángeles','Biobío'),
-             ('PMGD Loncura','Puchuncaví','Valparaíso'),
-             ('PMGD El Cauce','Calama','Antofagasta')) as v(nombre, comuna, region)
-where c.nombre = 'Cliente PMGD — falta confirmar el nombre'
-  and not exists (select 1 from instalaciones i where i.nombre = v.nombre);
+-- Las instalaciones y los clientes los crea la propia empresa desde la
+-- pantalla de nuevo servicio. No se siembran: una lista precargada que nadie
+-- revisó termina con nombres que no calzan con los reales.
 
 -- Usuarios. El acceso lo da Cloudflare Access; acá se define el rol.
 -- Falta el correo de la prevencionista.
