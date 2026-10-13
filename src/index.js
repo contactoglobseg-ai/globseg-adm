@@ -145,6 +145,9 @@ async function panel(env) {
     (ORDEN[a.estado] - ORDEN[b.estado]) || a.hasta.localeCompare(b.hasta));
 
   const abiertos = ciclos.filter((c) => c.estado !== 'cerrado');
+  // Facturado y todavía sin cobrar: la plata que salió en factura y no entró.
+  const facturadosSinCobrar = ciclos.filter(
+    (c) => c.estado === 'cerrado' && c.pago_estado === 'por_cobrar');
   return {
     hoy: hoyISO(),
     ciclos,
@@ -154,6 +157,10 @@ async function panel(env) {
       pendiente_facturacion: ciclos.filter((c) => c.estado === 'pendiente_facturacion').length,
       en_curso:              ciclos.filter((c) => c.estado === 'en_curso').length,
       neto_por_cobrar:       abiertos.reduce((t, c) => t + c.total_neto, 0),
+      facturado_sin_cobrar:  facturadosSinCobrar.length,
+      neto_facturado_sin_cobrar: facturadosSinCobrar.reduce((t, c) => t + c.total_neto, 0),
+      dias_mas_antiguo:      facturadosSinCobrar.reduce(
+                               (m, c) => Math.max(m, c.dias_desde_factura || 0), 0),
       extras_sin_asignar:    sueltos.length,
       neto_extras_sueltos:   sueltos.reduce((t, e) => t + (Number(e.monto_neto) || 0), 0),
     },
@@ -265,15 +272,45 @@ async function api(request, env, url, usuario) {
     if (!actual) return error('Ese periodo no existe', 404);
 
     const campos = {};
-    for (const k of ['oc_numero', 'oc_fecha', 'factura_folio', 'factura_fecha', 'notas']) {
+    for (const k of ['oc_numero', 'oc_fecha', 'factura_folio', 'factura_fecha', 'notas',
+                     'pago_fecha', 'factoring', 'pago_notas']) {
       if (k in cuerpo) campos[k] = cuerpo[k] === '' ? null : cuerpo[k];
     }
     if ('monto_neto' in cuerpo) campos.monto_neto = entero(cuerpo.monto_neto);
-
-    for (const k of ['oc_fecha', 'factura_fecha']) {
-      if (campos[k] && !esFecha(campos[k])) {
-        return error(`La fecha de ${k.startsWith('oc') ? 'la OC' : 'la factura'} no es válida`);
+    if ('pago_monto' in cuerpo) {
+      campos.pago_monto = cuerpo.pago_monto === '' ? null : entero(cuerpo.pago_monto);
+      if (campos.pago_monto !== null && campos.pago_monto < 0) {
+        return error('El monto recibido no puede ser negativo');
       }
+    }
+
+    for (const k of ['oc_fecha', 'factura_fecha', 'pago_fecha']) {
+      if (campos[k] && !esFecha(campos[k])) {
+        const cual = k === 'oc_fecha' ? 'la OC' : k === 'factura_fecha' ? 'la factura' : 'el pago';
+        return error(`La fecha de ${cual} no es válida`);
+      }
+    }
+
+    if ('pago_estado' in cuerpo) {
+      if (!['por_cobrar', 'pagado', 'factorizado'].includes(cuerpo.pago_estado)) {
+        return error('Ese estado de pago no existe');
+      }
+      campos.pago_estado = cuerpo.pago_estado;
+      // No se cobra lo que no se ha facturado: así el panel no miente.
+      const folio = 'factura_folio' in campos ? campos.factura_folio : actual.factura_folio;
+      if (campos.pago_estado !== 'por_cobrar' && !folio) {
+        return error('Primero registre el folio de la factura: no se puede marcar como pagado algo que no se ha facturado');
+      }
+      if (campos.pago_estado !== 'por_cobrar') {
+        const fecha = 'pago_fecha' in campos ? campos.pago_fecha : actual.pago_fecha;
+        if (!fecha) return error('Indique la fecha en que entró la plata');
+      } else {
+        // Volver a "por cobrar" limpia lo que ya no corresponde.
+        campos.pago_fecha = null;
+        campos.pago_monto = null;
+        campos.factoring = null;
+      }
+      if (campos.pago_estado !== 'factorizado') campos.factoring = null;
     }
 
     const fin = { ...actual, ...campos };

@@ -94,6 +94,15 @@ tbody tr:hover{background:#FAFBF9}
 td.num,th.num{text-align:right}
 .vacio{padding:26px 16px;text-align:center;color:var(--texto-2);font-size:.9rem}
 
+/* ---------- cobranza ---------- */
+.p-pagado{background:var(--verde-suave);color:var(--verde)}
+.p-factorizado{background:#EAE4FB;color:#5B3BB8}
+.p-por_cobrar{background:var(--cian-suave);color:var(--cian)}
+.p-por_cobrar.atrasado{background:var(--ambar-suave);color:var(--ambar)}
+tr.fila--cobrado td:first-child{box-shadow:inset 3px 0 0 var(--verde)}
+tr.fila--facturado td:first-child{box-shadow:inset 3px 0 0 var(--cian)}
+tr.fila--atrasado td:first-child{box-shadow:inset 3px 0 0 var(--ambar)}
+
 /* ---------- estados ---------- */
 .sello{display:inline-block;font-size:.66rem;letter-spacing:.09em;text-transform:uppercase;
   font-weight:700;padding:4px 8px;border-radius:3px;white-space:nowrap}
@@ -207,9 +216,26 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
 const ROTULO = {
   solicitar_oc: "Solicitar OC",
   pendiente_facturacion: "Pendiente de facturación",
-  cerrado: "Servicio cerrado",
+  cerrado: "Facturado",
   en_curso: "En curso",
 };
+
+const ROTULO_PAGO = {
+  por_cobrar: "Por cobrar",
+  pagado: "Pagado",
+  factorizado: "Factorizado",
+};
+
+/** Una factura sin cobrar a más de 45 días merece verse distinto. */
+const atrasado = c => c.estado === "cerrado" && c.pago_estado === "por_cobrar"
+  && (c.dias_desde_factura || 0) > 45;
+
+/** El color de la fila dice lo que de verdad importa: si entró la plata. */
+function marcaDeFila(c) {
+  if (c.estado !== "cerrado") return c.estado === "solicitar_oc" ? "solicitar_oc" : c.estado;
+  if (c.pago_estado !== "por_cobrar") return "cobrado";
+  return atrasado(c) ? "atrasado" : "facturado";
+}
 
 let estado = { usuario: null, panel: null, catalogos: null, vista: "panel" };
 
@@ -252,6 +278,10 @@ function pintarPanel() {
       <small>Cumplieron los 30 días</small></div>
     <div class="ficha"><dt>Pendiente de facturación</dt><dd class="num">${r.pendiente_facturacion}</dd>
       <small>Con OC, sin factura</small></div>
+    <div class="ficha ficha--ojo"><dt>Facturado sin cobrar</dt>
+      <dd class="num">${clp(r.neto_facturado_sin_cobrar)}</dd>
+      <small>${r.facturado_sin_cobrar} factura${r.facturado_sin_cobrar === 1 ? "" : "s"}${
+        r.dias_mas_antiguo ? ` · la más antigua hace ${r.dias_mas_antiguo} días` : ""}</small></div>
     <div class="ficha"><dt>En curso</dt><dd class="num">${r.en_curso}</dd>
       <small>Periodo corriendo</small></div>
   </dl>`;
@@ -286,10 +316,10 @@ function tablaCiclos(titulo, filas, vacio) {
   h += `<div class="desliza"><table><thead><tr>
       <th>Instalación</th><th>Servicio</th><th>Periodo</th><th>Estado</th>
       <th class="num">Base</th><th class="num">Extras</th><th class="num">Neto</th>
-      <th class="num">Total con IVA</th><th>OC</th><th>Factura</th><th></th>
+      <th class="num">Total con IVA</th><th>OC</th><th>Factura</th><th>Cobranza</th><th></th>
     </tr></thead><tbody>`;
   for (const c of filas) {
-    h += `<tr class="fila--${c.estado}">
+    h += `<tr class="fila--${marcaDeFila(c)}">
       <td><b>${esc(c.instalacion)}</b><span class="sub">${esc(c.cliente)}</span></td>
       <td>${esc(c.servicio)}</td>
       <td class="num nowrap">N°${c.numero}<span class="sub nowrap">${fecha(c.desde)} → ${fecha(c.hasta)}</span></td>
@@ -302,6 +332,12 @@ function tablaCiclos(titulo, filas, vacio) {
       <td class="num nowrap">${clp(c.total)}<span class="sub">IVA ${clp(c.iva)}</span></td>
       <td class="nowrap">${c.oc_numero ? esc(c.oc_numero) + `<span class="sub">${fecha(c.oc_fecha)}</span>` : "—"}</td>
       <td class="nowrap">${c.factura_folio ? esc(c.factura_folio) + `<span class="sub">${fecha(c.factura_fecha)}</span>` : "—"}</td>
+      <td class="nowrap">${c.estado !== "cerrado" ? "—" : `
+        <span class="sello p-${c.pago_estado}${atrasado(c) ? " atrasado" : ""}">${ROTULO_PAGO[c.pago_estado]}</span>
+        ${c.pago_estado === "por_cobrar"
+          ? (c.dias_desde_factura != null ? `<span class="sub">hace ${c.dias_desde_factura} días</span>` : "")
+          : `<span class="sub">${fecha(c.pago_fecha)}${c.pago_monto ? " · " + clp(c.pago_monto) : ""}</span>`}
+        ${c.factoring ? `<span class="sub">${esc(c.factoring)}</span>` : ""}`}</td>
       <td class="nowrap"><button class="bt bt--fino bt--chico" data-editar="${c.id}">${c.estado === "cerrado" ? "Ver" : "Registrar"}</button></td>
     </tr>
     <tr hidden data-form="${c.id}"><td colspan="11" style="background:var(--papel-2);padding:0">
@@ -327,12 +363,32 @@ function formCiclo(c) {
       <label class="campo" style="grid-column:1/-1"><span>Notas</span>
         <input name="notas" value="${esc(c.notas || "")}" placeholder="Lo que haya que recordar de este periodo"></label>
     </div>
+    <div class="caja__tit" style="background:transparent;border-top:1px solid var(--raya)">
+      <h2 style="font-size:.88rem">Cobranza</h2>
+      <span class="nota">${c.factura_folio ? "" : "Primero registre el folio de la factura"}</span>
+    </div>
+    <div class="rejilla" style="padding-top:0">
+      <label class="campo"><span>¿Entró la plata?</span>
+        <select name="pago_estado" data-pago>
+          ${["por_cobrar","pagado","factorizado"].map(e =>
+            `<option value="${e}"${e === (c.pago_estado || "por_cobrar") ? " selected" : ""}>${ROTULO_PAGO[e]}</option>`).join("")}
+        </select></label>
+      <label class="campo"><span>Fecha en que entró</span>
+        <input name="pago_fecha" type="date" value="${esc(c.pago_fecha || "")}"></label>
+      <label class="campo"><span>Monto recibido</span>
+        <input name="pago_monto" type="number" min="0" step="1" value="${c.pago_monto ?? ""}"
+               placeholder="Si fue distinto al total"></label>
+      <label class="campo"><span>Empresa de factoring</span>
+        <input name="factoring" value="${esc(c.factoring || "")}" placeholder="Solo si se factorizó"></label>
+      <label class="campo" style="grid-column:1/-1"><span>Notas de cobranza</span>
+        <input name="pago_notas" value="${esc(c.pago_notas || "")}" placeholder="Ej: pagan a 60 días, contacto en finanzas"></label>
+    </div>
     <div class="pie-form">
       <button class="bt" type="submit">Guardar</button>
       <button class="bt bt--fino" type="button" data-cerrar="${c.id}">Cancelar</button>
       <span class="mensaje"></span>
       <span style="margin-left:auto;font-size:.8rem;color:var(--texto-2)">
-        Con OC y folio, el periodo queda cerrado.</span>
+        Con OC y folio queda facturado. Verde cuando la plata entró.</span>
     </div>
   </form>`;
 }
