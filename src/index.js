@@ -172,7 +172,7 @@ async function resolverInstalacion(env, usuario, cuerpo) {
 
   const instalaciones = await buscar(env, 'instalaciones?select=id,nombre');
   const ya = instalaciones.find((i) => mismoNombre(i.nombre, nombre));
-  if (ya) return ya;
+  if (ya) return { ...ya, ya_existia: true };
 
   const nombreCliente = (cuerpo.cliente || '').trim() || 'Sin cliente asignado';
   const cliente = await resolverCliente(env, usuario, nombreCliente);
@@ -186,6 +186,17 @@ async function resolverInstalacion(env, usuario, cuerpo) {
   await anotar(env, usuario.usuario, 'instalacion', nueva.id, 'creada',
                `${nombre}${cuerpo.comuna ? ' · ' + cuerpo.comuna : ''} para ${nombreCliente}`);
   return nueva;
+}
+
+/** El periodo de esa instalación que contiene esa fecha, si existe. */
+async function cicloDeLaFecha(env, instalacion_id, fecha) {
+  const servicios = await buscar(env,
+    `servicios?select=id&instalacion_id=eq.${instalacion_id}`);
+  if (!servicios.length) return null;
+  const ids = servicios.map((s) => s.id).join(',');
+  return primero(env,
+    `ciclos?select=id,numero,estado,desde,hasta&servicio_id=in.(${ids})`
+    + `&desde=lte.${fecha}&hasta=gte.${fecha}&order=id.asc`);
 }
 
 // ---------------------------------------------------------------- panel
@@ -338,6 +349,16 @@ async function api(request, env, url, usuario) {
         extras: ce.get(i.id) || 0,
       })),
     });
+  }
+
+  // Alta directa, sin pasar por un servicio: hay parques que se cargan antes
+  // de tener nada contratado, para dejarlos listos.
+  if (ruta === '/instalaciones' && metodo === 'POST') {
+    const inst = await resolverInstalacion(env, usuario, cuerpo);
+    if (inst.error) return error(inst.error, inst.status || 400);
+    // Si ya existía se devuelve esa misma en vez de crear una repetida, pero
+    // hay que decirlo: si no, quien la cargó cree que agregó una nueva.
+    return json({ ok: true, id: inst.id, ya_existia: inst.ya_existia === true }, 201);
   }
 
   const mInst = ruta.match(/^\/instalaciones\/(\d+)$/);
@@ -577,14 +598,16 @@ async function api(request, env, url, usuario) {
 
   // Servicios extraordinarios.
   if (ruta === '/extras' && metodo === 'POST') {
-    const { instalacion_id, fecha, tarifa_id, cantidad, detalle, ciclo_id } = cuerpo;
-    if (!entero(instalacion_id)) return error('Falta la instalación');
+    const { fecha, tarifa_id, cantidad, detalle } = cuerpo;
     if (!esFecha(fecha)) return error('La fecha no es válida');
     const cant = Number(cantidad);
     if (!Number.isFinite(cant) || cant <= 0) return error('La cantidad debe ser mayor que cero');
 
-    const inst = await primero(env, `instalaciones?select=id&id=eq.${entero(instalacion_id)}`);
-    if (!inst) return error('Esa instalación no existe');
+    // La instalación se escribe. Muchos extras ocurren en parques donde no hay
+    // un servicio permanente, así que exigir que ya existiera dejaba fuera
+    // justo los trabajos sueltos que hay que cobrar aparte.
+    const inst = await resolverInstalacion(env, usuario, cuerpo);
+    if (inst.error) return error(inst.error, inst.status || 400);
 
     // El ítem puede salir del tarifario o escribirse a mano, y el precio del
     // tarifario se puede ajustar: hay servicios que se negocian caso a caso y
@@ -602,6 +625,13 @@ async function api(request, env, url, usuario) {
     }
     if (nombreItem.length > 200) return error('La descripción del ítem es demasiado larga');
 
+    // El ítem se escribe, así que puede venir sin id aunque sea uno del
+    // tarifario. Se busca por nombre para no perder de dónde salió el precio.
+    if (!t) {
+      const tarifas = await buscar(env, 'tarifas?select=*&activo=is.true');
+      t = tarifas.find((x) => mismoNombre(x.nombre, nombreItem)) || null;
+    }
+
     // Vacío significa "el de lista"; un valor presente se usa tal cual, aunque
     // sea cero: un servicio de cortesía también hay que dejarlo escrito.
     const dioPrecio = cuerpo.precio_unitario !== undefined
@@ -617,10 +647,15 @@ async function api(request, env, url, usuario) {
       return error('Falta el precio del ítem');
     }
 
+    // El periodo ya no se elige: lo decide la fecha del servicio. Elegirlo a
+    // mano era un paso que se olvidaba, y un extra sin periodo es exactamente
+    // la plata que se escapaba sin facturar.
+    const periodo = await cicloDeLaFecha(env, inst.id, fecha);
+
     const neto = Math.round(precio * cant);
     const [creado] = await insertar(env, 'extras', {
-      instalacion_id: entero(instalacion_id),
-      ciclo_id: ciclo_id ? entero(ciclo_id) : null,
+      instalacion_id: inst.id,
+      ciclo_id: periodo && periodo.estado !== 'cerrado' ? periodo.id : null,
       fecha, tarifa_id: t ? t.id : null, item: nombreItem, cantidad: cant,
       precio_unitario: precio, monto_neto: neto,
       detalle: detalle?.trim() || null, creado_por: usuario.usuario,
@@ -633,7 +668,22 @@ async function api(request, env, url, usuario) {
       : t ? '' : ' · ítem fuera del tarifario';
     await anotar(env, usuario.usuario, 'extra', creado.id, 'registrado',
                  `${nombreItem} x${cant} a ${precio} = ${neto} el ${fecha}${ajuste}`);
-    return json({ ok: true, id: creado.id, monto_neto: neto }, 201);
+
+    // Decir dónde quedó, siempre. Un extra que cae en un periodo ya facturado
+    // o en una instalación sin servicio queda suelto a propósito, y quien lo
+    // registró tiene que enterarse en el momento, no un mes después.
+    let nota;
+    if (!periodo) {
+      nota = 'Queda sin asignar: esa instalación no tiene ningún periodo que cubra esa fecha. Aparece en el panel para cobrarlo aparte.';
+    } else if (periodo.estado === 'cerrado') {
+      nota = `El periodo N°${periodo.numero} de esa fecha ya está facturado, así que queda sin asignar para cobrarlo aparte.`;
+    }
+    return json({
+      ok: true, id: creado.id, monto_neto: neto,
+      periodo: periodo && periodo.estado !== 'cerrado'
+        ? { numero: periodo.numero, desde: periodo.desde, hasta: periodo.hasta } : null,
+      nota,
+    }, 201);
   }
 
   // Asignar un extra suelto a un periodo, para que se cobre.
@@ -672,6 +722,32 @@ async function api(request, env, url, usuario) {
     if (!filas.length) return error('Ese contacto no existe', 404);
     await anotar(env, usuario.usuario, 'contacto', id, 'actualizado', campos.estado || null);
     return json({ ok: true });
+  }
+
+  // Agenda del mes: lo que pasa y lo que hay que hacer, en fechas.
+  if (ruta === '/agenda' && metodo === 'GET') {
+    const mes = url.searchParams.get('mes') || hoyISO().slice(0, 7);
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(mes)) return error('Ese mes no es válido');
+    const primerDia = mes + '-01';
+    const [a, m] = mes.split('-').map(Number);
+    const ultimoDia = new Date(Date.UTC(a, m, 0)).toISOString().slice(0, 10);
+
+    const [ciclos, extras] = await Promise.all([
+      // Un periodo entra en el mes si lo pisa, aunque empiece antes o termine
+      // después: lo que interesa es qué está corriendo en esos días.
+      buscar(env, `v_ciclos?select=*&desde=lte.${ultimoDia}&hasta=gte.${primerDia}`),
+      buscar(env, `v_extras?select=*&fecha=gte.${primerDia}&fecha=lte.${ultimoDia}&order=fecha.asc`),
+    ]);
+
+    return json({
+      mes, primer_dia: primerDia, ultimo_dia: ultimoDia, hoy: hoyISO(),
+      ciclos: ciclos.map((c) => {
+        const neto = Number(c.total_neto) || 0;
+        return { ...c, total_neto: neto, iva: Math.round(neto * IVA),
+                 total: neto + Math.round(neto * IVA) };
+      }),
+      extras,
+    });
   }
 
   if (ruta === '/bitacora' && metodo === 'GET') {

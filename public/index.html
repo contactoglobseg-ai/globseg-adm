@@ -206,6 +206,48 @@ tr.marcada:hover{background:#D3E7F4}
 /* Lo que no se hizo va en rojo; lo que sí se hizo pero hay que saber, en ámbar. */
 .omitidos--ojo{color:#FFDFAE}
 .barra-sel .bt[disabled]{opacity:.45}
+
+/* ---------- calendario ---------- */
+.mes{display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap}
+.mes h2{font-size:1.5rem;min-width:230px}
+.mes .bt{padding:7px 11px}
+.cal{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:1px;
+  background:var(--raya);border:1px solid var(--raya);border-radius:4px;overflow:hidden}
+.cal__dia-sem{background:var(--papel-2);padding:7px 9px;font-size:.64rem;font-weight:700;
+  letter-spacing:.12em;text-transform:uppercase;color:var(--texto-2)}
+.cal__dia{background:#fff;min-height:104px;padding:6px 7px;display:flex;flex-direction:column;gap:3px}
+.cal__dia--fuera{background:var(--papel-2);opacity:.55}
+.cal__dia--hoy{box-shadow:inset 0 0 0 2px var(--tinta)}
+.cal__n{font-family:var(--display);font-size:1.05rem;line-height:1;color:var(--texto-2)}
+.cal__dia--hoy .cal__n{color:var(--tinta);font-weight:700}
+.chip{display:block;width:100%;text-align:left;border:0;border-radius:3px;cursor:pointer;
+  padding:3px 6px;font:600 .68rem/1.3 var(--cuerpo);overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.chip--inicio{background:var(--gris-suave);color:var(--gris)}
+.chip--cierre{background:var(--ambar-suave);color:var(--ambar)}
+.chip--extra{background:var(--cian-suave);color:var(--cian)}
+.chip--extra.suelto{background:var(--rojo-suave);color:var(--rojo)}
+.chip--factura{background:var(--verde-suave);color:var(--verde)}
+.chip--mas{background:var(--papel-2);color:var(--texto-2)}
+.cal__chips{display:flex;flex-direction:column;gap:3px;min-width:0}
+.leyenda{display:flex;gap:14px;flex-wrap:wrap;margin:12px 0 0;font-size:.76rem;color:var(--texto-2)}
+.leyenda span{display:flex;align-items:center;gap:5px}
+.leyenda i{width:10px;height:10px;border-radius:2px;display:inline-block}
+/* En teléfono el texto del chip no alcanza a leerse: queda un "$5…" que no
+   dice nada. Mejor un punto de color, y el detalle al tocar el día. */
+@media (max-width:620px){
+  .cal__dia{min-height:58px;padding:5px 6px;gap:5px}
+  .cal__chips{flex-direction:row;flex-wrap:wrap;gap:4px}
+  /* currentColor es el color fuerte del chip: así el punto calza con la
+     leyenda en vez de quedar en el tono pálido del fondo. */
+  /* Con .chip a secas, la regla de dos clases .chip--extra.suelto le gana y el
+     punto queda rosa pálido en vez de rojo. */
+  .cal__chips .chip{width:9px;height:9px;padding:0;border-radius:50%;flex:none;
+    background:currentColor}
+  .chip span{display:none}
+  .chip--mas{box-shadow:inset 0 0 0 1px var(--raya)}
+  .mes h2{min-width:0;font-size:1.3rem}
+}
 .barra-sel label.campo{gap:3px}
 .barra-sel label.campo>span{color:var(--sobre-tinta-2);font-size:.62rem}
 .recado{position:fixed;left:50%;transform:translateX(-50%);bottom:24px;z-index:50;
@@ -995,6 +1037,8 @@ async function pintarServicios() {
  * toca nada de lo ya registrado. Borrar solo sirve para las que nacieron por
  * error y no tienen nada colgando.
  */
+let abrirFormInst = false;
+
 async function pintarInstalaciones() {
   $("#app").innerHTML = `<p class="cargando">Cargando…</p>`;
   const { instalaciones } = await pedir("/instalaciones");
@@ -1006,12 +1050,37 @@ async function pintarInstalaciones() {
       <span class="nota" style="color:var(--texto-2);font-size:.85rem">
         ${activas} en las listas${instalaciones.length - activas
           ? ` · ${instalaciones.length - activas} de baja` : ""}</span>
+      <button class="bt" id="nueva-inst" style="margin-left:auto">
+        ${abrirFormInst ? "Ocultar formulario" : "Nueva instalación"}</button>
     </div>
     ${aviso("ojo", "Esta es la lista que sale en los desplegables",
-      "Las instalaciones se crean solas al escribir el nombre en un servicio. Acá se corrigen, se sacan de las listas o se borran las que quedaron por error.")}
+      "Se agregan acá, o se crean solas al escribir el nombre al cargar un servicio o un extra. En esta pantalla además se corrigen, se sacan de las listas o se borran las que quedaron por error.")}
     <datalist id="lista-clientes">
       ${[...new Set(instalaciones.map(i => i.cliente))].map(c => `<option value="${esc(c)}">`).join("")}
     </datalist>
+    <section class="caja" style="max-width:860px"${abrirFormInst ? "" : " hidden"}>
+      <div class="caja__tit"><h2>Nueva instalación</h2>
+        <span class="nota">Si ya existe una con ese nombre, no se duplica</span></div>
+      <form id="f-inst">
+        <div class="rejilla">
+          <label class="campo" style="grid-column:1/-1"><span>Instalación o parque</span>
+            <input name="instalacion" required autocomplete="off"
+                   placeholder="Ej: PMGD Los Maitenes"></label>
+          <label class="campo"><span>Cliente</span>
+            <input name="cliente" list="lista-clientes" autocomplete="off"
+                   placeholder="A quién se le factura"></label>
+          <label class="campo"><span>Comuna</span>
+            <input name="comuna" placeholder="Dónde queda"></label>
+          <label class="campo"><span>Región</span>
+            <input name="region" placeholder="Opcional"></label>
+        </div>
+        <div class="pie-form">
+          <button class="bt" type="submit">Agregar</button>
+          <span class="mensaje"></span>
+        </div>
+      </form>
+    </section>
+
     <section class="caja">
       <div class="caja__tit"><h2>Instalaciones cargadas</h2>
         <span class="nota">Marque varias para darlas de baja o eliminarlas</span></div>
@@ -1035,10 +1104,32 @@ async function pintarInstalaciones() {
           ${formInstalacion(i)}
         </td></tr>`).join("")}
       </tbody></table></div>`
-      : `<p class="vacio">Todavía no hay instalaciones. Se crean solas cuando Joaquín escribe el nombre del parque al cargar un servicio.</p>`}
+      : `<p class="vacio">Todavía no hay instalaciones. Agregue la primera con el botón de arriba, o escriba el nombre del parque al cargar un servicio y se crea sola.</p>`}
     </section>`;
 
   conectarSeleccion();
+
+  $("#nueva-inst").onclick = () => { abrirFormInst = !abrirFormInst; pintarInstalaciones(); };
+
+  $("#f-inst").onsubmit = async ev => {
+    ev.preventDefault();
+    const f = ev.target, msj = f.querySelector(".mensaje");
+    decir(msj, "Guardando…");
+    try {
+      const r = await pedir("/instalaciones",
+        { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(f))) });
+      if (r.ya_existia) {
+        // No es un error, pero tampoco es lo que pidió: hay que decirlo.
+        decir(msj, "Ya existía una con ese nombre: no se creó otra", "error");
+        return;
+      }
+      f.reset();
+      abrirFormInst = false;
+      estado.catalogos = await pedir("/catalogos");
+      recado("Instalación agregada");
+      await pintarInstalaciones();
+    } catch (e) { decir(msj, e.message, "error"); }
+  };
 
   document.querySelectorAll("[data-editar-inst]").forEach(b => {
     b.onclick = () => {
@@ -1137,102 +1228,250 @@ function formServicio(s) {
 
 function pintarNuevoExtra() {
   const { tarifas, instalaciones } = estado.catalogos;
-  const grupos = [...new Set(tarifas.map(t => t.grupo))];
-  const abiertos = estado.panel.ciclos.filter(c => c.estado !== "cerrado");
   $("#app").innerHTML = `
     ${aviso("ojo", "Registre el extra el mismo día que ocurre",
-      "Si queda sin asignar a un periodo, aparece en rojo en el panel hasta que se asigne. Así no se pierde ninguno.")}
-    <section class="caja" style="max-width:820px">
-      <div class="caja__tit"><h2>Registrar servicio extraordinario</h2></div>
+      "El periodo lo decide la fecha del servicio. Si esa fecha no cae en ningún periodo —porque el parque no tiene servicio permanente— queda en el panel para cobrarlo aparte, y no se pierde.")}
+    <section class="caja" style="max-width:860px">
+      <div class="caja__tit"><h2>Registrar servicio extraordinario</h2>
+        <span class="nota">Si el parque no existe todavía, escríbalo y se crea solo</span></div>
       <form id="f-extra">
         <div class="rejilla">
-          <label class="campo"><span>Instalación</span>
-            <select name="instalacion_id" required><option value="">— elegir —</option>
-              ${instalaciones.map(i => `<option value="${i.id}">${esc(i.nombre)}</option>`).join("")}
-            </select></label>
+          <label class="campo" style="grid-column:1/-1"><span>Instalación o parque</span>
+            <input name="instalacion" required list="lista-inst" autocomplete="off" id="in-inst"
+                   placeholder="Ej: PMGD Los Maitenes"></label>
+          <datalist id="lista-inst">
+            ${instalaciones.map(i => `<option value="${esc(i.nombre)}">${esc(i.cliente)}</option>`).join("")}
+          </datalist>
+          <label class="campo"><span>Cliente</span>
+            <input name="cliente" list="lista-clientes" autocomplete="off" id="in-cliente"
+                   placeholder="A quién se le factura"></label>
+          <datalist id="lista-clientes">
+            ${[...new Set(instalaciones.map(i => i.cliente))].map(c => `<option value="${esc(c)}">`).join("")}
+          </datalist>
           <label class="campo"><span>Fecha del servicio</span>
-            <input name="fecha" type="date" required value="${new Date().toISOString().slice(0, 10)}"></label>
-          <label class="campo" style="grid-column:1/-1"><span>Ítem del tarifario</span>
-            <select name="tarifa_id" required id="sel-tarifa"><option value="">— elegir —</option>
-              ${grupos.map(g => `<optgroup label="${esc(g)}">` +
-                tarifas.filter(t => t.grupo === g).map(t =>
-                  `<option value="${t.id}" data-precio="${t.precio}" data-unidad="${esc(t.unidad || "")}">${esc(t.nombre)} — ${clp(t.precio)} por ${esc(t.unidad)}</option>`).join("") +
-                "</optgroup>").join("")}
-              <optgroup label="Fuera del tarifario">
-                <option value="otro">Otro ítem — lo escribo y le pongo precio</option>
-              </optgroup>
-            </select></label>
-          <label class="campo" style="grid-column:1/-1" id="campo-item" hidden><span>Qué se hizo</span>
-            <input name="item" id="in-item" maxlength="200"
-                   placeholder="Ej: Guardia adicional por corte de camino"></label>
+            <input name="fecha" type="date" required value="${hoyISO()}" id="in-fecha"></label>
+
+          <label class="campo" style="grid-column:1/-1"><span>Qué se hizo</span>
+            <input name="item" required list="lista-tarifas" autocomplete="off" id="in-item"
+                   maxlength="200" placeholder="Escríbalo o elíjalo del tarifario"></label>
+          <datalist id="lista-tarifas">
+            ${tarifas.map(t => `<option value="${esc(t.nombre)}">${clp(t.precio)}${
+              t.unidad ? " por " + esc(t.unidad) : ""}</option>`).join("")}
+          </datalist>
           <label class="campo"><span>Precio unitario</span>
-            <input name="precio_unitario" type="number" min="0" step="1" id="in-precio"
-                   placeholder="0"></label>
+            <input name="precio_unitario" type="number" min="0" step="1" id="in-precio" placeholder="0"></label>
           <label class="campo"><span>Cantidad</span>
             <input name="cantidad" type="number" min="0.5" step="0.5" value="1" required id="in-cant"></label>
-          <label class="campo"><span>Periodo al que se cobra</span>
-            <select name="ciclo_id"><option value="">Asignar después</option>
-              ${abiertos.map(c => `<option value="${c.id}">${esc(c.instalacion)} · N°${c.numero}</option>`).join("")}
-            </select></label>
           <label class="campo" style="grid-column:1/-1"><span>Detalle</span>
             <input name="detalle" placeholder="Ej: 3 horas diarias sábado 30 y domingo 31"></label>
         </div>
         <div class="pie-form">
           <button class="bt" type="submit">Registrar</button>
           <span class="mensaje"></span>
-          <span style="margin-left:auto;font-weight:600" id="calculo">Neto: —</span>
+          <span style="margin-left:auto;font-weight:600;text-align:right" id="calculo">Neto: —</span>
         </div>
       </form>
     </section>`;
-  // El precio del tarifario se propone, no se impone: hay servicios que se
-  // negocian caso a caso y antes había que elegir el ítem más parecido y
-  // tragarse un monto que no era el real.
-  const deLista = () => {
-    const op = $("#sel-tarifa").selectedOptions[0];
-    const v = op?.dataset.precio;
-    return v === undefined ? null : Number(v);
-  };
+
+  const igual = (a, b) => (a || "").trim().toLowerCase() === (b || "").trim().toLowerCase();
+  /** La tarifa cuyo nombre calza con lo escrito, si es que alguna calza. */
+  const tarifaEscrita = () =>
+    tarifas.find(t => igual(t.nombre, $("#in-item").value)) || null;
 
   const recalcular = () => {
     const precio = Number($("#in-precio").value || 0);
     const cant = Number($("#in-cant").value || 0);
     const neto = Math.round(precio * cant);
-    const lista = deLista();
-    const ajustado = lista !== null && precio !== lista;
+    const t = tarifaEscrita();
+    const ajustado = t && precio !== Number(t.precio);
     $("#calculo").innerHTML = neto
       ? `Neto: ${clp(neto)} · IVA: ${clp(neto * 0.19)} · Total: ${clp(neto * 1.19)}`
-        + (ajustado ? `<span class="sub" style="color:var(--ambar);text-align:right">precio ajustado · el de lista es ${clp(lista)}</span>` : "")
+        + (ajustado ? `<span class="sub" style="color:var(--ambar)">precio ajustado · el de lista es ${clp(t.precio)}</span>` : "")
+        + (!t ? `<span class="sub" style="color:var(--cian)">ítem fuera del tarifario</span>` : "")
       : "Neto: —";
   };
 
-  const cambioDeItem = () => {
-    const otro = $("#sel-tarifa").value === "otro";
-    $("#campo-item").hidden = !otro;
-    $("#in-item").required = otro;
-    const op = $("#sel-tarifa").selectedOptions[0];
-    // Al elegir del tarifario el precio se rellena para que se vea y se pueda
-    // corregir; al escribir un ítem propio se parte en blanco.
-    $("#in-precio").value = otro ? "" : (op?.dataset.precio ?? "");
-    const unidad = op?.dataset.unidad;
-    $("#in-precio").placeholder = unidad ? `Por ${unidad}` : "0";
-    if (otro) $("#in-item").focus();
+  // Al escribir o elegir un ítem del tarifario se propone su precio, y queda
+  // editable: hay servicios que se negocian caso a caso.
+  $("#in-item").oninput = () => {
+    const t = tarifaEscrita();
+    if (t) $("#in-precio").value = t.precio;
+    $("#in-precio").placeholder = t?.unidad ? `Por ${t.unidad}` : "0";
     recalcular();
   };
-
-  $("#sel-tarifa").onchange = cambioDeItem;
+  // Al elegir un parque conocido se completa su cliente, para no retipearlo.
+  $("#in-inst").oninput = () => {
+    const i = instalaciones.find(x => igual(x.nombre, $("#in-inst").value));
+    if (i && !$("#in-cliente").value.trim()) $("#in-cliente").value = i.cliente;
+  };
   $("#in-precio").oninput = recalcular;
   $("#in-cant").oninput = recalcular;
+
   $("#f-extra").onsubmit = async ev => {
     ev.preventDefault();
     const f = ev.target, msj = f.querySelector(".mensaje");
     decir(msj, "Guardando…");
     try {
       const r = await pedir("/extras", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(f))) });
-      decir(msj, `Registrado · ${clp(r.monto_neto)} neto`, "ok");
-      f.reset(); cambioDeItem();
+      // Dónde quedó importa tanto como el monto: un extra sin periodo es el que
+      // se escapa sin facturar, y hay que saberlo ahora, no en un mes.
+      decir(msj, `Registrado · ${clp(r.monto_neto)} neto`
+        + (r.periodo ? ` · va en el periodo N°${r.periodo.numero}` : ""),
+        r.nota ? "" : "ok");
+      if (r.nota) recado(r.nota, "mal");
+      f.reset();
+      $("#in-fecha").value = hoyISO();
+      $("#in-precio").placeholder = "0";
+      recalcular();
+      estado.catalogos = await pedir("/catalogos");
       await recargar({ repintar: false });
     } catch (e) { decir(msj, e.message, "error"); }
   };
+}
+
+// ------------------------------------------------------------- calendario
+const MESES = ["enero","febrero","marzo","abril","mayo","junio",
+               "julio","agosto","septiembre","octubre","noviembre","diciembre"];
+
+let mesVisto = null;   // "YYYY-MM"
+let diaAbierto = null; // "YYYY-MM-DD"
+
+const mesVecino = (mes, paso) => {
+  const [a, m] = mes.split("-").map(Number);
+  const d = new Date(Date.UTC(a, m - 1 + paso, 1));
+  return d.toISOString().slice(0, 7);
+};
+
+/**
+ * El calendario del mes. Existe porque el panel contesta "cuánto falta por
+ * cobrar" pero no "qué pasa esta semana": cuándo cierra un periodo y hay que
+ * pedir la OC, y qué días hubo servicios extra.
+ */
+async function pintarCalendario() {
+  mesVisto = mesVisto || hoyISO().slice(0, 7);
+  $("#app").innerHTML = `<p class="cargando">Cargando…</p>`;
+  const ag = await pedir(`/agenda?mes=${mesVisto}`);
+
+  // Todo lo del mes, indexado por día: así cada casilla se arma de una pasada.
+  const porDia = new Map();
+  const enDia = (f) => {
+    if (!porDia.has(f)) porDia.set(f, []);
+    return porDia.get(f);
+  };
+  for (const c of ag.ciclos) {
+    enDia(c.desde).push({ tipo: "inicio", ciclo: c,
+      texto: `Parte N°${c.numero} · ${c.instalacion}` });
+    enDia(c.hasta).push({ tipo: "cierre", ciclo: c,
+      texto: `Cierra N°${c.numero} · ${c.instalacion}` });
+    if (c.factura_fecha) {
+      enDia(c.factura_fecha).push({ tipo: "factura", ciclo: c,
+        texto: `Factura ${c.factura_folio} · ${c.instalacion}` });
+    }
+  }
+  for (const e of ag.extras) {
+    enDia(e.fecha).push({ tipo: "extra", extra: e, suelto: !e.ciclo_id,
+      texto: `${clp(e.monto_neto)} · ${e.item}` });
+  }
+
+  const [anio, mes] = mesVisto.split("-").map(Number);
+  const primero = new Date(Date.UTC(anio, mes - 1, 1));
+  const dias = new Date(Date.UTC(anio, mes, 0)).getUTCDate();
+  // getUTCDay() da 0 para domingo; acá la semana parte el lunes.
+  const corrimiento = (primero.getUTCDay() + 6) % 7;
+
+  const netoExtras = ag.extras.reduce((t, e) => t + Number(e.monto_neto || 0), 0);
+  const cierran = ag.ciclos.filter(c => c.hasta >= ag.primer_dia && c.hasta <= ag.ultimo_dia);
+
+  let casillas = "";
+  for (let i = 0; i < corrimiento; i++) casillas += `<div class="cal__dia cal__dia--fuera"></div>`;
+  for (let d = 1; d <= dias; d++) {
+    const iso = `${mesVisto}-${String(d).padStart(2, "0")}`;
+    const cosas = porDia.get(iso) || [];
+    casillas += `<div class="cal__dia${iso === ag.hoy ? " cal__dia--hoy" : ""}">
+      <span class="cal__n">${d}</span>
+      <div class="cal__chips">
+        ${cosas.slice(0, 3).map(x =>
+          `<button class="chip chip--${x.tipo}${x.suelto ? " suelto" : ""}" data-dia="${iso}"
+                   title="${esc(x.texto)}"><span>${esc(x.texto)}</span></button>`).join("")}
+        ${cosas.length > 3
+          ? `<button class="chip chip--mas" data-dia="${iso}" title="${cosas.length - 3} más ese día"><span>+${cosas.length - 3} más</span></button>`
+          : ""}
+      </div>
+    </div>`;
+  }
+  const resto = (7 - ((corrimiento + dias) % 7)) % 7;
+  for (let i = 0; i < resto; i++) casillas += `<div class="cal__dia cal__dia--fuera"></div>`;
+
+  $("#app").innerHTML = `
+    <div class="mes">
+      <button class="bt bt--fino" id="mes-antes" aria-label="Mes anterior">←</button>
+      <h2>${MESES[mes - 1]} ${anio}</h2>
+      <button class="bt bt--fino" id="mes-despues" aria-label="Mes siguiente">→</button>
+      <button class="bt bt--fino" id="mes-hoy">Hoy</button>
+      <span class="nota" style="margin-left:auto;color:var(--texto-2);font-size:.85rem">
+        ${ag.ciclos.length} periodo${ag.ciclos.length === 1 ? "" : "s"} corriendo${
+          cierran.length ? ` · ${cierran.length} cierra${cierran.length === 1 ? "" : "n"} este mes` : ""}${
+          ag.extras.length ? ` · ${ag.extras.length} extra${ag.extras.length === 1 ? "" : "s"} por ${clp(netoExtras)}` : ""}
+      </span>
+    </div>
+
+    <div class="cal">
+      ${["lun","mar","mié","jue","vie","sáb","dom"].map(d =>
+        `<div class="cal__dia-sem">${d}</div>`).join("")}
+      ${casillas}
+    </div>
+
+    <div class="leyenda">
+      <span><i style="background:var(--gris)"></i>Parte un periodo</span>
+      <span><i style="background:var(--ambar)"></i>Cierra un periodo · pedir la OC</span>
+      <span><i style="background:var(--cian)"></i>Servicio extra asignado</span>
+      <span><i style="background:var(--rojo)"></i>Servicio extra sin asignar</span>
+      <span><i style="background:var(--verde)"></i>Factura emitida</span>
+    </div>
+
+    <div id="detalle-dia" style="margin-top:20px"></div>`;
+
+  const abrir = (iso) => {
+    diaAbierto = iso;
+    const cosas = porDia.get(iso) || [];
+    $("#detalle-dia").innerHTML = `
+      <section class="caja">
+        <div class="caja__tit"><h2>${fecha(iso)}</h2>
+          <span class="nota">${cosas.length} cosa${cosas.length === 1 ? "" : "s"} ese día</span></div>
+        ${cosas.length ? `<div class="desliza"><table style="min-width:620px"><tbody>
+          ${cosas.map(x => `<tr>
+            <td style="width:190px"><span class="sello ${
+              x.tipo === "cierre" ? "e-solicitar_oc"
+              : x.tipo === "factura" ? "e-cerrado"
+              : x.tipo === "extra" ? (x.suelto ? "p-por_cobrar atrasado" : "e-pendiente_facturacion")
+              : "e-en_curso"}">${
+              x.tipo === "inicio" ? "Parte periodo"
+              : x.tipo === "cierre" ? "Cierra periodo"
+              : x.tipo === "factura" ? "Factura"
+              : x.suelto ? "Extra sin asignar" : "Extra"}</span></td>
+            <td>${x.tipo === "extra"
+              ? `<b>${esc(x.extra.item)}</b><span class="sub">${esc(x.extra.instalacion)}${
+                  x.extra.detalle ? " · " + esc(x.extra.detalle) : ""}</span>`
+              : `<b>${esc(x.ciclo.instalacion)}</b><span class="sub">${esc(x.ciclo.servicio)} · N°${x.ciclo.numero} · ${fecha(x.ciclo.desde)} → ${fecha(x.ciclo.hasta)}</span>`}</td>
+            <td class="num nowrap"><b>${x.tipo === "extra"
+              ? clp(x.extra.monto_neto) : clp(x.ciclo.total_neto)}</b>
+              <span class="sub">${x.tipo === "extra"
+                ? `${x.extra.cantidad} × ${clp(x.extra.precio_unitario)}` : "neto del periodo"}</span></td>
+          </tr>`).join("")}
+        </tbody></table></div>`
+        : `<p class="vacio">Ese día no tiene nada registrado.</p>`}
+      </section>`;
+  };
+
+  document.querySelectorAll("[data-dia]").forEach(b => {
+    b.onclick = () => abrir(b.dataset.dia);
+  });
+  if (diaAbierto && diaAbierto.startsWith(mesVisto)) abrir(diaAbierto);
+
+  const ir2 = (m) => { mesVisto = m; diaAbierto = null; pintarCalendario(); };
+  $("#mes-antes").onclick = () => ir2(mesVecino(mesVisto, -1));
+  $("#mes-despues").onclick = () => ir2(mesVecino(mesVisto, 1));
+  $("#mes-hoy").onclick = () => ir2(ag.hoy.slice(0, 7));
 }
 
 async function pintarBitacora() {
@@ -1676,6 +1915,7 @@ async function pintarContactos() {
 
 const VISTAS = {
   panel: { rotulo: "Panel", pintar: pintarPanel, modulo: "facturacion" },
+  calendario: { rotulo: "Calendario", pintar: pintarCalendario, modulo: "facturacion" },
   contactos: { rotulo: "Contactos web", pintar: pintarContactos, modulo: "facturacion" },
   cotizaciones: { rotulo: "Cotizaciones", pintar: pintarCotizaciones, modulo: "cotizaciones" },
   servicio: { rotulo: "Servicios", pintar: pintarServicios, modulo: "facturacion" },
