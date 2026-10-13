@@ -336,6 +336,28 @@ async function api(request, env, url, usuario) {
     return json({ ok: true });
   }
 
+  if (ruta === '/contactos' && metodo === 'GET') {
+    return json({ contactos: await buscar(env,
+      'contactos?select=*&order=creado_en.desc&limit=300') });
+  }
+
+  const mContacto = ruta.match(/^\/contactos\/(\d+)$/);
+  if (mContacto && metodo === 'PATCH') {
+    const id = Number(mContacto[1]);
+    const campos = { atendido_por: usuario.usuario, atendido_en: new Date().toISOString() };
+    if ('estado' in cuerpo) {
+      if (!['nuevo','contactado','cotizado','cerrado','descartado'].includes(cuerpo.estado)) {
+        return error('Ese estado no existe');
+      }
+      campos.estado = cuerpo.estado;
+    }
+    if ('notas' in cuerpo) campos.notas = (cuerpo.notas || '').trim() || null;
+    const filas = await actualizar(env, `contactos?id=eq.${id}`, campos);
+    if (!filas.length) return error('Ese contacto no existe', 404);
+    await anotar(env, usuario.usuario, 'contacto', id, 'actualizado', campos.estado || null);
+    return json({ ok: true });
+  }
+
   if (ruta === '/bitacora' && metodo === 'GET') {
     const bitacora = await buscar(env, 'bitacora?select=*&order=id.desc&limit=100');
     return json({ bitacora });
@@ -372,6 +394,68 @@ export default {
     }
 
     try {
+      // Contacto desde la web pública. Es la única ruta sin sesión que
+      // escribe, así que valida con cuidado y recorta todo lo que entra.
+      if (url.pathname === '/api/contacto') {
+        const origen = request.headers.get('origin') || '';
+        const permitidos = ['https://seggarridos.com', 'https://www.seggarridos.com',
+                            'https://globseg-web.contacto-globseg.workers.dev'];
+        // En desarrollo el Worker corre en localhost; ahí se acepta cualquier
+        // origen local para poder probar el circuito completo. En producción
+        // el servidor es adm.seggarridos.com y esta rama nunca se cumple.
+        const enLocal = url.hostname === '127.0.0.1' || url.hostname === 'localhost';
+        const ok = permitidos.includes(origen) ||
+                   (enLocal && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origen));
+        const cors = {
+          'access-control-allow-origin': ok ? origen : permitidos[0],
+          'access-control-allow-methods': 'POST, OPTIONS',
+          'access-control-allow-headers': 'content-type',
+          'access-control-max-age': '86400',
+        };
+        if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
+        if (request.method !== 'POST') {
+          return new Response(JSON.stringify({ error: 'Método no permitido' }),
+            { status: 405, headers: { ...cors, 'content-type': 'application/json' } });
+        }
+
+        const d = await request.json().catch(() => ({}));
+        const texto = (v, max) => {
+          const t = typeof v === 'string' ? v.trim() : '';
+          return t ? t.slice(0, max) : null;
+        };
+        const nombre = texto(d.Nombre ?? d.nombre, 120);
+        const telefono = texto(d['Teléfono'] ?? d.telefono ?? d.fono, 40);
+        if (!nombre) {
+          return new Response(JSON.stringify({ error: 'Falta el nombre' }),
+            { status: 400, headers: { ...cors, 'content-type': 'application/json' } });
+        }
+        if (!telefono && !texto(d.Correo ?? d.email, 120)) {
+          return new Response(JSON.stringify({ error: 'Falta un teléfono o un correo' }),
+            { status: 400, headers: { ...cors, 'content-type': 'application/json' } });
+        }
+
+        try {
+          await insertar(env, 'contactos', {
+            nombre,
+            telefono,
+            email: texto(d.Correo ?? d.email, 120),
+            empresa: texto(d.Empresa ?? d.empresa, 160),
+            comuna: texto(d.Comuna ?? d.comuna, 120),
+            que_cuidar: texto(d['Qué hay que cuidar'] ?? d.lugar, 160),
+            servicio: texto(d.Servicio ?? d.servicio, 120),
+            turno: texto(d.Turno ?? d.turno, 60),
+            detalle: texto(d.Detalle ?? d.detalle, 2000),
+            origen: texto(d.Origen ?? d.origen, 120),
+          });
+        } catch (e) {
+          console.error('contacto:', e.message);
+          return new Response(JSON.stringify({ error: 'No se pudo guardar. Intente de nuevo.' }),
+            { status: 502, headers: { ...cors, 'content-type': 'application/json' } });
+        }
+        return new Response(JSON.stringify({ ok: true }),
+          { status: 201, headers: { ...cors, 'content-type': 'application/json' } });
+      }
+
       // Revisa la configuración sin mostrar ningún valor: solo responde
       // sí o no sobre la forma de las claves. Sirve para no adivinar cuando
       // la conexión falla.

@@ -886,8 +886,58 @@ async function generarPDF(c) {
   }
 }
 
+// ------------------------------------------------------------- contactos web
+const ESTADOS_CONTACTO = ["nuevo","contactado","cotizado","cerrado","descartado"];
+
+async function pintarContactos() {
+  $("#app").innerHTML = `<p class="cargando">Cargando…</p>`;
+  const { contactos } = await pedir("/contactos");
+  const nuevos = contactos.filter(c => c.estado === "nuevo").length;
+  $("#app").innerHTML = `
+    ${nuevos ? aviso("ojo", `${nuevos} contacto${nuevos > 1 ? "s" : ""} sin atender`,
+      "Llegaron desde el formulario de la página y nadie los ha tomado todavía.") : ""}
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:18px;flex-wrap:wrap">
+      <h2 style="font-size:1.5rem">Contactos de la web</h2>
+      <span class="nota" style="color:var(--texto-2);font-size:.85rem">${contactos.length} en total</span>
+    </div>
+    <section class="caja">
+      ${contactos.length ? `<div class="desliza"><table><thead><tr>
+        <th>Llegó</th><th>Nombre</th><th>Contacto</th><th>Qué necesita</th>
+        <th>Estado</th><th>Notas</th>
+      </tr></thead><tbody>
+        ${contactos.map(c => `<tr>
+          <td class="num nowrap">${esc(String(c.creado_en).slice(8,10))}-${esc(String(c.creado_en).slice(5,7))}-${esc(String(c.creado_en).slice(0,4))}
+            <span class="sub">${esc(String(c.creado_en).slice(11,16))}</span></td>
+          <td><b>${esc(c.nombre)}</b>${c.empresa ? `<span class="sub">${esc(c.empresa)}</span>` : ""}</td>
+          <td class="nowrap">${c.telefono ? esc(c.telefono) : ""}${c.email ? `<span class="sub">${esc(c.email)}</span>` : ""}</td>
+          <td>${esc(c.que_cuidar || c.servicio || "—")}
+            ${c.turno ? `<span class="sub">turno ${esc(c.turno)}</span>` : ""}
+            ${c.comuna ? `<span class="sub">${esc(c.comuna)}</span>` : ""}
+            ${c.detalle ? `<span class="sub">${esc(c.detalle)}</span>` : ""}</td>
+          <td><select data-estado="${c.id}" style="min-width:132px">
+            ${ESTADOS_CONTACTO.map(e => `<option value="${e}"${e === c.estado ? " selected" : ""}>${e}</option>`).join("")}
+          </select></td>
+          <td><input data-notas="${c.id}" value="${esc(c.notas || "")}" placeholder="Qué se hizo" style="min-width:180px"></td>
+        </tr>`).join("")}
+      </tbody></table></div>`
+      : `<p class="vacio">Todavía no ha llegado ningún contacto desde la página.</p>`}
+    </section>`;
+
+  const guardar = async (id, campos) => {
+    try { await pedir(`/contactos/${id}`, { method: "PATCH", body: JSON.stringify(campos) }); }
+    catch (e) { alert(e.message); }
+  };
+  document.querySelectorAll("[data-estado]").forEach(sel => {
+    sel.onchange = () => guardar(sel.dataset.estado, { estado: sel.value });
+  });
+  document.querySelectorAll("[data-notas]").forEach(inp => {
+    inp.onchange = () => guardar(inp.dataset.notas, { notas: inp.value });
+  });
+}
+
 const VISTAS = {
   panel: { rotulo: "Panel", pintar: pintarPanel, modulo: "facturacion" },
+  contactos: { rotulo: "Contactos web", pintar: pintarContactos, modulo: "facturacion" },
   cotizaciones: { rotulo: "Cotizaciones", pintar: pintarCotizaciones, modulo: "cotizaciones" },
   servicio: { rotulo: "Nuevo servicio", pintar: pintarNuevoServicio, modulo: "facturacion" },
   extra: { rotulo: "Registrar extra", pintar: pintarNuevoExtra, modulo: "facturacion" },
@@ -996,10 +1046,10 @@ async function arrancar() {
   try {
     estado.usuario = usuario;
     $("#quien").innerHTML =
-      `<b>${esc(usuario.nombre)}</b>${esc(usuario.usuario)} · ${esc(usuario.rol)} · ` +
-      `<a href="#" id="salir" style="color:var(--sobre-tinta-2);text-decoration:underline">salir</a>`;
-    $("#salir").onclick = async ev => {
-      ev.preventDefault();
+      `<b>${esc(usuario.nombre)}</b>${esc(usuario.usuario)} · ${esc(usuario.rol)}`;
+    $("#quien").insertAdjacentHTML("afterend",
+      `<button class="bt bt--fino bt--chico" id="salir" style="margin-left:12px">Cerrar sesión</button>`);
+    $("#salir").onclick = async () => {
       await pedir("/sesion", { method: "DELETE" }).catch(() => {});
       location.reload();
     };
