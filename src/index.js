@@ -564,13 +564,22 @@ async function api(request, env, url, usuario) {
 async function revisarTablas(env) {
   const r = {};
   for (const t of ['usuarios', 'clientes', 'instalaciones', 'servicios', 'tarifas',
-                   'ciclos', 'extras', 'bitacora', 'cotizaciones', 'cotizacion_items']) {
+                   'ciclos', 'extras', 'bitacora', 'cotizaciones', 'cotizacion_items',
+                   'contactos']) {
     try {
       await buscar(env, `${t}?select=count&limit=1`);
       r[t] = true;
     } catch {
       r[t] = false;
     }
+  }
+  // Columnas que llegaron después: si faltan, es que quedó una migración sin
+  // correr y el sistema lo dice en vez de fallar en medio de un trámite.
+  try {
+    await buscar(env, 'ciclos?select=pago_estado&limit=1');
+    r.ciclos_con_cobranza = true;
+  } catch {
+    r.ciclos_con_cobranza = false;
   }
   return r;
 }
