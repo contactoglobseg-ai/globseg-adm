@@ -607,6 +607,12 @@ async function revisarTablas(env) {
   } catch {
     r.ciclos_con_cobranza = false;
   }
+  try {
+    await buscar(env, 'usuarios?select=puede_borrar&limit=1');
+    r.permiso_de_borrar = true;
+  } catch {
+    r.permiso_de_borrar = false;
+  }
   return r;
 }
 
