@@ -763,6 +763,20 @@ function formCiclo(c) {
   </form>`;
 }
 
+/**
+ * Dice de dónde salió el precio de un extra. Un monto distinto al del tarifario
+ * no es un error —hay servicios que se negocian— pero mirando la tabla nadie
+ * tiene por qué adivinar cuál fue negociado y cuál no.
+ */
+function notaDePrecio(e) {
+  if (!e.tarifa_id) {
+    return `<span class="sub" style="color:var(--cian)">fuera del tarifario</span>`;
+  }
+  const t = (estado.catalogos?.tarifas || []).find(x => x.id === e.tarifa_id);
+  if (!t || Number(t.precio) === Number(e.precio_unitario)) return "";
+  return `<span class="sub" style="color:var(--ambar)">ajustado · lista ${clp(t.precio)}</span>`;
+}
+
 function tablaSueltos(sueltos) {
   let h = `<section class="caja"><div class="caja__tit">
     <h2>Servicios extra sin asignar</h2>
@@ -772,12 +786,15 @@ function tablaSueltos(sueltos) {
   } else {
     h += `<div class="desliza"><table><thead><tr>${cabeceraSel("extras")}
       <th>Fecha</th><th>Instalación</th><th>Ítem</th>
-      <th class="num">Cant.</th><th class="num">Neto</th><th>Asignar al periodo</th></tr></thead><tbody>`;
+      <th class="num">Cant.</th><th class="num">Precio</th><th class="num">Neto</th>
+      <th>Asignar al periodo</th></tr></thead><tbody>`;
     const abiertos = estado.panel.ciclos.filter(c => c.estado !== "cerrado");
     for (const e of sueltos) {
       h += `<tr>${celdaSel("extras", e.id)}<td class="num">${fecha(e.fecha)}</td><td>${esc(e.instalacion)}</td>
         <td>${esc(e.item)}${e.detalle ? `<br><span style="color:var(--texto-2);font-size:.8rem">${esc(e.detalle)}</span>` : ""}</td>
-        <td class="num">${e.cantidad}</td><td class="num"><b>${clp(e.monto_neto)}</b></td>
+        <td class="num">${e.cantidad}</td>
+        <td class="num nowrap">${clp(e.precio_unitario)}${notaDePrecio(e)}</td>
+        <td class="num"><b>${clp(e.monto_neto)}</b></td>
         <td><select data-asignar="${e.id}">
           <option value="">— elegir —</option>
           ${abiertos.map(c => `<option value="${c.id}">${esc(c.instalacion)} · N°${c.numero} (${fecha(c.desde)})</option>`).join("")}
@@ -1139,9 +1156,18 @@ function pintarNuevoExtra() {
             <select name="tarifa_id" required id="sel-tarifa"><option value="">— elegir —</option>
               ${grupos.map(g => `<optgroup label="${esc(g)}">` +
                 tarifas.filter(t => t.grupo === g).map(t =>
-                  `<option value="${t.id}" data-precio="${t.precio}">${esc(t.nombre)} — ${clp(t.precio)} por ${esc(t.unidad)}</option>`).join("") +
+                  `<option value="${t.id}" data-precio="${t.precio}" data-unidad="${esc(t.unidad || "")}">${esc(t.nombre)} — ${clp(t.precio)} por ${esc(t.unidad)}</option>`).join("") +
                 "</optgroup>").join("")}
+              <optgroup label="Fuera del tarifario">
+                <option value="otro">Otro ítem — lo escribo y le pongo precio</option>
+              </optgroup>
             </select></label>
+          <label class="campo" style="grid-column:1/-1" id="campo-item" hidden><span>Qué se hizo</span>
+            <input name="item" id="in-item" maxlength="200"
+                   placeholder="Ej: Guardia adicional por corte de camino"></label>
+          <label class="campo"><span>Precio unitario</span>
+            <input name="precio_unitario" type="number" min="0" step="1" id="in-precio"
+                   placeholder="0"></label>
           <label class="campo"><span>Cantidad</span>
             <input name="cantidad" type="number" min="0.5" step="0.5" value="1" required id="in-cant"></label>
           <label class="campo"><span>Periodo al que se cobra</span>
@@ -1158,15 +1184,43 @@ function pintarNuevoExtra() {
         </div>
       </form>
     </section>`;
-  const recalcular = () => {
+  // El precio del tarifario se propone, no se impone: hay servicios que se
+  // negocian caso a caso y antes había que elegir el ítem más parecido y
+  // tragarse un monto que no era el real.
+  const deLista = () => {
     const op = $("#sel-tarifa").selectedOptions[0];
-    const precio = Number(op?.dataset.precio || 0), cant = Number($("#in-cant").value || 0);
+    const v = op?.dataset.precio;
+    return v === undefined ? null : Number(v);
+  };
+
+  const recalcular = () => {
+    const precio = Number($("#in-precio").value || 0);
+    const cant = Number($("#in-cant").value || 0);
     const neto = Math.round(precio * cant);
-    $("#calculo").textContent = neto
+    const lista = deLista();
+    const ajustado = lista !== null && precio !== lista;
+    $("#calculo").innerHTML = neto
       ? `Neto: ${clp(neto)} · IVA: ${clp(neto * 0.19)} · Total: ${clp(neto * 1.19)}`
+        + (ajustado ? `<span class="sub" style="color:var(--ambar);text-align:right">precio ajustado · el de lista es ${clp(lista)}</span>` : "")
       : "Neto: —";
   };
-  $("#sel-tarifa").onchange = recalcular;
+
+  const cambioDeItem = () => {
+    const otro = $("#sel-tarifa").value === "otro";
+    $("#campo-item").hidden = !otro;
+    $("#in-item").required = otro;
+    const op = $("#sel-tarifa").selectedOptions[0];
+    // Al elegir del tarifario el precio se rellena para que se vea y se pueda
+    // corregir; al escribir un ítem propio se parte en blanco.
+    $("#in-precio").value = otro ? "" : (op?.dataset.precio ?? "");
+    const unidad = op?.dataset.unidad;
+    $("#in-precio").placeholder = unidad ? `Por ${unidad}` : "0";
+    if (otro) $("#in-item").focus();
+    recalcular();
+  };
+
+  $("#sel-tarifa").onchange = cambioDeItem;
+  $("#in-precio").oninput = recalcular;
   $("#in-cant").oninput = recalcular;
   $("#f-extra").onsubmit = async ev => {
     ev.preventDefault();
@@ -1175,7 +1229,7 @@ function pintarNuevoExtra() {
     try {
       const r = await pedir("/extras", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(f))) });
       decir(msj, `Registrado · ${clp(r.monto_neto)} neto`, "ok");
-      f.reset(); recalcular();
+      f.reset(); cambioDeItem();
       await recargar({ repintar: false });
     } catch (e) { decir(msj, e.message, "error"); }
   };

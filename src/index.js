@@ -586,20 +586,53 @@ async function api(request, env, url, usuario) {
     const inst = await primero(env, `instalaciones?select=id&id=eq.${entero(instalacion_id)}`);
     if (!inst) return error('Esa instalación no existe');
 
-    const t = await primero(env, `tarifas?select=*&id=eq.${entero(tarifa_id)}`);
-    if (!t) return error('Ese ítem del tarifario no existe');
+    // El ítem puede salir del tarifario o escribirse a mano, y el precio del
+    // tarifario se puede ajustar: hay servicios que se negocian caso a caso y
+    // antes había que elegir el ítem más parecido y aceptar un monto que no
+    // era el real.
+    let t = null;
+    if (entero(tarifa_id)) {
+      t = await primero(env, `tarifas?select=*&id=eq.${entero(tarifa_id)}`);
+      if (!t) return error('Ese ítem del tarifario no existe');
+    }
 
-    const neto = Math.round(Number(t.precio) * cant);
+    const nombreItem = (cuerpo.item || '').trim() || (t ? t.nombre : '');
+    if (!nombreItem) {
+      return error('Escriba qué se hizo, o elija un ítem del tarifario');
+    }
+    if (nombreItem.length > 200) return error('La descripción del ítem es demasiado larga');
+
+    // Vacío significa "el de lista"; un valor presente se usa tal cual, aunque
+    // sea cero: un servicio de cortesía también hay que dejarlo escrito.
+    const dioPrecio = cuerpo.precio_unitario !== undefined
+                   && cuerpo.precio_unitario !== null
+                   && cuerpo.precio_unitario !== '';
+    let precio;
+    if (dioPrecio) {
+      precio = entero(cuerpo.precio_unitario);
+      if (precio === null || precio < 0) return error('El precio no es válido');
+    } else if (t) {
+      precio = Number(t.precio);
+    } else {
+      return error('Falta el precio del ítem');
+    }
+
+    const neto = Math.round(precio * cant);
     const [creado] = await insertar(env, 'extras', {
       instalacion_id: entero(instalacion_id),
       ciclo_id: ciclo_id ? entero(ciclo_id) : null,
-      fecha, tarifa_id: t.id, item: t.nombre, cantidad: cant,
-      precio_unitario: t.precio, monto_neto: neto,
-      detalle: detalle?.trim() || null, creado_por: usuario.email,
+      fecha, tarifa_id: t ? t.id : null, item: nombreItem, cantidad: cant,
+      precio_unitario: precio, monto_neto: neto,
+      detalle: detalle?.trim() || null, creado_por: usuario.usuario,
     });
 
-    await anotar(env, usuario.email, 'extra', creado.id, 'registrado',
-                 `${t.nombre} x${cant} = ${neto} el ${fecha}`);
+    // Que el precio no sea el de lista no es un error, pero tiene que quedar
+    // dicho: es justo lo que alguien va a querer revisar en seis meses.
+    const ajuste = t && precio !== Number(t.precio)
+      ? ` · precio ajustado, el de lista era ${t.precio}`
+      : t ? '' : ' · ítem fuera del tarifario';
+    await anotar(env, usuario.usuario, 'extra', creado.id, 'registrado',
+                 `${nombreItem} x${cant} a ${precio} = ${neto} el ${fecha}${ajuste}`);
     return json({ ok: true, id: creado.id, monto_neto: neto }, 201);
   }
 
