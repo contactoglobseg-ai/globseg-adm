@@ -344,6 +344,24 @@ async function api(request, env, url, usuario) {
   return error('Ruta no encontrada', 404);
 }
 
+/**
+ * Dice qué tablas responden. No devuelve ningún dato: solo si cada una existe
+ * y es accesible, para saber si falta correr una migración.
+ */
+async function revisarTablas(env) {
+  const r = {};
+  for (const t of ['usuarios', 'clientes', 'instalaciones', 'servicios', 'tarifas',
+                   'ciclos', 'extras', 'bitacora', 'cotizaciones', 'cotizacion_items']) {
+    try {
+      await buscar(env, `${t}?select=count&limit=1`);
+      r[t] = true;
+    } catch {
+      r[t] = false;
+    }
+  }
+  return r;
+}
+
 // ---------------------------------------------------------------- entrada
 export default {
   async fetch(request, env) {
@@ -368,6 +386,7 @@ export default {
           clave_tiene_caracteres_raros: /[^\x21-\x7E]/.test(k),
           clave_parece_recortada: k.length > 0 && k.length < 30,
           secreto_de_sesion_configurado: !!env.SESION_SECRETO,
+          tablas: await revisarTablas(env),
         });
       }
 
