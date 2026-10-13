@@ -706,9 +706,14 @@ async function revisarTablas(env) {
   } catch {
     r.ciclos_con_cobranza = false;
   }
+  // No basta con que la columna exista: si el update no corrió, nadie tiene el
+  // permiso y los botones quedan apagados para todos. Se informa cuántas
+  // cuentas lo tienen, nunca cuáles: esta ruta es pública.
   try {
-    await buscar(env, 'usuarios?select=puede_borrar&limit=1');
+    const con = await buscar(env,
+      'usuarios?select=usuario&puede_borrar=is.true&activo=is.true');
     r.permiso_de_borrar = true;
+    r.cuentas_que_pueden_borrar = con.length;
   } catch {
     r.permiso_de_borrar = false;
   }
