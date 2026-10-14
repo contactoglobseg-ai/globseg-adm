@@ -18,10 +18,22 @@ import { primero, actualizar } from './datos.js';
 // de verdad frena un ataque por fuerza bruta contra un servicio en línea.
 const ITERACIONES = 100000;
 const MAX_ITERACIONES_PLATAFORMA = 100000;
-const DURACION_SESION = 60 * 60 * 10;      // 10 horas
 const MAX_INTENTOS = 5;
 const BLOQUEO_MINUTOS = 15;
-const COOKIE = 'sesion';
+
+// Dos ámbitos. La oficina entra en adm.seggarridos.com y los guardias en
+// asistencia.seggarridos.com: son dominios distintos y el navegador ya separa
+// sus cookies, pero el nombre distinto evita además que se pisen cuando las
+// dos páginas se prueban en el mismo localhost.
+//
+// La sesión del guardia dura más que la de la oficina porque tiene que cubrir
+// un turno entero: si se le cierra a mitad de las doce horas, el que queda sin
+// marcar la salida es él.
+const COOKIES = { oficina: 'sesion', asistencia: 'asistencia' };
+const DURACION = { oficina: 60 * 60 * 10, asistencia: 60 * 60 * 16 };
+
+const nombreCookie = (ambito) => COOKIES[ambito] || COOKIES.oficina;
+export const duracionSesion = (ambito) => DURACION[ambito] || DURACION.oficina;
 
 const texto = new TextEncoder();
 const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
@@ -92,18 +104,19 @@ async function firmar(datos, secreto) {
   return b64(await crypto.subtle.sign('HMAC', llave, texto.encode(datos)));
 }
 
-export async function crearSesion(usuario, env) {
+export async function crearSesion(usuario, env, ambito = 'oficina') {
   const cuerpo = JSON.stringify({
     u: usuario.usuario,
-    exp: Math.floor(Date.now() / 1000) + DURACION_SESION,
+    a: ambito,
+    exp: Math.floor(Date.now() / 1000) + duracionSesion(ambito),
   });
   const payload = b64(texto.encode(cuerpo));
   return `${payload}.${await firmar(payload, env.SESION_SECRETO)}`;
 }
 
-export async function leerSesion(request, env) {
+export async function leerSesion(request, env, ambito = 'oficina') {
   const cookies = request.headers.get('cookie') || '';
-  const m = cookies.match(new RegExp(`(?:^|;\\s*)${COOKIE}=([^;]+)`));
+  const m = cookies.match(new RegExp(`(?:^|;\\s*)${nombreCookie(ambito)}=([^;]+)`));
   if (!m) return null;
 
   const [payload, firma] = decodeURIComponent(m[1]).split('.');
@@ -115,6 +128,9 @@ export async function leerSesion(request, env) {
     datos = JSON.parse(new TextDecoder().decode(deB64(payload)));
   } catch { return null; }
   if (!datos.u || !datos.exp || datos.exp < Math.floor(Date.now() / 1000)) return null;
+  // Una cookie de guardia no sirve para entrar a la oficina ni al revés,
+  // aunque la firma sea válida: el ámbito va firmado junto con el nombre.
+  if ((datos.a || 'oficina') !== ambito) return null;
   return datos.u;
 }
 
@@ -123,9 +139,9 @@ export async function leerSesion(request, env) {
  * va marcada Secure; en pruebas locales por http se omite, porque si no el
  * navegador o el cliente no la devuelven y no se puede probar nada.
  */
-export function cookieSesion(valor, segundos, seguro = true) {
+export function cookieSesion(valor, segundos, seguro = true, ambito = 'oficina') {
   const partes = [
-    `${COOKIE}=${valor}`,
+    `${nombreCookie(ambito)}=${valor}`,
     'Path=/',
     'HttpOnly',
     'SameSite=Strict',
@@ -135,24 +151,46 @@ export function cookieSesion(valor, segundos, seguro = true) {
   return partes.join('; ');
 }
 
-export const cookieBorrada = (seguro = true) => cookieSesion('', 0, seguro);
+export const cookieBorrada = (seguro = true, ambito = 'oficina') =>
+  cookieSesion('', 0, seguro, ambito);
 
 // ---------------------------------------------------------------- ingreso
 /**
  * Verifica usuario y contraseña, contando intentos fallidos.
  * Devuelve { usuario } o { error, status }.
+ *
+ * `opciones.tabla` permite usar lo mismo para las cuentas de la oficina
+ * (`usuarios`) y para los trabajadores (`trabajadores`), que entran con su RUT
+ * en asistencia.seggarridos.com. El bloqueo por intentos fallidos es lo único
+ * que frena de verdad un ataque por fuerza bruta, y no da tenerlo en una tabla
+ * y olvidarlo en la otra: por eso hay una sola copia de este código.
+ *
+ * `opciones.prepararClave` normaliza lo tecleado antes de compararlo. Para el
+ * guardia eso significa que da lo mismo si escribe el RUT con puntos o sin
+ * ellos: se compara siempre contra la misma forma.
  */
-export async function ingresar(env, nombreUsuario, clave) {
+export async function ingresar(env, nombreUsuario, clave, opciones = {}) {
+  const {
+    tabla = 'usuarios',
+    prepararClave = (c) => c,
+    rotuloClave = 'su contraseña',
+  } = opciones;
+
   const u = typeof nombreUsuario === 'string' ? nombreUsuario.trim().toLowerCase() : '';
   if (!u || typeof clave !== 'string' || !clave) {
-    return { error: 'Escriba su usuario y su contraseña', status: 400 };
+    return { error: `Escriba su usuario y ${rotuloClave}`, status: 400 };
   }
+  clave = prepararClave(clave);
 
   const cuenta = await primero(env,
-    `usuarios?select=*&usuario=eq.${encodeURIComponent(u)}`);
+    `${tabla}?select=*&usuario=eq.${encodeURIComponent(u)}`);
 
   // Mismo mensaje exista o no la cuenta: no se confirma qué usuarios hay.
-  const generico = { error: 'Usuario o contraseña incorrectos', status: 401 };
+  const generico = {
+    error: tabla === 'trabajadores'
+      ? 'Usuario o RUT incorrectos' : 'Usuario o contraseña incorrectos',
+    status: 401,
+  };
   if (!cuenta || !cuenta.activo) {
     // Se gasta un tiempo parecido al de una verificación real.
     await derivar(clave, crypto.getRandomValues(new Uint8Array(16)), ITERACIONES);
@@ -171,14 +209,14 @@ export async function ingresar(env, nombreUsuario, clave) {
       campos.bloqueado_hasta = new Date(Date.now() + BLOQUEO_MINUTOS * 60000).toISOString();
       campos.intentos_fallidos = 0;
     }
-    await actualizar(env, `usuarios?usuario=eq.${encodeURIComponent(u)}`, campos);
+    await actualizar(env, `${tabla}?usuario=eq.${encodeURIComponent(u)}`, campos);
     if (campos.bloqueado_hasta) {
       return { error: `Demasiados intentos. Cuenta bloqueada por ${BLOQUEO_MINUTOS} minutos.`, status: 429 };
     }
     return generico;
   }
 
-  await actualizar(env, `usuarios?usuario=eq.${encodeURIComponent(u)}`, {
+  await actualizar(env, `${tabla}?usuario=eq.${encodeURIComponent(u)}`, {
     intentos_fallidos: 0, bloqueado_hasta: null, ultimo_ingreso: new Date().toISOString(),
   });
   return { usuario: cuenta };

@@ -341,8 +341,10 @@ tr.marcada:hover{background:var(--acento-suave)}
 
 /* ---------- calendario ---------- */
 .mes{display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap}
-.mes h2{font-size:1.5rem;min-width:230px}
-.mes .bt{padding:7px 11px}
+.mes .bt{padding:7px 12px}
+.salto{display:flex;gap:6px;align-items:center}
+.salto select{width:auto;font-size:1.05rem;font-weight:600;letter-spacing:-.02em;
+  padding:7px 10px;border-radius:var(--r-s);background:var(--sup);text-transform:capitalize}
 .cal{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:1px;
   background:var(--borde-suave);border:1px solid var(--borde-suave);
   border-radius:var(--r);overflow:hidden;box-shadow:var(--sombra)}
@@ -380,7 +382,7 @@ tr.marcada:hover{background:var(--acento-suave)}
     background:currentColor}
   .chip span{display:none}
   .chip--mas{box-shadow:inset 0 0 0 1px var(--borde)}
-  .mes h2{min-width:0;font-size:1.3rem}
+  .salto select{font-size:.95rem;padding:6px 8px}
 }
 .barra-sel label.campo{gap:2px}
 .barra-sel label.campo>span{color:var(--texto-3);font-size:.7rem}
@@ -1597,6 +1599,19 @@ const mesVecino = (mes, paso) => {
 };
 
 /**
+ * Los años que vale la pena ofrecer: desde el primer dato cargado hasta el
+ * último, más el que viene. Una lista de cien años para elegir uno es tan
+ * latoso como ir mes por mes con la flecha.
+ */
+function aniosDe(ag) {
+  const hasta = ag.anio_hasta || Number(ag.hoy.slice(0, 4)) + 1;
+  const desde = Math.min(ag.anio_desde || hasta, hasta);
+  const lista = [];
+  for (let a = desde; a <= hasta; a++) lista.push(a);
+  return lista;
+}
+
+/**
  * El calendario del mes. Existe porque el panel contesta "cuánto falta por
  * cobrar" pero no "qué pasa esta semana": cuándo cierra un periodo y hay que
  * pedir la OC, y qué días hubo servicios extra.
@@ -1659,8 +1674,17 @@ async function pintarCalendario() {
   $("#app").innerHTML = `
     <div class="mes">
       <button class="bt bt--fino" id="mes-antes" aria-label="Mes anterior">←</button>
-      <h2>${MESES[mes - 1]} ${anio}</h2>
       <button class="bt bt--fino" id="mes-despues" aria-label="Mes siguiente">→</button>
+      <div class="salto">
+        <select id="salto-mes" aria-label="Mes">
+          ${MESES.map((m, i) =>
+            `<option value="${i + 1}"${i + 1 === mes ? " selected" : ""}>${m}</option>`).join("")}
+        </select>
+        <select id="salto-anio" aria-label="Año">
+          ${aniosDe(ag).map(a =>
+            `<option value="${a}"${a === anio ? " selected" : ""}>${a}</option>`).join("")}
+        </select>
+      </div>
       <button class="bt bt--fino" id="mes-hoy">Hoy</button>
       <span class="nota" style="margin-left:auto;color:var(--texto-2);font-size:.85rem">
         ${ag.ciclos.length} periodo${ag.ciclos.length === 1 ? "" : "s"} corriendo${
@@ -1726,6 +1750,11 @@ async function pintarCalendario() {
   $("#mes-antes").onclick = () => ir2(mesVecino(mesVisto, -1));
   $("#mes-despues").onclick = () => ir2(mesVecino(mesVisto, 1));
   $("#mes-hoy").onclick = () => ir2(ag.hoy.slice(0, 7));
+
+  const saltar = () => ir2(`${$("#salto-anio").value}-${
+    String($("#salto-mes").value).padStart(2, "0")}`);
+  $("#salto-mes").onchange = saltar;
+  $("#salto-anio").onchange = saltar;
 }
 
 async function pintarBitacora() {

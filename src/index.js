@@ -775,15 +775,25 @@ async function api(request, env, url, usuario) {
     const [a, m] = mes.split('-').map(Number);
     const ultimoDia = new Date(Date.UTC(a, m, 0)).toISOString().slice(0, 10);
 
-    const [ciclos, extras] = await Promise.all([
+    const [ciclos, extras, cPrim, cUlt, ePrim, eUlt] = await Promise.all([
       // Un periodo entra en el mes si lo pisa, aunque empiece antes o termine
       // después: lo que interesa es qué está corriendo en esos días.
       buscar(env, `v_ciclos?select=*&desde=lte.${ultimoDia}&hasta=gte.${primerDia}`),
       buscar(env, `v_extras?select=*&fecha=gte.${primerDia}&fecha=lte.${ultimoDia}&order=fecha.asc`),
+      // Hasta dónde llega lo que hay cargado, para que el selector de año
+      // ofrezca años con algo adentro y no una lista infinita.
+      primero(env, 'ciclos?select=desde&order=desde.asc'),
+      primero(env, 'ciclos?select=hasta&order=hasta.desc'),
+      primero(env, 'extras?select=fecha&order=fecha.asc'),
+      primero(env, 'extras?select=fecha&order=fecha.desc'),
     ]);
+
+    const anios = [cPrim?.desde, cUlt?.hasta, ePrim?.fecha, eUlt?.fecha, hoyISO(), mes + '-01']
+      .filter(Boolean).map((f) => Number(f.slice(0, 4)));
 
     return json({
       mes, primer_dia: primerDia, ultimo_dia: ultimoDia, hoy: hoyISO(),
+      anio_desde: Math.min(...anios), anio_hasta: Math.max(...anios) + 1,
       ciclos: ciclos.map((c) => {
         const neto = Number(c.total_neto) || 0;
         return { ...c, total_neto: neto, iva: Math.round(neto * IVA),
