@@ -9,94 +9,216 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700&family=Archivo:wght@400;500;600;700&display=swap">
+<script>
+// Antes de pintar nada: si hay tema o tamaño guardados, se aplican ya. Si algo
+// falla acá, la página igual carga con los valores por defecto.
+try {
+  var t = localStorage.getItem("globseg.tema");
+  if (t === "claro" || t === "oscuro") document.documentElement.dataset.tema = t;
+  var e = localStorage.getItem("globseg.escala");
+  if (e) document.documentElement.style.setProperty("--escala", e);
+} catch (_) {}
+</script>
 <style>
-/* Pantalla de trabajo: se opera, no se lee. Cromo azul marino de la marca,
-   datos sobre papel claro. El color sirve para el estado, no para decorar. */
+/* Pantalla de trabajo: se opera, no se lee. Superficies limpias, jerarquía por
+   peso y espacio antes que por color, y el color reservado para el estado.
+   Dos temas y cuatro tamaños de letra, porque esto se mira todo el día.
+
+   La tipografía es la del sistema: en los Mac de la oficina eso es San
+   Francisco, la misma que usan las aplicaciones de Apple. La condensada de la
+   marca queda solo en el escudo del encabezado, que es donde identifica. */
 :root{
-  --tinta:#130052; --tinta-prof:#0A0031; --tinta-alta:#1E0A72;
-  --papel:#F4F5F2; --papel-2:#E7EBE3; --raya:#CFD6C9;
-  --sobre-tinta:#F2F0FF; --sobre-tinta-2:#B3ACE4;
-  --texto:#1A1140; --texto-2:#58508C;
-  --verde:#00A866; --verde-suave:#DCF5E9;     /* cerrado */
-  --ambar:#B86E00; --ambar-suave:#FDF0DC;     /* solicitar OC */
-  --cian:#0071A8;  --cian-suave:#DDEEF8;      /* pendiente facturación */
-  --gris:#6A6A86;  --gris-suave:#ECECF2;      /* en curso */
-  --rojo:#B3261E;  --rojo-suave:#FBE4E2;
-  --display:"Big Shoulders Display","Arial Narrow",sans-serif;
-  --cuerpo:"Archivo","Helvetica Neue",Arial,sans-serif;
+  --marca:"Big Shoulders Display","Arial Narrow",sans-serif;
+  --cuerpo:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,
+           "Helvetica Neue",Arial,sans-serif;
+  --display:var(--cuerpo);
+
+  /* Tamaño de letra: lo elige cada quien desde el encabezado. */
+  --escala:1;
+
+  /* Forma */
+  --r:12px; --r-s:9px; --r-xs:6px;
+  --sombra:0 1px 2px rgba(0,0,0,.05), 0 6px 20px rgba(0,0,0,.05);
+  --sombra-alta:0 2px 6px rgba(0,0,0,.08), 0 16px 48px rgba(0,0,0,.10);
+
+  /* Claro */
+  --fondo:#F5F5F7;
+  --sup:#FFFFFF; --sup-2:#F7F7F9; --sup-3:#EFEFF2;
+  --borde:#D9D9DF; --borde-suave:#E9E9ED;
+  --texto:#1D1D1F; --texto-2:#6E6E73; --texto-3:#8E8E93;
+  --cromo:rgba(255,255,255,.72); --cromo-borde:#DDDDE2;
+  --acento:#0071A8; --acento-fuerte:#005682; --acento-suave:#E2F0F9;
+  --btn:#0071A8; --btn-alta:#005682; --btn-texto:#FFFFFF;
+  --verde:#1E8E52;  --verde-suave:#E0F3E8;    /* facturado / pagado */
+  --ambar:#9C5D00;  --ambar-suave:#FBEEDC;    /* solicitar OC */
+  --cian:#0071A8;   --cian-suave:#E2F0F9;     /* pendiente de facturación */
+  --gris:#6E6E73;   --gris-suave:#ECECEF;     /* en curso */
+  --rojo:#C0362C;   --rojo-suave:#FBE8E6;
+  --violeta:#5B3BB8; --violeta-suave:#EDE8FB; /* factorizado */
   color-scheme:light;
+}
+
+/* Oscuro. Negro real de fondo y superficies que suben por capas, como en las
+   aplicaciones de Apple: la profundidad la da el gris, no la sombra. */
+:root[data-tema="oscuro"]{
+  --fondo:#000000;
+  --sup:#1C1C1E; --sup-2:#2C2C2E; --sup-3:#3A3A3C;
+  --borde:#38383A; --borde-suave:#2C2C2E;
+  --texto:#F5F5F7; --texto-2:#A1A1A6; --texto-3:#8E8E93;
+  --cromo:rgba(28,28,30,.72); --cromo-borde:#2C2C2E;
+  --acento:#64D2FF; --acento-fuerte:#9BE2FF; --acento-suave:rgba(100,210,255,.16);
+  --btn:#0A84FF; --btn-alta:#3D9BFF; --btn-texto:#FFFFFF;
+  --verde:#30D158;  --verde-suave:rgba(48,209,88,.18);
+  --ambar:#FF9F0A;  --ambar-suave:rgba(255,159,10,.18);
+  --cian:#64D2FF;   --cian-suave:rgba(100,210,255,.16);
+  --gris:#98989D;   --gris-suave:rgba(152,152,157,.18);
+  --rojo:#FF453A;   --rojo-suave:rgba(255,69,58,.18);
+  --violeta:#BF9BFF; --violeta-suave:rgba(191,155,255,.18);
+  --sombra:0 1px 2px rgba(0,0,0,.5);
+  --sombra-alta:0 8px 36px rgba(0,0,0,.6);
+  color-scheme:dark;
+}
+
+/* Sin elección guardada se sigue al sistema, como corresponde. */
+@media (prefers-color-scheme: dark){
+  :root:not([data-tema="claro"]){
+    --fondo:#000000;
+    --sup:#1C1C1E; --sup-2:#2C2C2E; --sup-3:#3A3A3C;
+    --borde:#38383A; --borde-suave:#2C2C2E;
+    --texto:#F5F5F7; --texto-2:#A1A1A6; --texto-3:#8E8E93;
+    --cromo:rgba(28,28,30,.72); --cromo-borde:#2C2C2E;
+    --acento:#64D2FF; --acento-fuerte:#9BE2FF; --acento-suave:rgba(100,210,255,.16);
+    --btn:#0A84FF; --btn-alta:#3D9BFF; --btn-texto:#FFFFFF;
+    --verde:#30D158;  --verde-suave:rgba(48,209,88,.18);
+    --ambar:#FF9F0A;  --ambar-suave:rgba(255,159,10,.18);
+    --cian:#64D2FF;   --cian-suave:rgba(100,210,255,.16);
+    --gris:#98989D;   --gris-suave:rgba(152,152,157,.18);
+    --rojo:#FF453A;   --rojo-suave:rgba(255,69,58,.18);
+    --violeta:#BF9BFF; --violeta-suave:rgba(191,155,255,.18);
+    --sombra:0 1px 2px rgba(0,0,0,.5);
+    --sombra-alta:0 8px 36px rgba(0,0,0,.6);
+    color-scheme:dark;
+  }
 }
 *,*::before,*::after{box-sizing:border-box}
 [hidden]{display:none!important}
+/* Todo el texto va en rem, así que mover esta base mueve la página entera. */
+html{font-size:calc(16px * var(--escala))}
 html,body{margin:0;height:100%}
-body{background:var(--papel);color:var(--texto);font:400 15px/1.5 var(--cuerpo)}
-::selection{background:var(--tinta);color:#fff}
-:where(a,button,input,select,textarea):focus-visible{outline:2px solid var(--tinta-alta);outline-offset:2px}
-h1,h2,h3{margin:0;font-family:var(--display);font-weight:700;text-transform:uppercase;
-  letter-spacing:.01em;line-height:1}
+body{background:var(--fondo);color:var(--texto);
+  font:400 .9375rem/1.55 var(--cuerpo);
+  -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+::selection{background:var(--acento-suave);color:var(--texto)}
+:where(a,button,input,select,textarea):focus-visible{
+  outline:2px solid var(--acento);outline-offset:2px}
+h1,h2,h3{margin:0;font-family:var(--display);font-weight:600;
+  letter-spacing:-.012em;line-height:1.2}
 p{margin:0}
 .num{font-variant-numeric:tabular-nums}
 
 /* ---------- marco ---------- */
-.barra{background:var(--tinta-prof);color:var(--sobre-tinta);
-  padding:0 clamp(14px,3vw,26px);padding-top:env(safe-area-inset-top,0px);
-  display:flex;align-items:center;gap:18px;flex-wrap:wrap;min-height:58px;
+.barra{background:var(--cromo);color:var(--texto);
+  -webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);
+  border-bottom:1px solid var(--cromo-borde);
+  padding:7px clamp(12px,2vw,20px);padding-top:calc(7px + env(safe-area-inset-top,0px));
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-height:50px;
   position:sticky;top:0;z-index:20}
 .marca{display:flex;align-items:center;gap:10px;margin-right:auto}
-.marca img{width:30px;height:30px}
-.marca b{font-family:var(--display);font-size:1.05rem;text-transform:uppercase;letter-spacing:.02em}
-.marca span{font-size:.64rem;letter-spacing:.16em;text-transform:uppercase;color:var(--sobre-tinta-2);display:block}
+.marca img{width:28px;height:28px}
+.marca b{font-family:var(--marca);font-size:1.05rem;text-transform:uppercase;letter-spacing:.02em}
+.marca span{font-size:.62rem;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--texto-3);display:block}
+
+/* Pestañas en píldora: la activa se llena, no se subraya. */
 .pestanas{display:flex;gap:2px;flex-wrap:wrap}
-.pestanas button{background:none;border:0;color:var(--sobre-tinta-2);font:600 .85rem var(--cuerpo);
-  padding:9px 13px;border-radius:3px 3px 0 0;cursor:pointer;border-bottom:2px solid transparent}
-.pestanas button:hover{color:#fff;background:rgba(255,255,255,.07)}
-.pestanas button[aria-current="true"]{color:#fff;border-bottom-color:var(--verde)}
-.quien{font-size:.78rem;color:var(--sobre-tinta-2);text-align:right;line-height:1.3}
-.quien b{display:block;color:var(--sobre-tinta);font-weight:600;font-size:.85rem}
+.pestanas button{background:none;border:0;color:var(--texto-2);
+  font:500 .85rem var(--cuerpo);letter-spacing:-.01em;
+  padding:6px 10px;border-radius:980px;cursor:pointer;white-space:nowrap}
+.pestanas button:hover{color:var(--texto);background:var(--sup-3)}
+.pestanas button[aria-current="true"]{color:var(--acento);background:var(--acento-suave);font-weight:600}
+.barra__fin{display:flex;align-items:center;gap:11px;flex-wrap:wrap;
+  justify-content:flex-end;margin-left:auto}
+.quien{font-size:.78rem;color:var(--texto-3);text-align:right;line-height:1.3}
+.quien b{display:block;color:var(--texto);font-weight:600;font-size:.85rem}
 
 main{padding:clamp(16px,2.5vw,28px);max-width:1500px;margin-inline:auto}
 .cargando{padding:60px 0;text-align:center;color:var(--texto-2)}
+
+/* ---------- controles de apariencia ---------- */
+.ajustes{display:flex;align-items:center;gap:6px}
+.segmento{display:inline-flex;background:var(--sup-3);border-radius:980px;padding:2px;gap:2px}
+.segmento button{border:0;background:none;cursor:pointer;color:var(--texto-2);
+  font:500 .72rem var(--cuerpo);padding:5px 8px;border-radius:980px;line-height:1.2;
+  min-width:26px;transition:background-color .15s,color .15s}
+.segmento button:hover{color:var(--texto)}
+.segmento button[aria-pressed="true"]{background:var(--sup);color:var(--texto);
+  font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.12)}
+.segmento--letra button:nth-child(1){font-size:.7rem}
+.segmento--letra button:nth-child(2){font-size:.82rem}
+.segmento--letra button:nth-child(3){font-size:.95rem}
+.segmento--letra button:nth-child(4){font-size:1.08rem}
+
+/* En teléfono el encabezado se comía un cuarto de la pantalla antes de mostrar
+   un solo dato. Se aprieta todo y el bajada de la marca sale: el escudo y
+   "Administración" ya dicen dónde está uno. */
+@media (max-width:620px){
+  .barra{gap:8px;padding:6px 12px;padding-top:calc(6px + env(safe-area-inset-top,0px))}
+  .marca{gap:8px}
+  .marca img{width:24px;height:24px}
+  .marca b{font-size:.98rem}
+  .marca>span>span{display:none}
+  .pestanas{gap:1px}
+  .pestanas button{padding:5px 9px;font-size:.8rem}
+  .barra__fin{gap:8px}
+  .segmento button{padding:4px 7px;font-size:.68rem;min-width:22px}
+  .quien{font-size:.72rem}
+  .quien b{font-size:.8rem}
+}
 
 /* ---------- avisos ---------- */
 .aviso{border-radius:4px;padding:14px 16px;margin-bottom:18px;display:flex;gap:12px;
   align-items:flex-start;font-size:.92rem;line-height:1.5}
 .aviso b{display:block;font-weight:600;margin-bottom:2px}
-.aviso--mal{background:var(--rojo-suave);color:#7A1A14;border:1px solid #F0C5C1}
-.aviso--ojo{background:var(--ambar-suave);color:#7A4A00;border:1px solid #EBD3AE}
-.aviso--bien{background:var(--verde-suave);color:#07603C;border:1px solid #B6E3CD}
+.aviso--mal{background:var(--rojo-suave);color:var(--rojo)}
+.aviso--ojo{background:var(--ambar-suave);color:var(--ambar)}
+.aviso--bien{background:var(--verde-suave);color:var(--verde)}
 .aviso svg{width:20px;height:20px;flex:none;margin-top:1px}
 
 /* ---------- tarjetas de resumen ---------- */
-.resumen{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:20px}
-.ficha{background:#fff;border:1px solid var(--raya);border-radius:4px;padding:14px 16px}
-.ficha dt{font-size:.68rem;letter-spacing:.13em;text-transform:uppercase;color:var(--texto-2);font-weight:600}
-.ficha dd{margin:7px 0 0;font-family:var(--display);font-size:2rem;line-height:1;font-weight:700}
-.ficha small{display:block;margin-top:5px;font-size:.76rem;color:var(--texto-2)}
-.ficha--ojo dd{color:var(--ambar)} .ficha--plata dd{color:var(--tinta)}
+.resumen{display:grid;grid-template-columns:repeat(auto-fit,minmax(196px,1fr));gap:12px;margin-bottom:20px}
+.ficha{background:var(--sup);border:1px solid var(--borde-suave);border-radius:var(--r);
+  padding:16px 18px;box-shadow:var(--sombra)}
+.ficha dt{font-size:.8rem;color:var(--texto-2);font-weight:500;letter-spacing:-.005em}
+.ficha dd{margin:8px 0 0;font-size:1.8rem;line-height:1.05;font-weight:600;
+  letter-spacing:-.03em;overflow-wrap:anywhere}
+.ficha small{display:block;margin-top:6px;font-size:.78rem;color:var(--texto-3)}
+.ficha--ojo dd{color:var(--ambar)} .ficha--plata dd{color:var(--texto)}
 
 /* ---------- tablas ---------- */
-.caja{background:#fff;border:1px solid var(--raya);border-radius:4px;overflow:hidden;margin-bottom:22px}
+.caja{background:var(--sup);border:1px solid var(--borde-suave);border-radius:var(--r);
+  overflow:hidden;margin-bottom:22px;box-shadow:var(--sombra)}
 .caja__tit{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
-  padding:12px 16px;background:var(--papel-2);border-bottom:1px solid var(--raya)}
-.caja__tit h2{font-size:1rem}
-.caja__tit .nota{font-size:.8rem;color:var(--texto-2);margin-left:auto}
+  padding:13px 16px;background:var(--sup-2);border-bottom:1px solid var(--borde-suave)}
+.caja__tit h2{font-size:1.02rem}
+.caja__tit .nota{font-size:.82rem;color:var(--texto-3);margin-left:auto}
 .desliza{overflow-x:auto}
 .desliza table{min-width:1080px}
-.sub{color:var(--texto-2);font-size:.8rem;display:block;margin-top:2px}
+.sub{color:var(--texto-3);font-size:.8rem;display:block;margin-top:2px}
 .nowrap{white-space:nowrap}
 td b{display:block}
 table{border-collapse:collapse;width:100%;font-size:.88rem}
-th{text-align:left;font-size:.67rem;letter-spacing:.11em;text-transform:uppercase;
-  color:var(--texto-2);font-weight:600;padding:9px 12px;border-bottom:1px solid var(--raya);white-space:nowrap}
-td{padding:11px 12px;border-bottom:1px solid var(--papel-2);vertical-align:top}
+th{text-align:left;font-size:.72rem;letter-spacing:.02em;
+  color:var(--texto-3);font-weight:500;padding:10px 12px;
+  border-bottom:1px solid var(--borde-suave);white-space:nowrap}
+td{padding:12px;border-bottom:1px solid var(--borde-suave);vertical-align:top}
 tbody tr:last-child td{border-bottom:0}
-tbody tr:hover{background:#FAFBF9}
+tbody tr:hover{background:var(--sup-2)}
 td.num,th.num{text-align:right}
-.vacio{padding:26px 16px;text-align:center;color:var(--texto-2);font-size:.9rem}
+.vacio{padding:30px 16px;text-align:center;color:var(--texto-3);font-size:.9rem}
 
 /* ---------- cobranza ---------- */
 .p-pagado{background:var(--verde-suave);color:var(--verde)}
-.p-factorizado{background:#EAE4FB;color:#5B3BB8}
+.p-factorizado{background:var(--violeta-suave);color:var(--violeta)}
 .p-por_cobrar{background:var(--cian-suave);color:var(--cian)}
 .p-por_cobrar.atrasado{background:var(--ambar-suave);color:var(--ambar)}
 tr.fila--cobrado td:first-child{box-shadow:inset 3px 0 0 var(--verde)}
@@ -104,13 +226,13 @@ tr.fila--facturado td:first-child{box-shadow:inset 3px 0 0 var(--cian)}
 tr.fila--atrasado td:first-child{box-shadow:inset 3px 0 0 var(--ambar)}
 
 /* ---------- estados ---------- */
-.sello{display:inline-block;font-size:.66rem;letter-spacing:.09em;text-transform:uppercase;
+.sello{display:inline-block;font-size:.7rem;letter-spacing:.01em;
   font-weight:700;padding:4px 8px;border-radius:3px;white-space:nowrap}
 .e-solicitar_oc{background:var(--ambar-suave);color:var(--ambar)}
 .e-pendiente_facturacion{background:var(--cian-suave);color:var(--cian)}
 .e-cerrado{background:var(--verde-suave);color:var(--verde)}
 .e-en_curso{background:var(--gris-suave);color:var(--gris)}
-tr.fila--cerrado{background:#FBFEFC}
+tr.fila--cerrado{background:var(--sup-2)}
 tr.fila--cerrado td:first-child{box-shadow:inset 3px 0 0 var(--verde)}
 tr.fila--solicitar_oc td:first-child{box-shadow:inset 3px 0 0 var(--ambar)}
 
@@ -118,7 +240,7 @@ tr.fila--solicitar_oc td:first-child{box-shadow:inset 3px 0 0 var(--ambar)}
 .cot__cab{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;padding:16px}
 .lineas{width:100%;border-collapse:collapse}
 .lineas th{font-size:.64rem;padding:8px 10px}
-.lineas td{padding:6px 8px;vertical-align:middle;border-bottom:1px solid var(--papel-2)}
+.lineas td{padding:6px 8px;vertical-align:middle;border-bottom:1px solid var(--sup-2)}
 .lineas input,.lineas select{padding:7px 9px;font-size:.86rem}
 .lineas td.num input{text-align:right}
 .lineas .quitar{background:none;border:0;color:var(--texto-2);cursor:pointer;font-size:1.1rem;
@@ -126,9 +248,10 @@ tr.fila--solicitar_oc td:first-child{box-shadow:inset 3px 0 0 var(--ambar)}
 .lineas .quitar:hover{color:var(--rojo);background:var(--rojo-suave)}
 .col-desc{min-width:260px} .col-cant{width:92px} .col-uni{width:96px}
 .col-precio{width:124px} .col-sub{width:124px} .col-x{width:40px}
-.sumas{margin-left:auto;min-width:290px;padding:14px 16px;background:var(--papel-2);border-radius:4px}
+.sumas{margin-left:auto;min-width:290px;padding:16px 18px;background:var(--sup-2);
+  border-radius:var(--r);border:1px solid var(--borde-suave)}
 .sumas div{display:flex;justify-content:space-between;gap:20px;padding:5px 0;font-size:.92rem}
-.sumas .total{border-top:1px solid var(--raya);margin-top:7px;padding-top:10px;
+.sumas .total{border-top:1px solid var(--borde);margin-top:8px;padding-top:11px;
   font-family:var(--display);font-size:1.5rem;font-weight:700;align-items:baseline}
 .e-borrador{background:var(--gris-suave);color:var(--gris)}
 .e-enviada{background:var(--cian-suave);color:var(--cian)}
@@ -137,102 +260,113 @@ tr.fila--solicitar_oc td:first-child{box-shadow:inset 3px 0 0 var(--ambar)}
 .vencida{color:var(--ambar);font-size:.76rem}
 
 /* ---------- entrada ---------- */
-.puerta{min-height:100%;display:grid;place-items:center;padding:24px 16px;background:var(--tinta)}
-.puerta__caja{width:100%;max-width:400px;background:#fff;border-radius:5px;
-  box-shadow:0 24px 60px -24px rgba(4,0,22,.7);overflow:hidden}
-.puerta__tit{background:var(--tinta-prof);color:var(--sobre-tinta);padding:22px 24px;
-  display:flex;align-items:center;gap:12px}
+.puerta{min-height:100%;display:grid;place-items:center;padding:24px 16px;background:var(--fondo)}
+.puerta__caja{width:100%;max-width:400px;background:var(--sup);border-radius:16px;
+  border:1px solid var(--borde-suave);box-shadow:var(--sombra-alta);overflow:hidden}
+.puerta__tit{padding:26px 26px 18px;display:flex;align-items:center;gap:12px}
 .puerta__tit img{width:40px;height:40px}
-.puerta__tit b{display:block;font-family:var(--display);font-size:1.2rem;text-transform:uppercase}
-.puerta__tit span{display:block;font-size:.66rem;letter-spacing:.16em;text-transform:uppercase;
-  color:var(--sobre-tinta-2);margin-top:3px}
-.puerta form{padding:24px;display:flex;flex-direction:column;gap:14px}
+.puerta__tit b{display:block;font-family:var(--marca);font-size:1.2rem;text-transform:uppercase}
+.puerta__tit span{display:block;font-size:.64rem;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--texto-3);margin-top:3px}
+.puerta form{padding:6px 26px 26px;display:flex;flex-direction:column;gap:14px}
 .puerta .campo>span{color:var(--texto-2)}
-.puerta .bt{justify-content:center;padding:12px}
-.puerta__aviso{margin:0 24px 22px;padding:12px 14px;border-radius:4px;font-size:.84rem;line-height:1.5}
+.puerta .bt{justify-content:center;padding:12px;font-size:.92rem}
+.puerta__aviso{margin:0 26px 24px;padding:12px 14px;border-radius:var(--r-s);
+  font-size:.84rem;line-height:1.5}
 
 /* ---------- controles ---------- */
-.bt{display:inline-flex;align-items:center;gap:7px;font:600 .84rem var(--cuerpo);
-  padding:9px 14px;border-radius:3px;border:1px solid transparent;cursor:pointer;
-  background:var(--tinta);color:#fff;transition:background-color .14s}
-.bt:hover{background:var(--tinta-alta)}
-.bt--fino{background:#fff;color:var(--tinta);border-color:var(--raya)}
-.bt--fino:hover{background:var(--papel-2)}
-.bt--chico{padding:6px 10px;font-size:.78rem}
-.bt[disabled]{opacity:.5;cursor:not-allowed}
-label.campo{display:flex;flex-direction:column;gap:5px;font-size:.78rem;color:var(--texto-2);min-width:0}
-label.campo>span{font-weight:600;letter-spacing:.04em;text-transform:uppercase;font-size:.68rem}
-input,select,textarea{font:400 .9rem var(--cuerpo);color:var(--texto);background:#fff;
-  border:1px solid var(--raya);border-radius:3px;padding:8px 10px;width:100%;caret-color:var(--tinta)}
-input:focus,select:focus,textarea:focus{outline:none;border-color:var(--tinta-alta);box-shadow:0 0 0 3px rgba(30,10,114,.1)}
+.bt{display:inline-flex;align-items:center;gap:7px;font:600 .86rem var(--cuerpo);
+  letter-spacing:-.01em;padding:9px 16px;border-radius:980px;border:1px solid transparent;
+  cursor:pointer;background:var(--btn);color:var(--btn-texto);
+  transition:background-color .15s,transform .08s}
+.bt:hover{background:var(--btn-alta)}
+.bt:active{transform:scale(.97)}
+.bt--fino{background:var(--sup-3);color:var(--acento);border-color:transparent}
+.bt--fino:hover{background:var(--borde-suave)}
+.bt--chico{padding:6px 12px;font-size:.8rem}
+.bt[disabled]{opacity:.42;cursor:not-allowed}
+.bt[disabled]:active{transform:none}
+label.campo{display:flex;flex-direction:column;gap:5px;font-size:.84rem;color:var(--texto-2);min-width:0}
+label.campo>span{font-weight:500;letter-spacing:-.005em;font-size:.8rem;color:var(--texto-2)}
+input,select,textarea{font:400 .92rem var(--cuerpo);color:var(--texto);background:var(--sup);
+  border:1px solid var(--borde);border-radius:var(--r-s);padding:9px 11px;width:100%;
+  caret-color:var(--acento);transition:border-color .15s,box-shadow .15s}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--acento);
+  box-shadow:0 0 0 3.5px var(--acento-suave)}
+input::placeholder{color:var(--texto-3)}
 .rejilla{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;padding:16px}
 .pie-form{padding:0 16px 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .error{color:var(--rojo);font-size:.82rem;font-weight:500}
 .ok{color:var(--verde);font-size:.82rem;font-weight:600}
-details.detalle{border-top:1px solid var(--papel-2)}
-details.detalle>summary{cursor:pointer;padding:9px 12px;font-size:.8rem;color:var(--tinta);
+details.detalle{border-top:1px solid var(--sup-2)}
+details.detalle>summary{cursor:pointer;padding:9px 12px;font-size:.8rem;color:var(--acento);
   font-weight:600;list-style:none}
 details.detalle>summary::-webkit-details-marker{display:none}
 details.detalle>summary::before{content:"▸ ";display:inline-block;transition:transform .15s}
 details.detalle[open]>summary::before{content:"▾ "}
 
 /* ---------- selección de varias filas ---------- */
-th.sel,td.sel{width:36px;padding-left:14px;padding-right:0}
-th.sel input,td.sel input{width:15px;height:15px;accent-color:var(--tinta);cursor:pointer;
-  margin:0;padding:0;border-radius:2px}
-tr.marcada{background:var(--cian-suave)}
-tr.marcada:hover{background:#D3E7F4}
-.barra-sel{position:fixed;left:0;right:0;bottom:0;z-index:30;
-  background:var(--tinta-prof);color:var(--sobre-tinta);
-  padding:12px clamp(14px,3vw,26px);padding-bottom:calc(12px + env(safe-area-inset-bottom,0px));
-  box-shadow:0 -3px 16px rgba(19,0,82,.26)}
-.barra-sel__fila{max-width:1500px;margin-inline:auto;
+th.sel,td.sel{width:38px;padding-left:14px;padding-right:0}
+th.sel input,td.sel input{width:16px;height:16px;accent-color:var(--btn);cursor:pointer;
+  margin:0;padding:0}
+tr.marcada{background:var(--acento-suave)}
+tr.marcada:hover{background:var(--acento-suave)}
+
+/* Panel flotante, no una franja pegada al borde: se despega del contenido y
+   deja ver que hay tabla debajo. */
+.barra-sel{position:fixed;left:0;right:0;z-index:30;
+  bottom:calc(14px + env(safe-area-inset-bottom,0px));
+  padding:0 clamp(10px,3vw,26px);pointer-events:none}
+.barra-sel__fila,.barra-sel .omitidos{pointer-events:auto}
+.barra-sel__fila{max-width:1100px;margin-inline:auto;
+  background:var(--cromo);border:1px solid var(--cromo-borde);border-radius:16px;
+  -webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);
+  box-shadow:var(--sombra-alta);padding:11px 14px;
   display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.barra-sel__n{font-family:var(--display);font-size:1.15rem;line-height:1;white-space:nowrap}
-.barra-sel__n span{display:block;font-family:var(--cuerpo);font-size:.68rem;font-weight:600;
-  letter-spacing:.13em;text-transform:uppercase;color:var(--sobre-tinta-2);margin-top:3px}
-.barra-sel select,.barra-sel input{width:auto;min-width:0;padding:7px 9px;font-size:.84rem}
-.barra-sel .bt{background:#fff;color:var(--tinta-prof);border-color:#fff}
-.barra-sel .bt:hover{background:var(--papel)}
-.barra-sel .bt--fino{background:rgba(255,255,255,.09);color:#fff;border-color:rgba(255,255,255,.3)}
-.barra-sel .bt--fino:hover{background:rgba(255,255,255,.19)}
-.barra-sel .bt--mal{background:#C3312A;border-color:#C3312A;color:#fff}
-.barra-sel .bt--mal:hover{background:#D8463F}
-.barra-sel .mensaje{font-size:.82rem;color:var(--sobre-tinta-2)}
-.barra-sel .mensaje.ok{color:#5BE3A8} .barra-sel .mensaje.error{color:#FFB9B3}
-.omitidos{max-width:1500px;margin:8px auto 0;padding:9px 12px 9px 28px;border-radius:3px;
-  background:rgba(255,255,255,.08);font-size:.81rem;line-height:1.55;color:#FFC2BC;
+.barra-sel__n{font-size:1.25rem;font-weight:600;line-height:1.05;white-space:nowrap;
+  letter-spacing:-.02em}
+.barra-sel__n span{display:block;font-size:.72rem;font-weight:500;letter-spacing:-.005em;
+  text-transform:none;color:var(--texto-3);margin-top:2px}
+.barra-sel select,.barra-sel input{width:auto;min-width:0;padding:7px 10px;font-size:.86rem}
+.barra-sel .bt--mal{background:var(--rojo);border-color:transparent;color:#fff}
+.barra-sel .bt--mal:hover{filter:brightness(1.1)}
+.barra-sel .mensaje{font-size:.84rem;color:var(--texto-2)}
+.barra-sel .bt[disabled]{opacity:.42}
+.omitidos{max-width:1100px;margin:8px auto 0;padding:10px 14px 10px 30px;border-radius:12px;
+  background:var(--rojo-suave);border:1px solid var(--cromo-borde);
+  font-size:.82rem;line-height:1.55;color:var(--rojo);
   max-height:132px;overflow-y:auto}
 /* Lo que no se hizo va en rojo; lo que sí se hizo pero hay que saber, en ámbar. */
-.omitidos--ojo{color:#FFDFAE}
-.barra-sel .bt[disabled]{opacity:.45}
+.omitidos--ojo{background:var(--ambar-suave);color:var(--ambar)}
 
 /* ---------- calendario ---------- */
 .mes{display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap}
 .mes h2{font-size:1.5rem;min-width:230px}
 .mes .bt{padding:7px 11px}
 .cal{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:1px;
-  background:var(--raya);border:1px solid var(--raya);border-radius:4px;overflow:hidden}
-.cal__dia-sem{background:var(--papel-2);padding:7px 9px;font-size:.64rem;font-weight:700;
-  letter-spacing:.12em;text-transform:uppercase;color:var(--texto-2)}
-.cal__dia{background:#fff;min-height:104px;padding:6px 7px;display:flex;flex-direction:column;gap:3px}
-.cal__dia--fuera{background:var(--papel-2);opacity:.55}
-.cal__dia--hoy{box-shadow:inset 0 0 0 2px var(--tinta)}
-.cal__n{font-family:var(--display);font-size:1.05rem;line-height:1;color:var(--texto-2)}
-.cal__dia--hoy .cal__n{color:var(--tinta);font-weight:700}
-.chip{display:block;width:100%;text-align:left;border:0;border-radius:3px;cursor:pointer;
-  padding:3px 6px;font:600 .68rem/1.3 var(--cuerpo);overflow:hidden;text-overflow:ellipsis;
+  background:var(--borde-suave);border:1px solid var(--borde-suave);
+  border-radius:var(--r);overflow:hidden;box-shadow:var(--sombra)}
+.cal__dia-sem{background:var(--sup-2);padding:9px 10px;font-size:.72rem;font-weight:600;
+  letter-spacing:-.005em;color:var(--texto-3)}
+.cal__dia{background:var(--sup);min-height:104px;padding:7px 8px;
+  display:flex;flex-direction:column;gap:3px}
+.cal__dia--fuera{background:var(--sup-2);opacity:.5}
+.cal__dia--hoy{box-shadow:inset 0 0 0 2px var(--btn)}
+.cal__n{font-size:.95rem;font-weight:500;line-height:1.1;color:var(--texto-2)}
+.cal__dia--hoy .cal__n{color:var(--btn);font-weight:700}
+.chip{display:block;width:100%;text-align:left;border:0;border-radius:var(--r-xs);cursor:pointer;
+  padding:3px 6px;font:600 .7rem/1.3 var(--cuerpo);overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap}
 .chip--inicio{background:var(--gris-suave);color:var(--gris)}
 .chip--cierre{background:var(--ambar-suave);color:var(--ambar)}
 .chip--extra{background:var(--cian-suave);color:var(--cian)}
 .chip--extra.suelto{background:var(--rojo-suave);color:var(--rojo)}
 .chip--factura{background:var(--verde-suave);color:var(--verde)}
-.chip--mas{background:var(--papel-2);color:var(--texto-2)}
+.chip--mas{background:var(--sup-2);color:var(--texto-2)}
 .cal__chips{display:flex;flex-direction:column;gap:3px;min-width:0}
 .leyenda{display:flex;gap:14px;flex-wrap:wrap;margin:12px 0 0;font-size:.76rem;color:var(--texto-2)}
 .leyenda span{display:flex;align-items:center;gap:5px}
-.leyenda i{width:10px;height:10px;border-radius:2px;display:inline-block}
+.leyenda i{width:10px;height:10px;border-radius:50%;display:inline-block}
 /* En teléfono el texto del chip no alcanza a leerse: queda un "$5…" que no
    dice nada. Mejor un punto de color, y el detalle al tocar el día. */
 @media (max-width:620px){
@@ -245,17 +379,20 @@ tr.marcada:hover{background:#D3E7F4}
   .cal__chips .chip{width:9px;height:9px;padding:0;border-radius:50%;flex:none;
     background:currentColor}
   .chip span{display:none}
-  .chip--mas{box-shadow:inset 0 0 0 1px var(--raya)}
+  .chip--mas{box-shadow:inset 0 0 0 1px var(--borde)}
   .mes h2{min-width:0;font-size:1.3rem}
 }
-.barra-sel label.campo{gap:3px}
-.barra-sel label.campo>span{color:var(--sobre-tinta-2);font-size:.62rem}
+.barra-sel label.campo{gap:2px}
+.barra-sel label.campo>span{color:var(--texto-3);font-size:.7rem}
 .recado{position:fixed;left:50%;transform:translateX(-50%);bottom:24px;z-index:50;
-  background:var(--tinta-prof);color:#fff;border-left:3px solid var(--verde);
-  padding:12px 18px;border-radius:4px;font-size:.88rem;font-weight:500;
-  box-shadow:0 6px 22px rgba(19,0,82,.3)}
-.recado--mal{border-left-color:var(--rojo)}
-body.hay-seleccion .recado{bottom:96px}
+  background:var(--cromo);color:var(--texto);border:1px solid var(--cromo-borde);
+  -webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);
+  padding:12px 18px;border-radius:980px;font-size:.88rem;font-weight:500;
+  box-shadow:var(--sombra-alta);display:flex;align-items:center;gap:9px;max-width:92vw}
+.recado::before{content:"";width:8px;height:8px;border-radius:50%;flex:none;
+  background:var(--verde)}
+.recado--mal::before{background:var(--ambar)}
+body.hay-seleccion .recado{bottom:104px}
 </style>
 </head>
 <body>
@@ -269,7 +406,22 @@ body.hay-seleccion .recado{bottom:96px}
     </span>
   </div>
   <nav class="pestanas" id="pestanas" aria-label="Secciones"></nav>
+  <div class="barra__fin">
+  <div class="ajustes">
+    <div class="segmento" role="group" aria-label="Apariencia" id="seg-tema">
+      <button type="button" data-tema="claro">Claro</button>
+      <button type="button" data-tema="oscuro">Oscuro</button>
+      <button type="button" data-tema="auto">Auto</button>
+    </div>
+    <div class="segmento segmento--letra" role="group" aria-label="Tamaño de la letra" id="seg-letra">
+      <button type="button" data-escala="0.875" aria-label="Letra chica">A</button>
+      <button type="button" data-escala="1" aria-label="Letra normal">A</button>
+      <button type="button" data-escala="1.125" aria-label="Letra grande">A</button>
+      <button type="button" data-escala="1.25" aria-label="Letra muy grande">A</button>
+    </div>
+  </div>
   <div class="quien" id="quien"></div>
+  </div>
 </header>
 
 <main id="app">
@@ -319,6 +471,62 @@ function marcaDeFila(c) {
 }
 
 const hoyISO = () => new Date().toISOString().slice(0, 10);
+
+// ------------------------------------------------------------- apariencia
+/**
+ * Tema y tamaño de letra. Se guardan en el navegador de cada quien: Joaquín
+ * puede trabajar en oscuro y Valeria en claro con letra grande, sin pisarse.
+ *
+ * El guardado puede fallar —ventana privada, cookies bloqueadas— y eso no
+ * puede romper la pantalla, así que cada acceso va protegido y el valor por
+ * defecto siempre funciona.
+ */
+const ESCALAS = ["0.875", "1", "1.125", "1.25"];
+
+const recordar = (clave, valor) => {
+  try { localStorage.setItem("globseg." + clave, valor); } catch { /* da igual */ }
+};
+const recordado = (clave) => {
+  try { return localStorage.getItem("globseg." + clave); } catch { return null; }
+};
+
+function aplicarTema(tema) {
+  // "auto" se expresa quitando el atributo: así manda @prefers-color-scheme.
+  if (tema === "claro" || tema === "oscuro") {
+    document.documentElement.dataset.tema = tema;
+  } else {
+    delete document.documentElement.dataset.tema;
+  }
+  marcarSegmento("#seg-tema", "tema", tema);
+}
+
+function aplicarEscala(escala) {
+  const e = ESCALAS.includes(String(escala)) ? String(escala) : "1";
+  document.documentElement.style.setProperty("--escala", e);
+  marcarSegmento("#seg-letra", "escala", e);
+}
+
+function marcarSegmento(selector, campo, valor) {
+  const caja = document.querySelector(selector);
+  if (!caja) return;
+  caja.querySelectorAll("button").forEach(b => {
+    b.setAttribute("aria-pressed", String(b.dataset[campo] === String(valor)));
+  });
+}
+
+function conectarApariencia() {
+  const tema = recordado("tema") || "auto";
+  const escala = recordado("escala") || "1";
+  aplicarTema(tema);
+  aplicarEscala(escala);
+
+  document.querySelectorAll("#seg-tema button").forEach(b => {
+    b.onclick = () => { recordar("tema", b.dataset.tema); aplicarTema(b.dataset.tema); };
+  });
+  document.querySelectorAll("#seg-letra button").forEach(b => {
+    b.onclick = () => { recordar("escala", b.dataset.escala); aplicarEscala(b.dataset.escala); };
+  });
+}
 
 // ------------------------------------------- seleccionar varias filas a la vez
 /**
@@ -485,16 +693,16 @@ function conectarSeleccion() {
 function campoSel(cual) {
   const v = seleccion.campos;
   if (cual === "fecha") {
-    return `<label class="campo" style="color:var(--sobre-tinta-2)"><span>Fecha en que entró</span>
+    return `<label class="campo" style="color:var(--texto-3)"><span>Fecha en que entró</span>
       <input type="date" data-campo="fecha" value="${esc(v.fecha || hoyISO())}"></label>`;
   }
   if (cual === "factoring") {
-    return `<label class="campo" style="color:var(--sobre-tinta-2)"><span>Empresa de factoring</span>
+    return `<label class="campo" style="color:var(--texto-3)"><span>Empresa de factoring</span>
       <input data-campo="factoring" value="${esc(v.factoring || "")}" placeholder="Quién compró la factura"></label>`;
   }
   if (cual === "ciclo") {
     const abiertos = (estado.panel?.ciclos || []).filter(c => c.estado !== "cerrado");
-    return `<label class="campo" style="color:var(--sobre-tinta-2)"><span>Periodo</span>
+    return `<label class="campo" style="color:var(--texto-3)"><span>Periodo</span>
       <select data-campo="ciclo">
         <option value="">— elegir —</option>
         ${abiertos.map(c => `<option value="${c.id}"${String(v.ciclo) === String(c.id) ? " selected" : ""}>${esc(c.instalacion)} · N°${c.numero} (${fecha(c.desde)})</option>`).join("")}
@@ -676,7 +884,7 @@ function pintarPanel() {
   }
   if (r.solicitar_oc > 0) {
     html += aviso("ojo",
-      `${r.solicitar_oc} periodo${r.solicitar_oc > 1 ? "s" : ""} cumplió los 30 días`,
+      `${r.solicitar_oc} periodo${r.solicitar_oc > 1 ? "s ya cerraron" : " ya cerró"}`,
       "Hay que pedir la orden de compra al cliente para poder facturar.");
   }
   if (!r.extras_sin_asignar && !r.solicitar_oc && !r.pendiente_facturacion && ciclos.length) {
@@ -687,7 +895,7 @@ function pintarPanel() {
     <div class="ficha ficha--plata"><dt>Neto por cobrar</dt><dd class="num">${clp(r.neto_por_cobrar)}</dd>
       <small>IVA aparte · ${ciclos.filter(c => c.estado !== "cerrado").length} periodos abiertos</small></div>
     <div class="ficha ficha--ojo"><dt>Solicitar OC</dt><dd class="num">${r.solicitar_oc}</dd>
-      <small>Cumplieron los 30 días</small></div>
+      <small>El periodo ya cerró</small></div>
     <div class="ficha"><dt>Pendiente de facturación</dt><dd class="num">${r.pendiente_facturacion}</dd>
       <small>Con OC, sin factura</small></div>
     <div class="ficha ficha--ojo"><dt>Facturado sin cobrar</dt>
@@ -754,7 +962,7 @@ function tablaCiclos(titulo, filas, vacio) {
         ${c.factoring ? `<span class="sub">${esc(c.factoring)}</span>` : ""}`}</td>
       <td class="nowrap"><button class="bt bt--fino bt--chico" data-editar="${c.id}">${c.estado === "cerrado" ? "Ver" : "Registrar"}</button></td>
     </tr>
-    <tr hidden data-form="${c.id}"><td colspan="13" style="background:var(--papel-2);padding:0">
+    <tr hidden data-form="${c.id}"><td colspan="13" style="background:var(--sup-2);padding:0">
       ${formCiclo(c)}
     </td></tr>`;
   }
@@ -777,7 +985,7 @@ function formCiclo(c) {
       <label class="campo" style="grid-column:1/-1"><span>Notas</span>
         <input name="notas" value="${esc(c.notas || "")}" placeholder="Lo que haya que recordar de este periodo"></label>
     </div>
-    <div class="caja__tit" style="background:transparent;border-top:1px solid var(--raya)">
+    <div class="caja__tit" style="background:transparent;border-top:1px solid var(--borde)">
       <h2 style="font-size:.88rem">Cobranza</h2>
       <span class="nota">${c.factura_folio ? "" : "Primero registre el folio de la factura"}</span>
     </div>
@@ -925,8 +1133,8 @@ async function pintarServicios() {
     ${listaInst}
 
     <section class="caja" style="max-width:860px"${mostrarForm ? "" : " hidden"} id="caja-nuevo">
-      ${aviso("ojo", "Acá empieza el control de los 30 días",
-        "Al elegir el día de inicio, el sistema crea el primer periodo y, al cumplirse los días del ciclo, lo marca para solicitar la OC.")}
+      ${aviso("ojo", "Acá empieza el control del cobro",
+        "El día de inicio fija el día de cobro: un servicio que parte el 15 se cobra el 15 de cada mes. Al cerrar cada periodo, el sistema lo marca para solicitar la OC.")}
       <div class="caja__tit"><h2>Nuevo servicio</h2>
         <span class="nota">Si la instalación no existe todavía, escríbala y se crea sola</span></div>
       <form id="f-servicio">
@@ -988,7 +1196,7 @@ async function pintarServicios() {
             s.activo ? "Activo" : "De baja"}</span></td>
           <td class="nowrap"><button class="bt bt--fino bt--chico" data-editar-serv="${s.id}">Editar</button></td>
         </tr>
-        <tr hidden data-form-serv="${s.id}"><td colspan="9" style="background:var(--papel-2);padding:0">
+        <tr hidden data-form-serv="${s.id}"><td colspan="9" style="background:var(--sup-2);padding:0">
           ${formServicio(s)}
         </td></tr>`).join("")}
       </tbody></table></div>`
@@ -1138,7 +1346,7 @@ async function pintarInstalaciones() {
             i.activa ? "En las listas" : "De baja"}</span></td>
           <td class="nowrap"><button class="bt bt--fino bt--chico" data-editar-inst="${i.id}">Editar</button></td>
         </tr>
-        <tr hidden data-form-inst="${i.id}"><td colspan="8" style="background:var(--papel-2);padding:0">
+        <tr hidden data-form-inst="${i.id}"><td colspan="8" style="background:var(--sup-2);padding:0">
           ${formInstalacion(i)}
         </td></tr>`).join("")}
       </tbody></table></div>`
@@ -2106,6 +2314,7 @@ async function arrancar() {
   }
 }
 
+conectarApariencia();
 arrancar();
 </script>
 </body>
