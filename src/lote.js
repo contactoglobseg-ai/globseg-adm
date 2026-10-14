@@ -12,7 +12,7 @@
  */
 
 import { buscar, actualizar, borrar, anotar } from './datos.js';
-import { periodoDe, diasEntre, sumarDias } from './fechas.js';
+import { periodoDe, diasEntre, sumarDias, fechasMovibles } from './fechas.js';
 
 const MAX = 200;
 
@@ -311,7 +311,7 @@ async function recalcularFechas(env, usuario, servicios, omitidos) {
     for (const c of ciclos) {
       const esperado = periodoDe(serv, c.numero);
       if (c.desde === esperado.desde && c.hasta === esperado.hasta) continue;
-      if (c.estado === 'cerrado') { intactos += 1; continue; }
+      if (!fechasMovibles(c.estado)) { intactos += 1; continue; }
       await actualizar(env, `ciclos?id=eq.${c.id}`, {
         desde: esperado.desde, hasta: esperado.hasta,
         actualizado_en: new Date().toISOString(),
@@ -326,7 +326,7 @@ async function recalcularFechas(env, usuario, servicios, omitidos) {
       avisos.push(`"${serv.nombre}": ${movidos} periodo${movidos > 1 ? 's' : ''} corregido${movidos > 1 ? 's' : ''}.`);
     }
     if (intactos) {
-      avisos.push(`"${serv.nombre}": ${intactos} periodo${intactos > 1 ? 's' : ''} ya facturado${intactos > 1 ? 's' : ''} quedó con sus fechas originales, que son las que dice la factura.`);
+      avisos.push(`"${serv.nombre}": ${intactos} periodo${intactos > 1 ? 's' : ''} con OC o factura quedó con sus fechas originales, que son las que dice el documento que tiene el cliente.`);
     }
     if (!movidos && !intactos) {
       avisos.push(`"${serv.nombre}": las fechas ya estaban correctas.`);

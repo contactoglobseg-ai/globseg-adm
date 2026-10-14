@@ -13,7 +13,8 @@ import { buscar, primero, insertar, insertarSinDuplicar, actualizar, anotar, Err
   from './datos.js';
 import { ingresar, cambiarClave, crearSesion, leerSesion, cookieSesion, cookieBorrada }
   from './sesion.js';
-import { hoyISO, sumarDias, diasEntre, esFecha, periodoDe } from './fechas.js';
+import { hoyISO, sumarDias, diasEntre, esFecha, periodoDe, fechasMovibles }
+  from './fechas.js';
 import * as cotiz from './cotizaciones.js';
 import * as lote from './lote.js';
 
@@ -90,9 +91,25 @@ async function ponerCiclosAlDia(env) {
   const nuevos = [];
   const cierres = [];
 
+  const correcciones = [];
+
   for (const s of servicios) {
-    const ultimo = await primero(env,
-      `ciclos?select=numero,hasta,estado&servicio_id=eq.${s.id}&order=numero.desc`);
+    // Primero se enderezan los periodos ya grabados cuyas fechas no son las que
+    // corresponden al ciclo. Los primeros servicios se cargaron sumando 30 días
+    // y el día de cobro se fue atrasando; dejar eso esperando a que alguien
+    // apriete un botón era pedirle a la oficina que arreglara un error del
+    // sistema. Solo se tocan los que no tienen nada comprometido con el cliente.
+    const suyos = await buscar(env,
+      `ciclos?select=id,numero,desde,hasta,estado&servicio_id=eq.${s.id}&order=numero.asc`);
+    for (const c of suyos) {
+      if (!fechasMovibles(c.estado)) continue;
+      const q = periodoDe(s, c.numero);
+      if (c.desde === q.desde && c.hasta === q.hasta) continue;
+      correcciones.push({ id: c.id, numero: c.numero, desde: q.desde, hasta: q.hasta,
+                          antes: `${c.desde}→${c.hasta}` });
+    }
+
+    const ultimo = suyos.length ? suyos[suyos.length - 1] : null;
 
     if (ultimo && ultimo.estado === 'en_curso' && diasEntre(ultimo.hasta, hoy) >= 0) {
       cierres.push({ servicio_id: s.id, numero: ultimo.numero });
@@ -117,6 +134,16 @@ async function ponerCiclosAlDia(env) {
     }
   }
 
+  for (const c of correcciones) {
+    await actualizar(env, `ciclos?id=eq.${c.id}`,
+      { desde: c.desde, hasta: c.hasta, actualizado_en: new Date().toISOString() });
+  }
+  if (correcciones.length) {
+    await anotar(env, 'sistema', 'ciclo', null, 'fechas enderezadas',
+      `${correcciones.length} periodo${correcciones.length > 1 ? 's' : ''}: `
+      + correcciones.slice(0, 12).map((c) => `N°${c.numero} ${c.antes} → ${c.desde}→${c.hasta}`).join('; '));
+  }
+
   for (const c of cierres) {
     await actualizar(env, `ciclos?servicio_id=eq.${c.servicio_id}&numero=eq.${c.numero}`,
       { estado: 'solicitar_oc', actualizado_en: new Date().toISOString() });
@@ -124,7 +151,7 @@ async function ponerCiclosAlDia(env) {
   if (nuevos.length) {
     await insertarSinDuplicar(env, 'ciclos', nuevos, 'servicio_id,numero');
   }
-  return nuevos.length + cierres.length;
+  return nuevos.length + cierres.length + correcciones.length;
 }
 
 /**
@@ -391,6 +418,9 @@ async function api(request, env, url, usuario) {
 
   // Los servicios continuos, con su instalación y en qué va cada uno.
   if (ruta === '/servicios' && metodo === 'GET') {
+    // Igual que el panel: entrar por acá también endereza lo que esté torcido,
+    // así da lo mismo por qué pestaña se empiece.
+    await ponerCiclosAlDia(env);
     const [servicios, ciclos] = await Promise.all([
       buscar(env, 'servicios?select=*,instalaciones(nombre,comuna,clientes(nombre))&order=activo.desc,nombre.asc'),
       buscar(env, 'ciclos?select=servicio_id,numero,estado,desde,hasta'),
@@ -403,31 +433,32 @@ async function api(request, env, url, usuario) {
     const cuenta = new Map();
     for (const s of servicios) {
       const suyos = porServicio.get(s.id) || [];
-      const n = { total: suyos.length, cerrados: 0, abiertos: 0, descuadrados: 0 };
+      const n = { total: suyos.length, cerrados: 0, abiertos: 0,
+                  descuadrados: 0, congeladas: 0 };
       for (const c of suyos) {
         if (c.estado === 'cerrado') n.cerrados += 1; else n.abiertos += 1;
-        // Periodos grabados con el cálculo viejo: sus fechas ya no son las que
-        // corresponden al ciclo. Se cuentan solo los que todavía se pueden
-        // arreglar; los facturados son lo que el cliente ya recibió.
+        // Periodos cuyas fechas no son las que corresponde al ciclo. Los que se
+        // pueden mover ya los enderezó ponerCiclosAlDia; quedan contados los
+        // que no, que son los que tienen OC o factura: el cliente tiene un
+        // documento con esas fechas y el sistema no lo contradice solo.
         const esperado = periodoDe(s, c.numero);
-        if (c.estado !== 'cerrado'
-            && (c.desde !== esperado.desde || c.hasta !== esperado.hasta)) {
-          n.descuadrados += 1;
-        }
+        if (c.desde === esperado.desde && c.hasta === esperado.hasta) continue;
+        if (fechasMovibles(c.estado)) n.descuadrados += 1; else n.congeladas += 1;
       }
       cuenta.set(s.id, n);
     }
     return json({
       servicios: servicios.map((s) => {
         const { instalaciones: i, ...resto } = s;
-        const n = cuenta.get(s.id) || { total: 0, cerrados: 0, abiertos: 0, descuadrados: 0 };
+        const n = cuenta.get(s.id)
+          || { total: 0, cerrados: 0, abiertos: 0, descuadrados: 0, congeladas: 0 };
         return {
           ...resto,
           instalacion: i?.nombre || '—',
           comuna: i?.comuna || null,
           cliente: i?.clientes?.nombre || '—',
           periodos: n.total, periodos_cerrados: n.cerrados, periodos_abiertos: n.abiertos,
-          fechas_descuadradas: n.descuadrados,
+          fechas_descuadradas: n.descuadrados, fechas_congeladas: n.congeladas,
         };
       }),
     });

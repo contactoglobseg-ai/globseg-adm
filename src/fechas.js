@@ -47,6 +47,17 @@ export function inicioMensual(fechaInicio, n) {
 }
 
 /**
+ * ¿Se le pueden mover las fechas a este periodo?
+ *
+ * Mientras no haya salido nada hacia el cliente, sí: son fechas que el sistema
+ * calculó y puede recalcular. Con una OC registrada o una factura emitida, no:
+ * el cliente tiene un documento que dice ese periodo, y el sistema no puede
+ * contradecirlo por su cuenta.
+ */
+export const fechasMovibles = (estado) =>
+  estado === 'en_curso' || estado === 'solicitar_oc';
+
+/**
  * Desde y hasta del periodo número `numero` (1 = el primero).
  *
  * `mensual` respeta el día del mes; `dias` cuenta bloques de `dias_ciclo`, que
