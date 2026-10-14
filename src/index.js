@@ -11,12 +11,13 @@
 
 import { buscar, primero, insertar, insertarSinDuplicar, actualizar, anotar, ErrorDatos }
   from './datos.js';
-import { ingresar, cambiarClave, crearSesion, leerSesion, cookieSesion, cookieBorrada }
-  from './sesion.js';
+import { ingresar, cambiarClave, crearSesion, leerSesion, cookieSesion, cookieBorrada,
+         duracionSesion } from './sesion.js';
 import { hoyISO, sumarDias, diasEntre, esFecha, periodoDe, fechasMovibles }
   from './fechas.js';
 import * as cotiz from './cotizaciones.js';
 import * as lote from './lote.js';
+import * as asis from './asistencia.js';
 
 const IVA = 0.19;
 
@@ -25,6 +26,19 @@ const PERMISOS = {
   operaciones: ['facturacion', 'personal', 'documentos'],
   rrhh:        ['rrhh'],
   prevencion:  ['documentos'],
+};
+
+/**
+ * Módulos dados a una persona en particular, además de los de su rol.
+ *
+ * Va por persona y no agregado al rol a propósito: si mañana entra otro
+ * encargado de operaciones, no debería heredar el acceso a cotizaciones sin
+ * que alguien lo decida.
+ *
+ * 14-10-2026: Joaquín cotiza, aunque su rol sea operaciones.
+ */
+const PERMISOS_PERSONA = {
+  jgarridob: ['cotizaciones'],
 };
 
 // ---------------------------------------------------------------- utilidades
@@ -48,7 +62,11 @@ async function identificar(request, env) {
   const u = await primero(env,
     `usuarios?select=*&activo=is.true&usuario=eq.${encodeURIComponent(nombre)}`);
   if (!u) return null;   // cuenta borrada o desactivada con la sesión abierta
-  return { ...u, permisos: PERMISOS[u.rol] || [] };
+  const permisos = [...new Set([
+    ...(PERMISOS[u.rol] || []),
+    ...(PERMISOS_PERSONA[u.usuario] || []),
+  ])];
+  return { ...u, permisos };
 }
 
 const sinClave = (u) => ({
@@ -329,6 +347,43 @@ async function api(request, env, url, usuario) {
       const r = await cotiz.editar(env, usuario, Number(m[1]), cuerpo);
       if (r.error) return error(r.error, r.status);
       return json({ ok: true });
+    }
+    return error('Ruta no encontrada', 404);
+  }
+
+  // ---------------------------------------------------------- asistencia
+  // La oficina crea trabajadores y lee el libro. No marca por nadie: la marca
+  // la hace el guardia desde asistencia.seggarridos.com, y eso es justamente
+  // lo que le da valor como respaldo.
+  if (ruta === '/trabajadores' || ruta.startsWith('/trabajadores/') || ruta === '/libro') {
+    if (!puede(usuario, 'personal')) return error('Sin acceso a este módulo', 403);
+
+    if (ruta === '/trabajadores' && metodo === 'GET') {
+      return json({ trabajadores: await asis.listarTrabajadores(env) });
+    }
+    if (ruta === '/trabajadores' && metodo === 'POST') {
+      const r = await asis.crearTrabajador(env, usuario.usuario, cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json({ ok: true, trabajador: r.trabajador }, 201);
+    }
+    const m = ruta.match(/^\/trabajadores\/(\d+)$/);
+    if (m && metodo === 'PATCH') {
+      const r = await asis.editarTrabajador(env, usuario.usuario, Number(m[1]), cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json({ ok: true, trabajador: r.trabajador });
+    }
+
+    if (ruta === '/libro' && metodo === 'GET') {
+      const p = url.searchParams;
+      const hasta = esFecha(p.get('hasta')) ? p.get('hasta') : asis.fechaChile();
+      const desde = esFecha(p.get('desde')) ? p.get('desde') : sumarDias(hasta, -29);
+      if (diasEntre(desde, hasta) < 0) return error('El desde es posterior al hasta', 400);
+      if (diasEntre(desde, hasta) > 400) return error('El rango no puede pasar de un año', 400);
+      return json(await asis.libro(env, {
+        desde, hasta,
+        trabajador_id: entero(p.get('trabajador')) || null,
+        instalacion_id: entero(p.get('instalacion')) || null,
+      }));
     }
     return error('Ruta no encontrada', 404);
   }
@@ -812,6 +867,69 @@ async function api(request, env, url, usuario) {
 }
 
 /**
+ * La API de asistencia.seggarridos.com.
+ *
+ * Va aparte de `api()` a propósito: la sesión del guardia es de otro ámbito y
+ * ni siquiera busca en la tabla `usuarios`. Un guardia no puede llegar al
+ * panel aunque alguien se equivoque mañana en un permiso, porque por este
+ * camino el panel no existe.
+ */
+async function apiAsistencia(request, env, url) {
+  const ruta = url.pathname.replace(/^\/api\/asistencia/, '') || '/';
+  const metodo = request.method;
+  const cuerpo = metodo === 'POST' ? await request.json().catch(() => ({})) : {};
+  const seguro = url.protocol === 'https:';
+
+  if (ruta === '/sesion' && metodo === 'POST') {
+    const r = await asis.ingresoGuardia(env, cuerpo.usuario, cuerpo.clave);
+    if (r.error) return error(r.error, r.status);
+    const cookie = await crearSesion(r.usuario, env, 'asistencia');
+    await anotar(env, r.usuario.usuario, 'trabajador', r.usuario.id, 'ingresó a asistencia', null);
+    return new Response(JSON.stringify({ ok: true, nombre: r.usuario.nombre }), {
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        'set-cookie': cookieSesion(cookie, duracionSesion('asistencia'), seguro, 'asistencia'),
+        'cache-control': 'no-store',
+      },
+    });
+  }
+
+  if (ruta === '/sesion' && metodo === 'DELETE') {
+    return new Response(JSON.stringify({ ok: true }), {
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        'set-cookie': cookieBorrada(seguro, 'asistencia'),
+        'cache-control': 'no-store',
+      },
+    });
+  }
+
+  const nombre = await leerSesion(request, env, 'asistencia');
+  if (!nombre) return error('Sin sesión', 401);
+  const trabajador = await asis.trabajadorDeSesion(env, nombre);
+  if (!trabajador) return error('Sin sesión', 401);   // dado de baja con la sesión abierta
+
+  if (ruta === '/yo' && metodo === 'GET') {
+    return json(await asis.estadoGuardia(env, trabajador));
+  }
+
+  if (ruta === '/marca' && metodo === 'POST') {
+    const r = await asis.marcar(env, trabajador, cuerpo);
+    if (r.error) return error(r.error, r.status);
+    return json({
+      ok: true,
+      tipo: r.marca.tipo,
+      hora: r.hora ?? null,
+      repetida: r.repetida === true,
+      horas_turno: r.horas_turno ?? null,
+      estado: await asis.estadoGuardia(env, trabajador),
+    }, r.repetida ? 200 : 201);
+  }
+
+  return error('Ruta no encontrada', 404);
+}
+
+/**
  * Dice qué tablas responden. No devuelve ningún dato: solo si cada una existe
  * y es accesible, para saber si falta correr una migración.
  */
@@ -819,7 +937,7 @@ async function revisarTablas(env) {
   const r = {};
   for (const t of ['usuarios', 'clientes', 'instalaciones', 'servicios', 'tarifas',
                    'ciclos', 'extras', 'bitacora', 'cotizaciones', 'cotizacion_items',
-                   'contactos']) {
+                   'contactos', 'trabajadores', 'marcas']) {
     try {
       await buscar(env, `${t}?select=count&limit=1`);
       r[t] = true;
@@ -861,6 +979,22 @@ export default {
     const url = new URL(request.url);
 
     if (!url.pathname.startsWith('/api/')) {
+      // Un Worker, dos páginas. asistencia.seggarridos.com muestra el libro de
+      // asistencia y adm.seggarridos.com el panel; comparten base de datos,
+      // sesión y código, que es justamente lo que se quería evitar duplicar.
+      // /asistencia sirve además para probar las dos en el mismo localhost.
+      // El dominio se lee de la cabecera Host y no de url.hostname: en
+      // `wrangler dev` la URL de la petición es siempre la de la dirección
+      // local, así que mirar ahí hacía que el subdominio no se pudiera probar.
+      const host = (request.headers.get('host') || url.hostname).split(':')[0].toLowerCase();
+      const esAsistencia = host.split('.')[0] === 'asistencia';
+      const pidePagina = url.pathname === '/' || !url.pathname.slice(1).includes('.');
+      // Se pide sin la extensión: el servidor de archivos resuelve
+      // /asistencia -> asistencia.html, y pedirlo con .html lo hace responder
+      // un 307 a la dirección sin extensión en vez de la página.
+      if (esAsistencia && pidePagina && url.pathname !== '/asistencia') {
+        return env.ASSETS.fetch(new Request(new URL('/asistencia', url), request));
+      }
       return env.ASSETS.fetch(request);
     }
 
@@ -971,6 +1105,10 @@ export default {
                        'cache-control': 'no-store' },
           });
         }
+      }
+
+      if (url.pathname.startsWith('/api/asistencia/')) {
+        return await apiAsistencia(request, env, url);
       }
 
       const usuario = await identificar(request, env);

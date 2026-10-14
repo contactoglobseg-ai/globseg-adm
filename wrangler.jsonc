@@ -18,6 +18,14 @@
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "single-page-application",
+
+    // Todo pasa primero por el Worker, que mira el dominio y decide qué
+    // página entregar: el panel en adm.seggarridos.com y el libro de
+    // asistencia en asistencia.seggarridos.com. Sin esto, el servidor de
+    // archivos contesta "/" con index.html y el Worker ni se entera, así que
+    // el subdominio mostraba el panel. Los archivos los sigue entregando él
+    // mismo; lo único que se agrega es la decisión de cuál.
+    "run_worker_first": true
   }
 }

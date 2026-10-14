@@ -2196,6 +2196,244 @@ async function pintarContactos() {
   });
 }
 
+// ------------------------------------------------------------- asistencia
+/**
+ * Trabajadores y libro de asistencia.
+ *
+ * Acá se crean las cuentas con las que los guardias entran a
+ * asistencia.seggarridos.com. El usuario no se escribe: lo arma el sistema con
+ * la regla de siempre —inicial del nombre, apellido paterno, inicial del
+ * materno— y la clave es el RUT. Eso evita el ida y vuelta de inventar
+ * usuarios y contraseñas para gente que no trabaja frente a un computador.
+ *
+ * La oficina no marca por nadie. El libro se lee, no se edita: es lo que lo
+ * hace servir de respaldo cuando alguien reclama un turno.
+ */
+const CARGOS = ["guardia", "supervisor", "nochero", "rondin"];
+
+const sinTildes = s => String(s ?? "").normalize("NFD")
+  .replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z]/g, "");
+
+/** La misma regla que aplica el servidor, para mostrarla mientras se escribe. */
+function usuarioPropuesto(nombres, paterno, materno) {
+  const n = sinTildes(String(nombres ?? "").trim().split(/\s+/)[0]);
+  const p = sinTildes(paterno);
+  const m = sinTildes(String(materno ?? "").trim().split(/\s+/)[0]);
+  if (!n || !p) return "";
+  return n[0] + p + (m ? m[0] : "");
+}
+
+const rutLindo = v => {
+  const t = String(v ?? "").toUpperCase().replace(/[^0-9K]/g, "");
+  if (t.length < 2) return t;
+  return t.slice(0, -1).replace(/\B(?=(\d{3})+(?!\d))/g, ".") + "-" + t.slice(-1);
+};
+
+async function pintarTrabajadores() {
+  const { trabajadores } = await pedir("/trabajadores");
+  const inst = (estado.catalogos?.instalaciones) || [];
+
+  $("#app").innerHTML = `
+    <section class="caja">
+      <div class="caja__tit"><h2>Nuevo trabajador</h2>
+        <span class="nota">El usuario y la clave los arma el sistema</span></div>
+      <form id="f-trab">
+        <div class="rejilla">
+          <label class="campo"><span>Nombres</span>
+            <input name="nombres" required autocomplete="off"></label>
+          <label class="campo"><span>Apellido paterno</span>
+            <input name="apellido_paterno" required autocomplete="off"></label>
+          <label class="campo"><span>Apellido materno</span>
+            <input name="apellido_materno" autocomplete="off"></label>
+          <label class="campo"><span>RUT (con dígito verificador)</span>
+            <input name="rut" required inputmode="text" placeholder="12.345.678-9"></label>
+          <label class="campo"><span>Teléfono</span>
+            <input name="telefono" inputmode="tel" placeholder="+56 9 ..."></label>
+          <label class="campo"><span>Cargo</span>
+            <select name="cargo">${CARGOS.map(c =>
+              `<option value="${c}">${c[0].toUpperCase() + c.slice(1)}</option>`).join("")}</select></label>
+          <label class="campo"><span>Instalación habitual</span>
+            <select name="instalacion_id"><option value="">Sin asignar</option>
+              ${inst.map(i => `<option value="${i.id}">${esc(i.nombre)}</option>`).join("")}
+            </select></label>
+        </div>
+        <div class="pie-form">
+          <button class="bt" type="submit">Crear trabajador</button>
+          <span class="sub" id="previo"></span>
+          <span class="mensaje"></span>
+        </div>
+      </form>
+    </section>
+
+    <section class="caja">
+      <div class="caja__tit"><h2>Trabajadores</h2>
+        <span class="nota">${trabajadores.filter(t => t.activo).length} activos
+          de ${trabajadores.length}</span></div>
+      ${trabajadores.length ? `<div class="desliza"><table>
+        <thead><tr>
+          <th>Nombre</th><th>RUT</th><th>Usuario</th><th>Cargo</th>
+          <th>Instalación</th><th>Último ingreso</th><th>Estado</th><th></th>
+        </tr></thead><tbody>
+        ${trabajadores.map(t => `<tr${t.activo ? "" : ' class="fila--cerrado"'}>
+          <td><b>${esc(t.nombre)}</b>${t.telefono ? `<span class="sub">${esc(t.telefono)}</span>` : ""}</td>
+          <td class="nowrap num">${esc(t.rut)}</td>
+          <td class="nowrap"><b>${esc(t.usuario)}</b></td>
+          <td>${esc(t.cargo)}</td>
+          <td>${t.instalacion ? esc(t.instalacion) : "<span class=\"sub\">Sin asignar</span>"}</td>
+          <td class="nowrap">${t.ultimo_ingreso
+            ? esc(new Date(t.ultimo_ingreso).toLocaleString("es-CL",
+                { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }))
+            : "<span class=\"sub\">Nunca ha entrado</span>"}</td>
+          <td>${t.activo
+            ? (t.bloqueado ? '<span class="sello e-solicitar_oc">Bloqueado</span>'
+                           : '<span class="sello e-cerrado">Activo</span>')
+            : '<span class="sello e-en_curso">De baja</span>'}</td>
+          <td class="nowrap">
+            <button class="bt bt--fino bt--chico" data-baja="${t.id}" data-activo="${t.activo}"
+              >${t.activo ? "Dar de baja" : "Reactivar"}</button>
+            ${t.bloqueado ? `<button class="bt bt--fino bt--chico" data-desbloquear="${t.id}"
+              >Desbloquear</button>` : ""}
+            <button class="bt bt--fino bt--chico" data-clave="${t.id}"
+              title="Vuelve la clave al RUT">Clave al RUT</button>
+          </td>
+        </tr>`).join("")}
+        </tbody></table></div>`
+      : `<p class="vacio">Todavía no hay trabajadores cargados.
+           El primero que cree ya puede entrar a asistencia.seggarridos.com.</p>`}
+    </section>`;
+
+  const f = $("#f-trab");
+  const previo = $("#previo");
+  const verPrevio = () => {
+    const u = usuarioPropuesto(f.nombres.value, f.apellido_paterno.value, f.apellido_materno.value);
+    previo.textContent = u
+      ? `Entrará como «${u}» con su RUT de clave`
+      : "El usuario se arma con el nombre y los apellidos";
+  };
+  ["nombres", "apellido_paterno", "apellido_materno"].forEach(c => { f[c].oninput = verPrevio; });
+  f.rut.onblur = () => { if (f.rut.value) f.rut.value = rutLindo(f.rut.value); };
+  verPrevio();
+
+  f.onsubmit = async ev => {
+    ev.preventDefault();
+    const m = f.querySelector(".mensaje"), bt = f.querySelector("button");
+    decir(m, "Guardando…"); bt.disabled = true;
+    try {
+      const r = await pedir("/trabajadores", { method: "POST",
+        body: JSON.stringify(Object.fromEntries(new FormData(f))) });
+      alert(`${r.trabajador.nombre} ya puede entrar.\n\n` +
+            `Página: asistencia.seggarridos.com\n` +
+            `Usuario: ${r.trabajador.usuario}\n` +
+            `Clave: su RUT (${r.trabajador.rut})`);
+      pintarTrabajadores();
+    } catch (e) { decir(m, e.message, "error"); bt.disabled = false; }
+  };
+
+  const cambiar = async (id, campos, pregunta) => {
+    if (pregunta && !confirm(pregunta)) return;
+    try {
+      await pedir(`/trabajadores/${id}`, { method: "PATCH", body: JSON.stringify(campos) });
+      pintarTrabajadores();
+    } catch (e) { alert(e.message); }
+  };
+  document.querySelectorAll("[data-baja]").forEach(b => {
+    b.onclick = () => cambiar(b.dataset.baja, { activo: b.dataset.activo !== "true" },
+      b.dataset.activo === "true"
+        ? "¿Dar de baja? No podrá entrar a marcar, y lo que ya marcó se conserva."
+        : null);
+  });
+  document.querySelectorAll("[data-desbloquear]").forEach(b => {
+    b.onclick = () => cambiar(b.dataset.desbloquear, { desbloquear: true });
+  });
+  document.querySelectorAll("[data-clave]").forEach(b => {
+    b.onclick = () => cambiar(b.dataset.clave, { restablecer_clave: true },
+      "¿Volver la clave a su RUT? Es lo único que se puede hacer: la clave guardada no la ve nadie.");
+  });
+}
+
+async function pintarLibro() {
+  const hoy = hoyISO();
+  const f = estado.libroFiltro || (estado.libroFiltro = {
+    desde: hoy.slice(0, 8) + "01", hasta: hoy, trabajador: "", instalacion: "",
+  });
+
+  const q = new URLSearchParams({ desde: f.desde, hasta: f.hasta });
+  if (f.trabajador) q.set("trabajador", f.trabajador);
+  if (f.instalacion) q.set("instalacion", f.instalacion);
+
+  const [libro, lista] = await Promise.all([
+    pedir("/libro?" + q.toString()),
+    estado.trabajadores ? Promise.resolve({ trabajadores: estado.trabajadores })
+                        : pedir("/trabajadores"),
+  ]);
+  estado.trabajadores = lista.trabajadores;
+  const inst = (estado.catalogos?.instalaciones) || [];
+  const r = libro.resumen;
+
+  $("#app").innerHTML = `
+    ${r.sin_salida ? aviso("ojo",
+      `${r.sin_salida} jornada${r.sin_salida > 1 ? "s" : ""} sin salida marcada`,
+      "El guardia entró y no marcó la salida. Las horas de esas jornadas no se pueden contar.") : ""}
+
+    <dl class="resumen">
+      <div class="ficha"><dt>Jornadas</dt><dd class="num">${r.jornadas}</dd>
+        <small>${r.trabajadores} trabajador${r.trabajadores === 1 ? "" : "es"}</small></div>
+      <div class="ficha"><dt>Horas registradas</dt><dd class="num">${r.horas}</dd>
+        <small>Solo jornadas con entrada y salida</small></div>
+      <div class="ficha ${r.sin_salida ? "ficha--ojo" : ""}"><dt>Sin salida</dt>
+        <dd class="num">${r.sin_salida}</dd><small>Quedaron abiertas</small></div>
+    </dl>
+
+    <section class="caja">
+      <div class="caja__tit"><h2>Libro de asistencia</h2>
+        <span class="nota">${fecha(libro.desde)} a ${fecha(libro.hasta)}</span></div>
+      <div class="rejilla">
+        <label class="campo"><span>Desde</span>
+          <input type="date" id="f-desde" value="${f.desde}"></label>
+        <label class="campo"><span>Hasta</span>
+          <input type="date" id="f-hasta" value="${f.hasta}"></label>
+        <label class="campo"><span>Trabajador</span>
+          <select id="f-trabajador"><option value="">Todos</option>
+            ${estado.trabajadores.map(t => `<option value="${t.id}"${
+              String(t.id) === String(f.trabajador) ? " selected" : ""
+              }>${esc(t.nombre)}</option>`).join("")}</select></label>
+        <label class="campo"><span>Instalación</span>
+          <select id="f-instalacion"><option value="">Todas</option>
+            ${inst.map(i => `<option value="${i.id}"${
+              String(i.id) === String(f.instalacion) ? " selected" : ""
+              }>${esc(i.nombre)}</option>`).join("")}</select></label>
+      </div>
+      ${libro.jornadas.length ? `<div class="desliza"><table>
+        <thead><tr>
+          <th>Fecha</th><th>Trabajador</th><th>RUT</th><th>Instalación</th>
+          <th>Entrada</th><th>Salida</th><th class="num">Horas</th><th></th>
+        </tr></thead><tbody>
+        ${libro.jornadas.map(j => `<tr${j.completa ? "" : ' class="fila--solicitar_oc"'}>
+          <td class="nowrap">${fecha(j.fecha)}</td>
+          <td><b>${esc(j.trabajador)}</b>${j.usuario ? `<span class="sub">${esc(j.usuario)}</span>` : ""}</td>
+          <td class="nowrap num">${esc(j.rut || "—")}</td>
+          <td>${j.instalacion ? esc(j.instalacion) : "<span class=\"sub\">Sin indicar</span>"}</td>
+          <td class="nowrap num">${j.hora_entrada || "—"}${
+            j.entrada_ubicada ? ' <span class="sub" style="display:inline">ubicada</span>' : ""}</td>
+          <td class="nowrap num">${j.hora_salida || "—"}${
+            j.salida_ubicada ? ' <span class="sub" style="display:inline">ubicada</span>' : ""}</td>
+          <td class="num">${j.horas !== null ? j.horas.toFixed(1) : "—"}</td>
+          <td>${j.completa ? "" : '<span class="sello e-solicitar_oc">Sin salida</span>'}</td>
+        </tr>`).join("")}
+        </tbody></table></div>`
+      : `<p class="vacio">No hay marcas en ese rango.</p>`}
+    </section>`;
+
+  const releer = () => {
+    f.desde = $("#f-desde").value || f.desde;
+    f.hasta = $("#f-hasta").value || f.hasta;
+    f.trabajador = $("#f-trabajador").value;
+    f.instalacion = $("#f-instalacion").value;
+    pintarLibro().catch(e => { $("#app").innerHTML = aviso("mal", "No se pudo leer el libro", e.message); });
+  };
+  ["#f-desde", "#f-hasta", "#f-trabajador", "#f-instalacion"].forEach(s => { $(s).onchange = releer; });
+}
+
 const VISTAS = {
   panel: { rotulo: "Panel", pintar: pintarPanel, modulo: "facturacion" },
   calendario: { rotulo: "Calendario", pintar: pintarCalendario, modulo: "facturacion" },
@@ -2204,6 +2442,8 @@ const VISTAS = {
   servicio: { rotulo: "Servicios", pintar: pintarServicios, modulo: "facturacion" },
   instalaciones: { rotulo: "Instalaciones", pintar: pintarInstalaciones, modulo: "facturacion" },
   extra: { rotulo: "Registrar extra", pintar: pintarNuevoExtra, modulo: "facturacion" },
+  trabajadores: { rotulo: "Trabajadores", pintar: pintarTrabajadores, modulo: "personal" },
+  libro: { rotulo: "Asistencia", pintar: pintarLibro, modulo: "personal" },
   bitacora: { rotulo: "Bitácora", pintar: pintarBitacora, modulo: "facturacion" },
 };
 

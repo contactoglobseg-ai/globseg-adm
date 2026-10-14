@@ -1,0 +1,577 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Asistencia · Seguridad Garridos</title>
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#F5F5F7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="logo.png">
+<script>
+// Antes de pintar nada: si hay tema o tamaño guardados, se aplican ya. Si algo
+// falla acá, la página igual carga con los valores por defecto.
+try {
+  var t = localStorage.getItem("globseg.tema");
+  if (t === "claro" || t === "oscuro") document.documentElement.dataset.tema = t;
+  var e = localStorage.getItem("globseg.escala");
+  if (e) document.documentElement.style.setProperty("--escala", e);
+} catch (_) {}
+</script>
+<style>
+/* El libro de asistencia. Mismos colores, mismos tamaños y mismas formas que
+   el panel de administración: los tokens de aquí abajo están copiados tal cual
+   de index.html, así que las dos páginas envejecen parejas.
+   Lo que cambia es el uso: esto se mira de pie, con una mano, a veces de
+   noche y con guantes. Un botón grande, poco texto y nada que leer. */
+/* Pantalla de trabajo: se opera, no se lee. Superficies limpias, jerarquía por
+   peso y espacio antes que por color, y el color reservado para el estado.
+   Dos temas y cuatro tamaños de letra, porque esto se mira todo el día.
+
+   La tipografía es la del sistema: en los Mac de la oficina eso es San
+   Francisco, la misma que usan las aplicaciones de Apple. La condensada de la
+   marca queda solo en el escudo del encabezado, que es donde identifica. */
+:root{
+  --marca:"Big Shoulders Display","Arial Narrow",sans-serif;
+  --cuerpo:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,
+           "Helvetica Neue",Arial,sans-serif;
+  --display:var(--cuerpo);
+
+  /* Tamaño de letra: lo elige cada quien desde el encabezado. */
+  --escala:1;
+
+  /* Forma */
+  --r:12px; --r-s:9px; --r-xs:6px;
+  --sombra:0 1px 2px rgba(0,0,0,.05), 0 6px 20px rgba(0,0,0,.05);
+  --sombra-alta:0 2px 6px rgba(0,0,0,.08), 0 16px 48px rgba(0,0,0,.10);
+
+  /* Claro */
+  --fondo:#F5F5F7;
+  --sup:#FFFFFF; --sup-2:#F7F7F9; --sup-3:#EFEFF2;
+  --borde:#D9D9DF; --borde-suave:#E9E9ED;
+  --texto:#1D1D1F; --texto-2:#6E6E73; --texto-3:#8E8E93;
+  --cromo:rgba(255,255,255,.72); --cromo-borde:#DDDDE2;
+  --acento:#0071A8; --acento-fuerte:#005682; --acento-suave:#E2F0F9;
+  --btn:#0071A8; --btn-alta:#005682; --btn-texto:#FFFFFF;
+  --verde:#1E8E52;  --verde-suave:#E0F3E8;    /* facturado / pagado */
+  --ambar:#9C5D00;  --ambar-suave:#FBEEDC;    /* solicitar OC */
+  --cian:#0071A8;   --cian-suave:#E2F0F9;     /* pendiente de facturación */
+  --gris:#6E6E73;   --gris-suave:#ECECEF;     /* en curso */
+  --rojo:#C0362C;   --rojo-suave:#FBE8E6;
+  --violeta:#5B3BB8; --violeta-suave:#EDE8FB; /* factorizado */
+  color-scheme:light;
+}
+
+/* Oscuro. Negro real de fondo y superficies que suben por capas, como en las
+   aplicaciones de Apple: la profundidad la da el gris, no la sombra. */
+:root[data-tema="oscuro"]{
+  --fondo:#000000;
+  --sup:#1C1C1E; --sup-2:#2C2C2E; --sup-3:#3A3A3C;
+  --borde:#38383A; --borde-suave:#2C2C2E;
+  --texto:#F5F5F7; --texto-2:#A1A1A6; --texto-3:#8E8E93;
+  --cromo:rgba(28,28,30,.72); --cromo-borde:#2C2C2E;
+  --acento:#64D2FF; --acento-fuerte:#9BE2FF; --acento-suave:rgba(100,210,255,.16);
+  --btn:#0A84FF; --btn-alta:#3D9BFF; --btn-texto:#FFFFFF;
+  --verde:#30D158;  --verde-suave:rgba(48,209,88,.18);
+  --ambar:#FF9F0A;  --ambar-suave:rgba(255,159,10,.18);
+  --cian:#64D2FF;   --cian-suave:rgba(100,210,255,.16);
+  --gris:#98989D;   --gris-suave:rgba(152,152,157,.18);
+  --rojo:#FF453A;   --rojo-suave:rgba(255,69,58,.18);
+  --violeta:#BF9BFF; --violeta-suave:rgba(191,155,255,.18);
+  --sombra:0 1px 2px rgba(0,0,0,.5);
+  --sombra-alta:0 8px 36px rgba(0,0,0,.6);
+  color-scheme:dark;
+}
+
+/* Sin elección guardada se sigue al sistema, como corresponde. */
+@media (prefers-color-scheme: dark){
+  :root:not([data-tema="claro"]){
+    --fondo:#000000;
+    --sup:#1C1C1E; --sup-2:#2C2C2E; --sup-3:#3A3A3C;
+    --borde:#38383A; --borde-suave:#2C2C2E;
+    --texto:#F5F5F7; --texto-2:#A1A1A6; --texto-3:#8E8E93;
+    --cromo:rgba(28,28,30,.72); --cromo-borde:#2C2C2E;
+    --acento:#64D2FF; --acento-fuerte:#9BE2FF; --acento-suave:rgba(100,210,255,.16);
+    --btn:#0A84FF; --btn-alta:#3D9BFF; --btn-texto:#FFFFFF;
+    --verde:#30D158;  --verde-suave:rgba(48,209,88,.18);
+    --ambar:#FF9F0A;  --ambar-suave:rgba(255,159,10,.18);
+    --cian:#64D2FF;   --cian-suave:rgba(100,210,255,.16);
+    --gris:#98989D;   --gris-suave:rgba(152,152,157,.18);
+    --rojo:#FF453A;   --rojo-suave:rgba(255,69,58,.18);
+    --violeta:#BF9BFF; --violeta-suave:rgba(191,155,255,.18);
+    --sombra:0 1px 2px rgba(0,0,0,.5);
+    --sombra-alta:0 8px 36px rgba(0,0,0,.6);
+    color-scheme:dark;
+  }
+}
+*,*::before,*::after{box-sizing:border-box}
+[hidden]{display:none!important}
+/* Todo el texto va en rem, así que mover esta base mueve la página entera. */
+html{font-size:calc(16px * var(--escala))}
+html,body{margin:0;height:100%}
+body{background:var(--fondo);color:var(--texto);
+  font:400 .9375rem/1.55 var(--cuerpo);
+  -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+::selection{background:var(--acento-suave);color:var(--texto)}
+:where(a,button,input,select,textarea):focus-visible{
+  outline:2px solid var(--acento);outline-offset:2px}
+h1,h2,h3{margin:0;font-family:var(--display);font-weight:600;
+  letter-spacing:-.012em;line-height:1.2}
+p{margin:0}
+.num{font-variant-numeric:tabular-nums}
+/* Los dos botones grandes. El verde y el ámbar son los mismos en claro y en
+   oscuro: son fondos, no texto, y tienen que sostener letras blancas en los
+   dos temas sin quedar flojos. */
+:root{ --entrar:#1E8E52; --salir:#9C5D00; }
+
+/* ---------- marco (igual que el panel) ---------- */
+.barra{background:var(--cromo);color:var(--texto);
+  -webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);
+  border-bottom:1px solid var(--cromo-borde);
+  padding:7px clamp(12px,2vw,20px);padding-top:calc(7px + env(safe-area-inset-top,0px));
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-height:50px;
+  position:sticky;top:0;z-index:20}
+.marca{display:flex;align-items:center;gap:10px;margin-right:auto}
+.marca img{width:28px;height:28px}
+.marca b{font-family:var(--marca);font-size:1.05rem;text-transform:uppercase;letter-spacing:.02em}
+.marca span{font-size:.62rem;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--texto-3);display:block}
+.barra__fin{display:flex;align-items:center;gap:11px;flex-wrap:wrap;
+  justify-content:flex-end;margin-left:auto}
+main{padding:clamp(16px,2.5vw,28px);max-width:620px;margin-inline:auto;
+  padding-bottom:calc(28px + env(safe-area-inset-bottom,0px))}
+.cargando{padding:60px 0;text-align:center;color:var(--texto-2)}
+
+.ajustes{display:flex;align-items:center;gap:6px}
+.segmento{display:inline-flex;background:var(--sup-3);border-radius:980px;padding:2px;gap:2px}
+.segmento button{border:0;background:none;cursor:pointer;color:var(--texto-2);
+  font:500 .72rem var(--cuerpo);padding:5px 8px;border-radius:980px;line-height:1.2;
+  min-width:26px;transition:background-color .15s,color .15s}
+.segmento button[aria-pressed="true"]{background:var(--sup);color:var(--texto);
+  font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.12)}
+.segmento--letra button:nth-child(1){font-size:.7rem}
+.segmento--letra button:nth-child(2){font-size:.82rem}
+.segmento--letra button:nth-child(3){font-size:.95rem}
+.segmento--letra button:nth-child(4){font-size:1.08rem}
+@media (max-width:620px){
+  .barra{gap:8px;padding:6px 12px;padding-top:calc(6px + env(safe-area-inset-top,0px))}
+  .marca img{width:24px;height:24px}
+  .marca>span>span{display:none}
+  .segmento button{padding:4px 7px;font-size:.68rem;min-width:22px}
+}
+
+/* ---------- controles (igual que el panel) ---------- */
+.bt{display:inline-flex;align-items:center;gap:7px;font:600 .86rem var(--cuerpo);
+  letter-spacing:-.01em;padding:9px 16px;border-radius:980px;border:1px solid transparent;
+  cursor:pointer;background:var(--btn);color:var(--btn-texto);
+  transition:background-color .15s,transform .08s}
+.bt:hover{background:var(--btn-alta)}
+.bt:active{transform:scale(.97)}
+.bt--fino{background:var(--sup-3);color:var(--acento);border-color:transparent}
+.bt--chico{padding:6px 12px;font-size:.8rem}
+.bt[disabled]{opacity:.42;cursor:not-allowed}
+.bt[disabled]:active{transform:none}
+label.campo{display:flex;flex-direction:column;gap:5px;font-size:.84rem;color:var(--texto-2);min-width:0}
+label.campo>span{font-weight:500;letter-spacing:-.005em;font-size:.8rem;color:var(--texto-2)}
+input,select{font:400 .92rem var(--cuerpo);color:var(--texto);background:var(--sup);
+  border:1px solid var(--borde);border-radius:var(--r-s);padding:9px 11px;width:100%;
+  caret-color:var(--acento);transition:border-color .15s,box-shadow .15s}
+input:focus,select:focus{outline:none;border-color:var(--acento);
+  box-shadow:0 0 0 3.5px var(--acento-suave)}
+.error{color:var(--rojo);font-size:.82rem;font-weight:500}
+.ok{color:var(--verde);font-size:.82rem;font-weight:600}
+
+/* ---------- entrada (igual que el panel) ---------- */
+.puerta{min-height:100%;display:grid;place-items:center;padding:24px 16px;background:var(--fondo)}
+.puerta__caja{width:100%;max-width:400px;background:var(--sup);border-radius:16px;
+  border:1px solid var(--borde-suave);box-shadow:var(--sombra-alta);overflow:hidden}
+.puerta__tit{padding:26px 26px 18px;display:flex;align-items:center;gap:12px}
+.puerta__tit img{width:40px;height:40px}
+.puerta__tit b{display:block;font-family:var(--marca);font-size:1.2rem;text-transform:uppercase}
+.puerta__tit span{display:block;font-size:.64rem;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--texto-3);margin-top:3px}
+.puerta form{padding:6px 26px 26px;display:flex;flex-direction:column;gap:14px}
+.puerta .bt{justify-content:center;padding:14px;font-size:.98rem}
+.puerta__aviso{margin:0 26px 24px;padding:12px 14px;border-radius:var(--r-s);
+  font-size:.84rem;line-height:1.5;background:var(--sup-2);color:var(--texto-2)}
+
+/* ---------- el reloj y el botón ---------- */
+.hoy{text-align:center;padding:22px 16px 6px}
+.hoy__hora{font-size:3.6rem;font-weight:600;letter-spacing:-.04em;line-height:1;
+  font-variant-numeric:tabular-nums}
+.hoy__fecha{margin-top:6px;color:var(--texto-2);font-size:.94rem}
+.hoy__quien{margin-top:14px;font-size:1.12rem;font-weight:600;letter-spacing:-.015em}
+.hoy__donde{color:var(--texto-3);font-size:.86rem;margin-top:2px}
+
+.turno{margin:18px 0 0;padding:13px 16px;border-radius:var(--r);
+  background:var(--verde-suave);color:var(--verde);font-size:.92rem;text-align:center}
+.turno b{font-weight:700}
+
+.marcar{display:block;width:100%;margin:20px 0 10px;border:0;border-radius:20px;
+  padding:30px 20px;cursor:pointer;color:#fff;box-shadow:var(--sombra);
+  font:700 1.6rem/1.15 var(--cuerpo);letter-spacing:-.02em;
+  transition:transform .08s,filter .15s}
+.marcar small{display:block;margin-top:7px;font-size:.86rem;font-weight:500;opacity:.9;
+  letter-spacing:0}
+.marcar:active{transform:scale(.98)}
+.marcar[disabled]{opacity:.55;cursor:progress}
+.marcar--entrada{background:var(--entrar)}
+.marcar--salida{background:var(--salir)}
+
+.recado{min-height:1.4rem;text-align:center;font-size:.95rem;margin:6px 0 2px}
+.recado.ok{color:var(--verde);font-weight:600}
+.recado.error{color:var(--rojo);font-weight:500}
+
+.donde{margin-top:18px}
+.caja{background:var(--sup);border:1px solid var(--borde-suave);border-radius:var(--r);
+  overflow:hidden;margin-top:18px;box-shadow:var(--sombra)}
+.caja__tit{padding:12px 16px;background:var(--sup-2);border-bottom:1px solid var(--borde-suave);
+  font-size:.92rem;font-weight:600}
+.lista{list-style:none;margin:0;padding:0}
+.lista li{display:flex;align-items:center;gap:12px;padding:13px 16px;
+  border-bottom:1px solid var(--borde-suave)}
+.lista li:last-child{border-bottom:0}
+.lista .hora{font-size:1.15rem;font-weight:600;font-variant-numeric:tabular-nums;
+  letter-spacing:-.02em;min-width:4.2rem}
+.lista .que{flex:1;min-width:0}
+.lista .que b{display:block;font-weight:600;font-size:.94rem}
+.lista .que span{color:var(--texto-3);font-size:.8rem}
+.sello{display:inline-block;font-size:.7rem;font-weight:700;padding:4px 8px;
+  border-radius:3px;white-space:nowrap}
+.s-entrada{background:var(--verde-suave);color:var(--verde)}
+.s-salida{background:var(--ambar-suave);color:var(--ambar)}
+.vacio{padding:26px 16px;text-align:center;color:var(--texto-3);font-size:.9rem}
+.pie{margin-top:22px;text-align:center;color:var(--texto-3);font-size:.8rem;line-height:1.6}
+</style>
+</head>
+<body>
+
+<header class="barra" id="cabecera" hidden>
+  <div class="marca">
+    <img src="logo.png" alt="">
+    <span>
+      <b>Asistencia</b>
+      <span>Seguridad Garridos</span>
+    </span>
+  </div>
+  <div class="barra__fin">
+    <div class="ajustes">
+      <div class="segmento" role="group" aria-label="Apariencia" id="seg-tema">
+        <button type="button" data-tema="claro">Claro</button>
+        <button type="button" data-tema="oscuro">Oscuro</button>
+        <button type="button" data-tema="auto">Auto</button>
+      </div>
+      <div class="segmento segmento--letra" role="group" aria-label="Tamaño de la letra" id="seg-letra">
+        <button type="button" data-escala="0.875" aria-label="Letra chica">A</button>
+        <button type="button" data-escala="1" aria-label="Letra normal">A</button>
+        <button type="button" data-escala="1.125" aria-label="Letra grande">A</button>
+        <button type="button" data-escala="1.25" aria-label="Letra muy grande">A</button>
+      </div>
+    </div>
+    <button class="bt bt--fino bt--chico" id="salir" type="button">Salir</button>
+  </div>
+</header>
+
+<main id="app">
+  <p class="cargando">Cargando…</p>
+</main>
+
+<script>
+"use strict";
+
+const $ = (s, r = document) => r.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+const ZONA = "America/Santiago";
+
+/** La hora que se muestra es la de Chile, marque desde donde marque. */
+function horaChile(valor = new Date()) {
+  const d = valor instanceof Date ? valor : new Date(valor);
+  try {
+    return new Intl.DateTimeFormat("es-CL",
+      { timeZone: ZONA, hour: "2-digit", minute: "2-digit", hour12: false }).format(d);
+  } catch { return d.toTimeString().slice(0, 5); }
+}
+
+function fechaLarga(iso) {
+  try {
+    const [a, m, d] = iso.split("-").map(Number);
+    const f = new Date(Date.UTC(a, m - 1, d));
+    const t = new Intl.DateTimeFormat("es-CL",
+      { timeZone: "UTC", weekday: "long", day: "numeric", month: "long" }).format(f);
+    return t.charAt(0).toUpperCase() + t.slice(1);
+  } catch { return iso; }
+}
+
+/** 3.75 horas -> "3 h 45 min". Nadie cuenta turnos en decimales. */
+function duracion(horas) {
+  const min = Math.max(0, Math.round((horas || 0) * 60));
+  const h = Math.floor(min / 60);
+  return (h ? h + " h " : "") + (min % 60) + " min";
+}
+
+// ------------------------------------------------------------- apariencia
+// Igual que en el panel: cada quien elige y se le guarda en su teléfono. Todo
+// acceso protegido, porque en ventana privada falla y no puede romper nada.
+const ESCALAS = ["0.875", "1", "1.125", "1.25"];
+const recordar = (c, v) => { try { localStorage.setItem("globseg." + c, v); } catch {} };
+const recordado = (c) => { try { return localStorage.getItem("globseg." + c); } catch { return null; } };
+
+function marcarSegmento(selector, campo, valor) {
+  const caja = document.querySelector(selector);
+  if (!caja) return;
+  caja.querySelectorAll("button").forEach(b =>
+    b.setAttribute("aria-pressed", String(b.dataset[campo] === String(valor))));
+}
+function aplicarTema(tema) {
+  if (tema === "claro" || tema === "oscuro") document.documentElement.dataset.tema = tema;
+  else delete document.documentElement.dataset.tema;
+  marcarSegmento("#seg-tema", "tema", tema);
+}
+function aplicarEscala(escala) {
+  const e = ESCALAS.includes(String(escala)) ? String(escala) : "1";
+  document.documentElement.style.setProperty("--escala", e);
+  marcarSegmento("#seg-letra", "escala", e);
+}
+function conectarApariencia() {
+  aplicarTema(recordado("tema") || "auto");
+  aplicarEscala(recordado("escala") || "1");
+  $("#seg-tema").onclick = ev => {
+    const b = ev.target.closest("button"); if (!b) return;
+    recordar("tema", b.dataset.tema); aplicarTema(b.dataset.tema);
+  };
+  $("#seg-letra").onclick = ev => {
+    const b = ev.target.closest("button"); if (!b) return;
+    recordar("escala", b.dataset.escala); aplicarEscala(b.dataset.escala);
+  };
+}
+
+// ------------------------------------------------------------- servidor
+async function pedir(ruta, opciones) {
+  const r = await fetch("/api/asistencia" + ruta, {
+    headers: { "content-type": "application/json" },
+    ...opciones,
+  });
+  const cuerpo = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(cuerpo.error || `Error ${r.status}`);
+  return cuerpo;
+}
+
+/**
+ * La ubicación se pide, no se exige. Si el guardia la niega, si el parque no
+ * tiene señal o si el GPS demora demasiado, la marca se registra igual y queda
+ * anotada como «sin ubicación»: un turno no se pierde por un permiso del
+ * teléfono.
+ */
+function ubicacion() {
+  return new Promise(listo => {
+    if (!navigator.geolocation) return listo(null);
+    let contestado = false;
+    const responder = v => { if (!contestado) { contestado = true; listo(v); } };
+    setTimeout(() => responder(null), 9000);
+    navigator.geolocation.getCurrentPosition(
+      p => responder({ lat: p.coords.latitude, lon: p.coords.longitude,
+                       exactitud_m: Math.round(p.coords.accuracy || 0) }),
+      () => responder(null),
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 });
+  });
+}
+
+// ------------------------------------------------------------- pantallas
+function pintarIngreso(mensaje) {
+  $("#cabecera").hidden = true;
+  document.body.innerHTML = `<div class="puerta"><div class="puerta__caja">
+    <div class="puerta__tit"><img src="logo.png" alt="">
+      <span><b>Asistencia</b><span>Seguridad Garridos</span></span></div>
+    <form id="f-entrar">
+      <label class="campo"><span>Usuario</span>
+        <input name="usuario" autocomplete="username" autocapitalize="none"
+               spellcheck="false" inputmode="text" required autofocus></label>
+      <label class="campo"><span>RUT</span>
+        <input name="clave" type="password" autocomplete="current-password"
+               inputmode="text" required></label>
+      <button class="bt" type="submit">Entrar</button>
+      <span class="recado"></span>
+    </form>
+    <div class="puerta__aviso">
+      Su clave es su RUT con el dígito verificador, da lo mismo si lo escribe
+      con puntos o sin ellos. Si no sabe su usuario, pídaselo a Joaquín.
+    </div>
+  </div></div>`;
+  const f = $("#f-entrar");
+  const recado = f.querySelector(".recado");
+  if (mensaje) { recado.className = "recado error"; recado.textContent = mensaje; }
+  f.onsubmit = async ev => {
+    ev.preventDefault();
+    const bt = f.querySelector("button");
+    recado.className = "recado"; recado.textContent = "Entrando…";
+    bt.disabled = true;
+    try {
+      await pedir("/sesion", { method: "POST",
+        body: JSON.stringify({ usuario: f.usuario.value, clave: f.clave.value }) });
+      location.reload();
+    } catch (e) {
+      recado.className = "recado error"; recado.textContent = e.message;
+      bt.disabled = false; f.clave.value = ""; f.clave.focus();
+    }
+  };
+}
+
+let estado = null;
+let confirmando = null;      // la salida se pregunta dos veces
+let relojTimer = null;
+
+function pintar() {
+  const e = estado;
+  const entrando = e.siguiente === "entrada";
+  const inst = e.instalaciones || [];
+  // Al salir se propone la instalación donde se marcó la entrada, no la de la
+  // ficha: un guardia puede estar cubriendo en otro parque esta noche.
+  const abierta = [...e.marcas].reverse().find(m => m.tipo === "entrada");
+  const elegida = (!entrando && abierta
+    ? abierta.instalacion_id
+    : e.trabajador.instalacion_id) ?? "";
+
+  $("#app").innerHTML = `
+    <section class="hoy">
+      <div class="hoy__hora num" id="reloj">${esc(horaChile())}</div>
+      <div class="hoy__fecha">${esc(fechaLarga(e.fecha))}</div>
+      <div class="hoy__quien">${esc(e.trabajador.nombre)}</div>
+      <div class="hoy__donde">${esc(e.trabajador.cargo)}${
+        e.trabajador.instalacion ? " · " + esc(e.trabajador.instalacion) : ""}</div>
+    </section>
+
+    ${!entrando ? `<p class="turno">En turno desde las <b>${
+        esc(horaChile(new Date(e.desde)))}</b> · llevas <b id="llevas">${
+        esc(duracion(e.horas_en_turno))}</b></p>` : ""}
+
+    <label class="campo donde"><span>Dónde está</span>
+      <select id="instalacion">
+        <option value="">Sin indicar</option>
+        ${inst.map(i => `<option value="${i.id}"${
+          String(i.id) === String(elegida) ? " selected" : ""}>${esc(i.nombre)}</option>`).join("")}
+      </select></label>
+
+    <button class="marcar ${entrando ? "marcar--entrada" : "marcar--salida"}" id="marcar">
+      ${entrando ? "Marcar entrada" : "Marcar salida"}
+      <small>${entrando ? "Empieza su turno" : "Termina su turno"}</small>
+    </button>
+    <p class="recado" id="recado"></p>
+
+    <div class="caja">
+      <div class="caja__tit">Lo marcado ${esc(fechaLarga(e.fecha)).toLowerCase()}</div>
+      ${e.marcas.length ? `<ul class="lista">${e.marcas.map(m => `
+        <li>
+          <span class="hora">${esc(m.hora)}</span>
+          <span class="que"><b>${m.tipo === "entrada" ? "Entrada" : "Salida"}</b>
+            <span>${m.instalacion ? esc(m.instalacion) : "Sin instalación"} ·
+              ${m.con_ubicacion ? "con ubicación" : "sin ubicación"}</span></span>
+          <span class="sello s-${m.tipo}">${m.tipo === "entrada" ? "Entrada" : "Salida"}</span>
+        </li>`).join("")}</ul>`
+      : `<p class="vacio">Todavía no ha marcado nada hoy.</p>`}
+    </div>
+
+    <p class="pie">Lo marcado queda guardado y no se puede borrar desde acá.<br>
+      Si algo quedó mal, avísele a Joaquín.</p>`;
+
+  $("#marcar").onclick = alMarcar;
+  arrancarReloj();
+}
+
+function arrancarReloj() {
+  clearInterval(relojTimer);
+  relojTimer = setInterval(() => {
+    const r = $("#reloj");
+    if (!r) return clearInterval(relojTimer);
+    r.textContent = horaChile();
+    const ll = $("#llevas");
+    if (ll && estado && estado.desde) {
+      ll.textContent = duracion((Date.now() - new Date(estado.desde)) / 3600000);
+    }
+  }, 20000);
+}
+
+async function alMarcar() {
+  const bt = $("#marcar");
+  const recado = $("#recado");
+  const tipo = estado.siguiente;
+
+  // La salida se pregunta dos veces. Un toque sin querer al entrar al turno
+  // cerraría una jornada que recién empieza, y acá nada se edita después.
+  if (tipo === "salida" && confirmando !== "salida") {
+    confirmando = "salida";
+    bt.innerHTML = `¿Terminar el turno?<small>Toque otra vez para confirmar</small>`;
+    recado.className = "recado";
+    recado.textContent = "";
+    setTimeout(() => {
+      if (confirmando === "salida" && $("#marcar") === bt) {
+        confirmando = null;
+        bt.innerHTML = `Marcar salida<small>Termina su turno</small>`;
+      }
+    }, 6000);
+    return;
+  }
+  confirmando = null;
+
+  bt.disabled = true;
+  recado.className = "recado";
+  recado.textContent = "Buscando su ubicación…";
+
+  const donde = await ubicacion();
+  recado.textContent = "Guardando…";
+
+  try {
+    const r = await pedir("/marca", {
+      method: "POST",
+      body: JSON.stringify({
+        tipo,
+        instalacion_id: $("#instalacion").value || null,
+        ...(donde || {}),
+      }),
+    });
+    estado = r.estado;
+    pintar();
+    const rec = $("#recado");
+    rec.className = "recado ok";
+    rec.textContent = r.repetida
+      ? `Esa marca ya estaba registrada a las ${r.hora || ""}.`
+      : (r.tipo === "entrada"
+          ? `Entrada marcada a las ${r.hora}.${donde ? "" : " Sin ubicación."}`
+          : `Salida marcada a las ${r.hora}. Turno de ${duracion(r.horas_turno)}.`);
+  } catch (e) {
+    bt.disabled = false;
+    recado.className = "recado error";
+    recado.textContent = e.message;
+    // Si el servidor dice que correspondía lo otro, se recarga el estado:
+    // casi siempre es que ya se había marcado desde otro teléfono.
+    if (/corresponde/i.test(e.message)) {
+      try { estado = await pedir("/yo"); pintar(); } catch {}
+    }
+  }
+}
+
+async function arrancar() {
+  try {
+    estado = await pedir("/yo");
+  } catch (e) {
+    return pintarIngreso(e.message.includes("Sin sesión") ? "" : e.message);
+  }
+  $("#cabecera").hidden = false;
+  $("#salir").onclick = async () => {
+    await pedir("/sesion", { method: "DELETE" }).catch(() => {});
+    location.reload();
+  };
+  pintar();
+  // Al volver del bloqueo del teléfono, la hora y el turno se refrescan.
+  document.addEventListener("visibilitychange", async () => {
+    if (document.visibilityState !== "visible" || !estado) return;
+    try { estado = await pedir("/yo"); pintar(); } catch {}
+  });
+}
+
+conectarApariencia();
+arrancar();
+</script>
+</body>
+</html>
