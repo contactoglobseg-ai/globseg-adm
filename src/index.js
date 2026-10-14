@@ -13,6 +13,7 @@ import { buscar, primero, insertar, insertarSinDuplicar, actualizar, anotar, Err
   from './datos.js';
 import { ingresar, cambiarClave, crearSesion, leerSesion, cookieSesion, cookieBorrada }
   from './sesion.js';
+import { hoyISO, sumarDias, diasEntre, esFecha, periodoDe } from './fechas.js';
 import * as cotiz from './cotizaciones.js';
 import * as lote from './lote.js';
 
@@ -24,24 +25,6 @@ const PERMISOS = {
   rrhh:        ['rrhh'],
   prevencion:  ['documentos'],
 };
-
-// ---------------------------------------------------------------- fechas
-// YYYY-MM-DD con aritmética simple, sin zonas horarias: un periodo de
-// facturación es un día de calendario, no un instante.
-const hoyISO = () => new Date().toISOString().slice(0, 10);
-
-function sumarDias(iso, dias) {
-  const [a, m, d] = iso.split('-').map(Number);
-  return new Date(Date.UTC(a, m - 1, d) + dias * 86400000).toISOString().slice(0, 10);
-}
-
-function diasEntre(desde, hasta) {
-  const p = (s) => { const [a, m, d] = s.split('-').map(Number); return Date.UTC(a, m - 1, d); };
-  return Math.round((p(hasta) - p(desde)) / 86400000);
-}
-
-const esFecha = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
-  && !Number.isNaN(Date.parse(s + 'T00:00:00Z'));
 
 // ---------------------------------------------------------------- utilidades
 const json = (datos, status = 200) =>
@@ -102,7 +85,7 @@ const puede = (usuario, modulo) => !!usuario?.permisos?.includes(modulo);
 async function ponerCiclosAlDia(env) {
   const hoy = hoyISO();
   const servicios = await buscar(env,
-    'servicios?select=id,fecha_inicio,dias_ciclo,monto_neto&activo=is.true');
+    'servicios?select=id,fecha_inicio,dias_ciclo,ciclo_tipo,monto_neto&activo=is.true');
 
   const nuevos = [];
   const cierres = [];
@@ -115,19 +98,22 @@ async function ponerCiclosAlDia(env) {
       cierres.push({ servicio_id: s.id, numero: ultimo.numero });
     }
 
+    // Cada periodo se calcula desde la fecha de inicio por su número, no
+    // encadenando desde el anterior. Encadenar hacía que un periodo mal
+    // grabado arrastrara a todos los siguientes, y en el modo mensual
+    // desalineaba el día de cobro.
     let numero = ultimo ? ultimo.numero : 0;
-    let desde  = ultimo ? sumarDias(ultimo.hasta, 1) : s.fecha_inicio;
-
     const tope = numero + 500;   // freno ante una fecha de inicio absurda
-    while (diasEntre(desde, hoy) >= 0 && numero < tope) {
-      numero += 1;
-      const hasta = sumarDias(desde, s.dias_ciclo - 1);
+    while (numero < tope) {
+      const n = numero + 1;
+      const { desde, hasta } = periodoDe(s, n);
+      if (diasEntre(desde, hoy) < 0) break;   // ese periodo todavía no empieza
       nuevos.push({
-        servicio_id: s.id, numero, desde, hasta,
+        servicio_id: s.id, numero: n, desde, hasta,
         estado: diasEntre(hasta, hoy) >= 0 ? 'solicitar_oc' : 'en_curso',
         monto_neto: s.monto_neto ?? null,
       });
-      desde = sumarDias(hasta, 1);
+      numero = n;
     }
   }
 
@@ -407,25 +393,41 @@ async function api(request, env, url, usuario) {
   if (ruta === '/servicios' && metodo === 'GET') {
     const [servicios, ciclos] = await Promise.all([
       buscar(env, 'servicios?select=*,instalaciones(nombre,comuna,clientes(nombre))&order=activo.desc,nombre.asc'),
-      buscar(env, 'ciclos?select=servicio_id,estado'),
+      buscar(env, 'ciclos?select=servicio_id,numero,estado,desde,hasta'),
     ]);
-    const cuenta = new Map();
+    const porServicio = new Map();
     for (const c of ciclos) {
-      const n = cuenta.get(c.servicio_id) || { total: 0, cerrados: 0, abiertos: 0 };
-      n.total += 1;
-      if (c.estado === 'cerrado') n.cerrados += 1; else n.abiertos += 1;
-      cuenta.set(c.servicio_id, n);
+      if (!porServicio.has(c.servicio_id)) porServicio.set(c.servicio_id, []);
+      porServicio.get(c.servicio_id).push(c);
+    }
+    const cuenta = new Map();
+    for (const s of servicios) {
+      const suyos = porServicio.get(s.id) || [];
+      const n = { total: suyos.length, cerrados: 0, abiertos: 0, descuadrados: 0 };
+      for (const c of suyos) {
+        if (c.estado === 'cerrado') n.cerrados += 1; else n.abiertos += 1;
+        // Periodos grabados con el cálculo viejo: sus fechas ya no son las que
+        // corresponden al ciclo. Se cuentan solo los que todavía se pueden
+        // arreglar; los facturados son lo que el cliente ya recibió.
+        const esperado = periodoDe(s, c.numero);
+        if (c.estado !== 'cerrado'
+            && (c.desde !== esperado.desde || c.hasta !== esperado.hasta)) {
+          n.descuadrados += 1;
+        }
+      }
+      cuenta.set(s.id, n);
     }
     return json({
       servicios: servicios.map((s) => {
         const { instalaciones: i, ...resto } = s;
-        const n = cuenta.get(s.id) || { total: 0, cerrados: 0, abiertos: 0 };
+        const n = cuenta.get(s.id) || { total: 0, cerrados: 0, abiertos: 0, descuadrados: 0 };
         return {
           ...resto,
           instalacion: i?.nombre || '—',
           comuna: i?.comuna || null,
           cliente: i?.clientes?.nombre || '—',
           periodos: n.total, periodos_cerrados: n.cerrados, periodos_abiertos: n.abiertos,
+          fechas_descuadradas: n.descuadrados,
         };
       }),
     });
@@ -443,6 +445,12 @@ async function api(request, env, url, usuario) {
       const n = (cuerpo.nombre || '').trim();
       if (!n) return error('Falta el nombre del servicio');
       campos.nombre = n;
+    }
+    if ('ciclo_tipo' in cuerpo) {
+      if (!['mensual', 'dias'].includes(cuerpo.ciclo_tipo)) {
+        return error('Ese tipo de ciclo no existe');
+      }
+      campos.ciclo_tipo = cuerpo.ciclo_tipo;
     }
     if ('dias_ciclo' in cuerpo) {
       const d = entero(cuerpo.dias_ciclo);
@@ -508,6 +516,8 @@ async function api(request, env, url, usuario) {
     if (!nombre?.trim()) return error('Falta el nombre del servicio');
     if (!esFecha(fecha_inicio)) return error('La fecha de inicio no es válida');
 
+    const tipo = cuerpo.ciclo_tipo === 'dias' ? 'dias' : 'mensual';
+
     // Ausente significa "el de siempre"; un valor presente se valida tal cual,
     // nunca se corrige en silencio.
     const vacio = dias_ciclo === undefined || dias_ciclo === null || dias_ciclo === '';
@@ -521,12 +531,14 @@ async function api(request, env, url, usuario) {
 
     const [creado] = await insertar(env, 'servicios', {
       instalacion_id: inst.id, nombre: nombre.trim(),
-      fecha_inicio, dias_ciclo: dias, monto_neto: entero(monto_neto),
-      creado_por: usuario.email,
+      fecha_inicio, ciclo_tipo: tipo, dias_ciclo: dias, monto_neto: entero(monto_neto),
+      creado_por: usuario.usuario,
     });
 
-    await anotar(env, usuario.email, 'servicio', creado.id, 'creado',
-                 `${creado.nombre} desde ${fecha_inicio}, ciclo de ${dias} días`);
+    await anotar(env, usuario.usuario, 'servicio', creado.id, 'creado',
+                 `${creado.nombre} desde ${fecha_inicio}, ${
+                   tipo === 'mensual' ? 'cobro mensual el día ' + fecha_inicio.slice(8)
+                                      : 'ciclo de ' + dias + ' días'}`);
     await ponerCiclosAlDia(env);
     return json({ ok: true, id: creado.id }, 201);
   }
@@ -792,6 +804,12 @@ async function revisarTablas(env) {
     r.cuentas_que_pueden_borrar = con.length;
   } catch {
     r.permiso_de_borrar = false;
+  }
+  try {
+    await buscar(env, 'servicios?select=ciclo_tipo&limit=1');
+    r.ciclo_mensual = true;
+  } catch {
+    r.ciclo_mensual = false;
   }
   return r;
 }

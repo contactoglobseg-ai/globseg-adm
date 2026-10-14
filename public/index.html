@@ -377,6 +377,8 @@ const ACCIONES = {
       { rot: "Dar de baja", accion: "activo", valor: false, boton: "Dar de baja",
         confirmar: n => `¿Dar de baja ${n} servicio${n > 1 ? "s" : ""}?\n\nDejan de generarse periodos nuevos. Todo lo registrado se conserva.` },
       { rot: "Reactivar", accion: "activo", valor: true, boton: "Reactivar" },
+      { rot: "Recalcular fechas del ciclo", accion: "recalcular", boton: "Recalcular",
+        confirmar: n => `¿Recalcular las fechas de ${n} servicio${n > 1 ? "s" : ""}?\n\nSe corrigen los periodos que quedaron corridos. Los que ya tienen factura NO se tocan: esas son las fechas que vio el cliente.` },
       { rot: "Eliminar", accion: "borrar", peligro: true, boton: "Eliminar", soloBorrador: true,
         confirmar: n => `¿Eliminar ${n} servicio${n > 1 ? "s" : ""}?\n\nSe borran también todos sus periodos. Los que tengan periodos ya facturados no se borran: a esos deles de baja.` },
     ],
@@ -906,7 +908,12 @@ async function pintarServicios() {
       ${[...new Set(inst.map(i => i.cliente))].map(c => `<option value="${esc(c)}">`).join("")}
     </datalist>`;
 
+  const corridos = servicios.filter(s => s.fechas_descuadradas > 0);
+
   $("#app").innerHTML = `
+    ${corridos.length ? aviso("ojo",
+      `${corridos.length} servicio${corridos.length > 1 ? "s tienen" : " tiene"} periodos con las fechas corridas`,
+      "Se cargaron sumando 30 días, así que el día de cobro se fue atrasando. Márquelos y use «Recalcular fechas del ciclo». Los periodos ya facturados no se tocan.") : ""}
     <div style="display:flex;align-items:center;gap:14px;margin-bottom:18px;flex-wrap:wrap">
       <h2 style="font-size:1.5rem">Servicios</h2>
       <span class="nota" style="color:var(--texto-2);font-size:.85rem">
@@ -935,15 +942,21 @@ async function pintarServicios() {
           <label class="campo" style="grid-column:1/-1"><span>Nombre del servicio</span>
             <input name="nombre" required placeholder="Ej: Vigilancia 24/7 con pareja de patrullaje"></label>
           <label class="campo"><span>Día de inicio</span>
-            <input name="fecha_inicio" type="date" required value="${hoyISO()}"></label>
-          <label class="campo"><span>Días del ciclo</span>
-            <input name="dias_ciclo" type="number" min="1" max="365" value="30" required></label>
+            <input name="fecha_inicio" type="date" required value="${hoyISO()}" id="in-inicio"></label>
+          <label class="campo"><span>Cada cuánto se cobra</span>
+            <select name="ciclo_tipo" id="in-tipo">
+              <option value="mensual" selected>Mensual, el mismo día de cada mes</option>
+              <option value="dias">Cada cierta cantidad de días</option>
+            </select></label>
+          <label class="campo" id="campo-dias" hidden><span>Días del ciclo</span>
+            <input name="dias_ciclo" type="number" min="1" max="365" value="30"></label>
           <label class="campo"><span>Monto base neto del periodo</span>
             <input name="monto_neto" type="number" min="0" step="1" placeholder="Opcional"></label>
         </div>
         <div class="pie-form">
           <button class="bt" type="submit">Crear servicio</button>
           <span class="mensaje"></span>
+          <span style="margin-left:auto;font-size:.8rem;color:var(--texto-2)" id="aviso-ciclo"></span>
         </div>
       </form>
     </section>
@@ -953,7 +966,7 @@ async function pintarServicios() {
         <span class="nota">Marque varios para darlos de baja o eliminarlos</span></div>
       ${servicios.length ? `<div class="desliza"><table style="min-width:980px"><thead><tr>
         ${cabeceraSel("servicios")}
-        <th>Instalación</th><th>Servicio</th><th>Desde</th><th class="num">Ciclo</th>
+        <th>Instalación</th><th>Servicio</th><th>Desde</th><th class="num">Cobro</th>
         <th class="num">Monto base</th><th class="num">Periodos</th><th>Situación</th><th></th>
       </tr></thead><tbody>
         ${servicios.map(s => `<tr${s.activo ? "" : ' style="opacity:.6"'}>
@@ -962,7 +975,12 @@ async function pintarServicios() {
             s.comuna ? " · " + esc(s.comuna) : ""}</span></td>
           <td>${esc(s.nombre)}</td>
           <td class="num nowrap">${fecha(s.fecha_inicio)}</td>
-          <td class="num">${s.dias_ciclo} días</td>
+          <td class="num nowrap">${s.ciclo_tipo === "dias"
+            ? `cada ${s.dias_ciclo} días`
+            : `el ${Number(s.fecha_inicio.slice(8))} de cada mes`}${
+            s.fechas_descuadradas
+              ? `<span class="sub" style="color:var(--ambar)">${s.fechas_descuadradas} periodo${
+                  s.fechas_descuadradas > 1 ? "s" : ""} con fechas corridas</span>` : ""}</td>
           <td class="num">${s.monto_neto ? clp(s.monto_neto) : "—"}</td>
           <td class="num">${s.periodos}<span class="sub">${s.periodos_cerrados} facturado${
             s.periodos_cerrados === 1 ? "" : "s"}</span></td>
@@ -978,6 +996,26 @@ async function pintarServicios() {
     </section>`;
 
   conectarSeleccion();
+
+  // El campo de días solo tiene sentido en el modo por días.
+  const verDias = () => {
+    const porDias = $("#in-tipo").value === "dias";
+    $("#campo-dias").hidden = !porDias;
+    const d = $("#in-inicio").value;
+    $("#aviso-ciclo").textContent = porDias || !d ? ""
+      : `Se cobrará el ${Number(d.slice(8))} de cada mes`;
+  };
+  if ($("#in-tipo")) {
+    $("#in-tipo").onchange = verDias;
+    $("#in-inicio").onchange = verDias;
+    verDias();
+  }
+
+  document.querySelectorAll("[data-tipo]").forEach(sel => {
+    sel.onchange = () => {
+      $(`[data-campo-dias="${sel.dataset.tipo}"]`).hidden = sel.value !== "dias";
+    };
+  });
 
   $("#nuevo-servicio").onclick = () => {
     abrirFormServicio = !mostrarForm;
@@ -1201,8 +1239,14 @@ function formServicio(s) {
                value="${esc(s.instalacion)}"></label>
       <label class="campo"><span>Cliente</span>
         <input name="cliente" list="lista-clientes" autocomplete="off" value="${esc(s.cliente)}"></label>
-      <label class="campo"><span>Días del ciclo</span>
-        <input name="dias_ciclo" type="number" min="1" max="365" required value="${s.dias_ciclo}"></label>
+      <label class="campo"><span>Cada cuánto se cobra</span>
+        <select name="ciclo_tipo" data-tipo="${s.id}">
+          <option value="mensual"${s.ciclo_tipo !== "dias" ? " selected" : ""}>Mensual, el mismo día de cada mes</option>
+          <option value="dias"${s.ciclo_tipo === "dias" ? " selected" : ""}>Cada cierta cantidad de días</option>
+        </select></label>
+      <label class="campo" data-campo-dias="${s.id}"${s.ciclo_tipo === "dias" ? "" : " hidden"}>
+        <span>Días del ciclo</span>
+        <input name="dias_ciclo" type="number" min="1" max="365" value="${s.dias_ciclo}"></label>
       <label class="campo"><span>Monto base neto</span>
         <input name="monto_neto" type="number" min="0" step="1" value="${s.monto_neto ?? ""}"
                placeholder="Opcional"></label>

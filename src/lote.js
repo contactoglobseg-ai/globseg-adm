@@ -12,6 +12,7 @@
  */
 
 import { buscar, actualizar, borrar, anotar } from './datos.js';
+import { periodoDe, diasEntre, sumarDias } from './fechas.js';
 
 const MAX = 200;
 
@@ -248,6 +249,10 @@ async function servicios(env, usuario, ids, cuerpo) {
     return { hechos: presentes.length, omitidos };
   }
 
+  if (cuerpo.accion === 'recalcular') {
+    return recalcularFechas(env, usuario, filas, omitidos);
+  }
+
   if (cuerpo.accion === 'borrar') {
     // Un periodo facturado es el respaldo de una factura que el cliente tiene.
     // Borrar el servicio se lo llevaría en cascada, así que no se permite: para
@@ -278,6 +283,76 @@ async function servicios(env, usuario, ids, cuerpo) {
   }
 
   return { error: 'Esa acción no existe para servicios', status: 400 };
+}
+
+/**
+ * Rehace las fechas de los periodos según el ciclo del servicio.
+ *
+ * Existe porque los primeros servicios se cargaron sumando 30 días y el día de
+ * cobro se fue corriendo. Solo mueve los periodos **sin factura**: los
+ * facturados son el respaldo de un documento que el cliente ya tiene, y
+ * cambiarles las fechas dejaría la factura diciendo una cosa y el sistema otra.
+ */
+async function recalcularFechas(env, usuario, servicios, omitidos) {
+  let hechos = 0;
+  const avisos = [];
+
+  for (const s of servicios) {
+    const completo = await buscar(env,
+      `servicios?select=id,nombre,fecha_inicio,ciclo_tipo,dias_ciclo&id=eq.${s.id}`);
+    if (!completo.length) continue;
+    const serv = completo[0];
+
+    const ciclos = await buscar(env,
+      `ciclos?select=id,numero,estado,desde,hasta,factura_folio&servicio_id=eq.${s.id}&order=numero.asc`);
+
+    let movidos = 0;
+    let intactos = 0;
+    for (const c of ciclos) {
+      const esperado = periodoDe(serv, c.numero);
+      if (c.desde === esperado.desde && c.hasta === esperado.hasta) continue;
+      if (c.estado === 'cerrado') { intactos += 1; continue; }
+      await actualizar(env, `ciclos?id=eq.${c.id}`, {
+        desde: esperado.desde, hasta: esperado.hasta,
+        actualizado_en: new Date().toISOString(),
+      });
+      movidos += 1;
+    }
+
+    if (movidos) {
+      hechos += 1;
+      await anotar(env, usuario.usuario, 'servicio', s.id, 'fechas recalculadas',
+                   `${movidos} periodo${movidos > 1 ? 's' : ''} de "${serv.nombre}"`);
+      avisos.push(`"${serv.nombre}": ${movidos} periodo${movidos > 1 ? 's' : ''} corregido${movidos > 1 ? 's' : ''}.`);
+    }
+    if (intactos) {
+      avisos.push(`"${serv.nombre}": ${intactos} periodo${intactos > 1 ? 's' : ''} ya facturado${intactos > 1 ? 's' : ''} quedó con sus fechas originales, que son las que dice la factura.`);
+    }
+    if (!movidos && !intactos) {
+      avisos.push(`"${serv.nombre}": las fechas ya estaban correctas.`);
+    }
+
+    // Entre lo que ya se facturó y la serie corregida puede quedar un hueco o
+    // un solape. No se puede arreglar sin tocar una factura emitida, pero
+    // callarlo sería peor: un extra con fecha en ese hueco no caería en ningún
+    // periodo y nadie sabría por qué.
+    if (movidos) {
+      const finales = await buscar(env,
+        `ciclos?select=numero,desde,hasta&servicio_id=eq.${s.id}&order=numero.asc`);
+      for (let i = 1; i < finales.length; i++) {
+        const salto = diasEntre(finales[i - 1].hasta, finales[i].desde);
+        if (salto === 1) continue;
+        if (salto > 1) {
+          const dias = salto - 1;
+          avisos.push(`Ojo: entre el periodo N°${finales[i - 1].numero} y el N°${finales[i].numero} queda${dias > 1 ? 'n' : ''} ${dias} día${dias > 1 ? 's' : ''} sin cubrir (${sumarDias(finales[i - 1].hasta, 1)}${dias > 1 ? ' al ' + sumarDias(finales[i].desde, -1) : ''}). Es el empalme con lo ya facturado: si hay un extra en esas fechas, quedará suelto.`);
+        } else {
+          avisos.push(`Ojo: el periodo N°${finales[i - 1].numero} y el N°${finales[i].numero} se pisan. Es el empalme con lo ya facturado; revise cuál corresponde antes de cobrar.`);
+        }
+      }
+    }
+  }
+
+  return { hechos, omitidos, avisos };
 }
 
 // ------------------------------------------------------------ instalaciones
