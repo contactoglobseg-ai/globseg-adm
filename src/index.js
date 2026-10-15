@@ -18,6 +18,8 @@ import { hoyISO, sumarDias, diasEntre, esFecha, periodoDe, fechasMovibles }
 import * as cotiz from './cotizaciones.js';
 import * as lote from './lote.js';
 import * as asis from './asistencia.js';
+import { redireccionHttps, cabecerasSeguridad, conCabeceras, soloHttps }
+  from './seguridad.js';
 
 const IVA = 0.19;
 
@@ -45,7 +47,8 @@ const PERMISOS_PERSONA = {
 const json = (datos, status = 200) =>
   new Response(JSON.stringify(datos), {
     status,
-    headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+    headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store',
+               ...soloHttps() },
   });
 
 const error = (mensaje, status = 400) => json({ error: mensaje }, status);
@@ -901,7 +904,7 @@ async function apiAsistencia(request, env, url) {
       headers: {
         'content-type': 'application/json; charset=utf-8',
         'set-cookie': cookieSesion(cookie, duracionSesion('asistencia'), seguro, 'asistencia'),
-        'cache-control': 'no-store',
+        'cache-control': 'no-store', ...soloHttps(),
       },
     });
   }
@@ -911,7 +914,7 @@ async function apiAsistencia(request, env, url) {
       headers: {
         'content-type': 'application/json; charset=utf-8',
         'set-cookie': cookieBorrada(seguro, 'asistencia'),
-        'cache-control': 'no-store',
+        'cache-control': 'no-store', ...soloHttps(),
       },
     });
   }
@@ -1023,6 +1026,11 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
+    // Nada se contesta en claro. Tiene que ser lo primero: si la página de
+    // ingreso llega a entregarse por http, la contraseña ya viaja a la vista.
+    const aHttps = redireccionHttps(request, url);
+    if (aHttps) return aHttps;
+
     if (!url.pathname.startsWith('/api/')) {
       // Un Worker, dos páginas. asistencia.seggarridos.com muestra el libro de
       // asistencia y adm.seggarridos.com el panel; comparten base de datos,
@@ -1034,13 +1042,20 @@ export default {
       const host = (request.headers.get('host') || url.hostname).split(':')[0].toLowerCase();
       const esAsistencia = host.split('.')[0] === 'asistencia';
       const pidePagina = url.pathname === '/' || !url.pathname.slice(1).includes('.');
+      // El libro también se sirve en adm.seggarridos.com/asistencia y en las
+      // pruebas locales, donde el dominio no lo delata. Si se mirara solo el
+      // dominio, por ese camino la página quedaría con geolocation=() y el
+      // guardia no podría registrar dónde marcó.
+      const cabeceras = cabecerasSeguridad(esAsistencia || url.pathname === '/asistencia');
+
       // Se pide sin la extensión: el servidor de archivos resuelve
       // /asistencia -> asistencia.html, y pedirlo con .html lo hace responder
       // un 307 a la dirección sin extensión en vez de la página.
       if (esAsistencia && pidePagina && url.pathname !== '/asistencia') {
-        return env.ASSETS.fetch(new Request(new URL('/asistencia', url), request));
+        return conCabeceras(
+          await env.ASSETS.fetch(new Request(new URL('/asistencia', url), request)), cabeceras);
       }
-      return env.ASSETS.fetch(request);
+      return conCabeceras(await env.ASSETS.fetch(request), cabeceras);
     }
 
     try {
@@ -1140,14 +1155,14 @@ export default {
           }), {
             headers: { 'content-type': 'application/json; charset=utf-8',
                        'set-cookie': cookieSesion(cookie, 60 * 60 * 10, seguro),
-                       'cache-control': 'no-store' },
+                       'cache-control': 'no-store', ...soloHttps() },
           });
         }
         if (request.method === 'DELETE') {
           return new Response(JSON.stringify({ ok: true }), {
             headers: { 'content-type': 'application/json; charset=utf-8',
                        'set-cookie': cookieBorrada(url.protocol === 'https:'),
-                       'cache-control': 'no-store' },
+                       'cache-control': 'no-store', ...soloHttps() },
           });
         }
       }
