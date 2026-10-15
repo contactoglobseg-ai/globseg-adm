@@ -1009,6 +1009,12 @@ async function revisarTablas(env) {
   } catch {
     r.marcas_con_correccion = false;
   }
+  try {
+    await buscar(env, 'trabajadores?select=debe_cambiar_clave&limit=1');
+    r.trabajador_cambia_clave = true;
+  } catch {
+    r.trabajador_cambia_clave = false;
+  }
   return r;
 }
 
