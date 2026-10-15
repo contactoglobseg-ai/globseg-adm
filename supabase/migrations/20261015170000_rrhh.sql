@@ -413,7 +413,14 @@ on conflict (tramo) do nothing;
 -- Cada documento con su estado al día de hoy, ya resuelto. La pantalla no
 -- tiene que saber contar días ni la consulta repetir el cálculo en cinco
 -- lugares distintos.
-create or replace view v_documentos with (security_invoker = true) as
+-- Va `drop` y no `create or replace` a propósito. Una migración posterior
+-- (20261015200000_archivos_rrhh.sql) rehace esta vista con una columna más;
+-- si esta se volviera a correr después de aquella, `create or replace` tendría
+-- que quitar esa columna y Postgres lo rechaza con «cannot drop columns from
+-- view», dejando la pasada entera a medias. Con `drop` las dos se pueden
+-- correr las veces que sea y en cualquier orden.
+drop view if exists v_documentos;
+create view v_documentos with (security_invoker = true) as
 select
   d.*,
   t.nombre   as trabajador,
