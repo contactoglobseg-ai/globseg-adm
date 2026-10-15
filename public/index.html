@@ -236,6 +236,15 @@ tr.fila--cerrado{background:var(--sup-2)}
 tr.fila--cerrado td:first-child{box-shadow:inset 3px 0 0 var(--verde)}
 tr.fila--solicitar_oc td:first-child{box-shadow:inset 3px 0 0 var(--ambar)}
 
+/* ---------- jornadas corregidas por la oficina ----------
+   Una jornada que cerró la oficina no puede parecerse a una que marcó el
+   guardia: el libro vale por eso. Franja cian al costado y el nombre de quien
+   la corrigió en la misma fila, no escondido en un tooltip. */
+tr.fila--corregida td:first-child{box-shadow:inset 3px 0 0 var(--cian)}
+.e-corregida{background:var(--cian-suave);color:var(--cian)}
+tr[hidden]{display:none}
+tr.fila-corr td,tr.fila-corr:hover td{background:var(--sup-2);padding:0}
+
 /* ---------- cotizaciones ---------- */
 .cot__cab{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;padding:16px}
 .lineas{width:100%;border-collapse:collapse}
@@ -2373,7 +2382,9 @@ async function pintarLibro() {
   $("#app").innerHTML = `
     ${r.sin_salida ? aviso("ojo",
       `${r.sin_salida} jornada${r.sin_salida > 1 ? "s" : ""} sin salida marcada`,
-      "El guardia entró y no marcó la salida. Las horas de esas jornadas no se pueden contar.") : ""}
+      "El guardia entró y no marcó la salida, así que esas horas no se cuentan. " +
+      "Con el botón «Cerrar jornada» se agrega la hora real: queda como corrección " +
+      "suya, con el motivo, y la entrada del guardia no se toca.") : ""}
 
     <dl class="resumen">
       <div class="ficha"><dt>Jornadas</dt><dd class="num">${r.jornadas}</dd>
@@ -2382,6 +2393,8 @@ async function pintarLibro() {
         <small>Solo jornadas con entrada y salida</small></div>
       <div class="ficha ${r.sin_salida ? "ficha--ojo" : ""}"><dt>Sin salida</dt>
         <dd class="num">${r.sin_salida}</dd><small>Quedaron abiertas</small></div>
+      ${r.corregidas ? `<div class="ficha"><dt>Corregidas</dt>
+        <dd class="num">${r.corregidas}</dd><small>La salida la puso la oficina</small></div>` : ""}
     </dl>
 
     <section class="caja">
@@ -2408,18 +2421,48 @@ async function pintarLibro() {
           <th>Fecha</th><th>Trabajador</th><th>RUT</th><th>Instalación</th>
           <th>Entrada</th><th>Salida</th><th class="num">Horas</th><th></th>
         </tr></thead><tbody>
-        ${libro.jornadas.map(j => `<tr${j.completa ? "" : ' class="fila--solicitar_oc"'}>
+        ${libro.jornadas.map((j, i) => `<tr class="${
+            j.completa ? (j.corregida ? "fila--corregida" : "") : "fila--solicitar_oc"}">
           <td class="nowrap">${fecha(j.fecha)}</td>
           <td><b>${esc(j.trabajador)}</b>${j.usuario ? `<span class="sub">${esc(j.usuario)}</span>` : ""}</td>
           <td class="nowrap num">${esc(j.rut || "—")}</td>
           <td>${j.instalacion ? esc(j.instalacion) : "<span class=\"sub\">Sin indicar</span>"}</td>
           <td class="nowrap num">${j.hora_entrada || "—"}${
-            j.entrada_ubicada ? ' <span class="sub" style="display:inline">ubicada</span>' : ""}</td>
+            j.entrada_ubicada ? ' <span class="sub" style="display:inline">ubicada</span>' : ""}${
+            j.entrada_origen === "oficina" ? '<span class="sub">la puso la oficina</span>' : ""}</td>
           <td class="nowrap num">${j.hora_salida || "—"}${
-            j.salida_ubicada ? ' <span class="sub" style="display:inline">ubicada</span>' : ""}</td>
+            j.salida_ubicada ? ' <span class="sub" style="display:inline">ubicada</span>' : ""}${
+            j.salida_origen === "oficina" ? '<span class="sub">la puso la oficina</span>' : ""}</td>
           <td class="num">${j.horas !== null ? j.horas.toFixed(1) : "—"}</td>
-          <td>${j.completa ? "" : '<span class="sello e-solicitar_oc">Sin salida</span>'}</td>
-        </tr>`).join("")}
+          <td>${j.completa ? "" : `<span class="sello e-solicitar_oc">Sin salida</span>
+              <button class="bt bt--fino bt--chico" data-cerrar="corr-${i}"
+                style="margin-top:6px">Cerrar jornada</button>`}
+            ${j.correcciones.map(c => `<span class="sello e-corregida">Corregida</span>
+              <span class="sub">${esc(c.por_nombre || c.por || "—")} puso la ${
+                esc(c.tipo)} de las ${esc(c.hora)}${
+                c.cuando ? " el " + esc(new Date(c.cuando).toLocaleDateString("es-CL",
+                  { day: "2-digit", month: "2-digit", year: "numeric" })) : ""
+                }</span>
+              <span class="sub">«${esc(c.motivo || "")}»</span>`).join("")}
+          </td>
+        </tr>
+        ${j.completa ? "" : `<tr class="fila-corr" id="corr-${i}" hidden><td colspan="8">
+          <form class="f-corregir" data-fecha="${esc(j.fecha)}" data-trab="${j.trabajador_id}">
+            <div class="rejilla">
+              <label class="campo"><span>Hora real de salida</span>
+                <input type="time" name="hora" required></label>
+              <label class="campo"><span>Motivo de la corrección</span>
+                <input name="motivo" required maxlength="300" autocomplete="off"
+                  placeholder="Olvidó marcar; lo confirmó el supervisor"></label>
+            </div>
+            <div class="pie-form">
+              <button class="bt" type="submit">Agregar la salida</button>
+              <button class="bt bt--fino" type="button" data-cancelar>Cancelar</button>
+              <span class="sub" style="display:inline;max-width:34ch">Queda a su nombre
+                en el libro. La entrada del guardia no se toca y esto no se deshace.</span>
+              <span class="mensaje"></span>
+            </div>
+          </form></td></tr>`}`).join("")}
         </tbody></table></div>`
       : `<p class="vacio">No hay marcas en ese rango.</p>`}
     </section>`;
@@ -2432,6 +2475,43 @@ async function pintarLibro() {
     pintarLibro().catch(e => { $("#app").innerHTML = aviso("mal", "No se pudo leer el libro", e.message); });
   };
   ["#f-desde", "#f-hasta", "#f-trabajador", "#f-instalacion"].forEach(s => { $(s).onchange = releer; });
+
+  // El formulario de corrección vive debajo de su propia jornada, escondido
+  // hasta que lo piden: la fila de al lado dice de cuál se está hablando mejor
+  // que cualquier título.
+  document.querySelectorAll("[data-cerrar]").forEach(b => {
+    b.onclick = () => {
+      const fila = $("#" + b.dataset.cerrar);
+      fila.hidden = !fila.hidden;
+      if (!fila.hidden) fila.querySelector("input[name=hora]").focus();
+    };
+  });
+  document.querySelectorAll(".f-corregir").forEach(form => {
+    form.querySelector("[data-cancelar]").onclick = () => { form.closest("tr").hidden = true; };
+    form.onsubmit = async ev => {
+      ev.preventDefault();
+      const m = form.querySelector(".mensaje"), bt = form.querySelector("button");
+      if (!confirm(`¿Agregar la salida de las ${form.hora.value} a la jornada del ` +
+                   `${fecha(form.dataset.fecha)}?\n\n` +
+                   `Queda escrita a su nombre en el libro y no se puede deshacer.`)) return;
+      decir(m, "Guardando…"); bt.disabled = true;
+      try {
+        const r = await pedir("/libro/corregir", {
+          method: "POST",
+          body: JSON.stringify({
+            fecha: form.dataset.fecha,
+            trabajador_id: form.dataset.trab,
+            hora: form.hora.value,
+            motivo: form.motivo.value,
+          }),
+        });
+        alert(`Jornada cerrada: ${r.trabajador} salió a las ${r.hora}, ` +
+              `${r.horas.toFixed(1)} horas.\n\n` +
+              `Queda en el libro como corrección suya, con el motivo a la vista.`);
+        pintarLibro();
+      } catch (e) { decir(m, e.message, "error"); bt.disabled = false; }
+    };
+  });
 }
 
 const VISTAS = {

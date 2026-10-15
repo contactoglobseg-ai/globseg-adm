@@ -465,8 +465,10 @@ function pintar() {
         <li>
           <span class="hora">${esc(m.hora)}</span>
           <span class="que"><b>${m.tipo === "entrada" ? "Entrada" : "Salida"}</b>
-            <span>${m.instalacion ? esc(m.instalacion) : "Sin instalación"} ·
-              ${m.con_ubicacion ? "con ubicación" : "sin ubicación"}</span></span>
+            <span>${m.de_la_oficina
+              ? "La agregó la oficina" + (m.motivo ? ": " + esc(m.motivo) : "")
+              : `${m.instalacion ? esc(m.instalacion) : "Sin instalación"} ·
+                 ${m.con_ubicacion ? "con ubicación" : "sin ubicación"}`}</span></span>
           <span class="sello s-${m.tipo}">${m.tipo === "entrada" ? "Entrada" : "Salida"}</span>
         </li>`).join("")}</ul>`
       : `<p class="vacio">Todavía no ha marcado nada hoy.</p>`}

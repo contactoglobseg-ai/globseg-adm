@@ -354,8 +354,11 @@ async function api(request, env, url, usuario) {
   // ---------------------------------------------------------- asistencia
   // La oficina crea trabajadores y lee el libro. No marca por nadie: la marca
   // la hace el guardia desde asistencia.seggarridos.com, y eso es justamente
-  // lo que le da valor como respaldo.
-  if (ruta === '/trabajadores' || ruta.startsWith('/trabajadores/') || ruta === '/libro') {
+  // lo que le da valor como respaldo. Lo único que puede escribir en el libro
+  // es una corrección, firmada y con motivo, para cerrar una jornada que quedó
+  // sin salida (ver corregirJornada en asistencia.js).
+  if (ruta === '/trabajadores' || ruta.startsWith('/trabajadores/')
+      || ruta === '/libro' || ruta.startsWith('/libro/')) {
     if (!puede(usuario, 'personal')) return error('Sin acceso a este módulo', 403);
 
     if (ruta === '/trabajadores' && metodo === 'GET') {
@@ -384,6 +387,15 @@ async function api(request, env, url, usuario) {
         trabajador_id: entero(p.get('trabajador')) || null,
         instalacion_id: entero(p.get('instalacion')) || null,
       }));
+    }
+
+    // Cerrar una jornada que quedó sin salida. No edita la marca del guardia:
+    // agrega la salida que falta, firmada por quien la pone y con el motivo,
+    // y el libro la muestra señalada.
+    if (ruta === '/libro/corregir' && metodo === 'POST') {
+      const r = await asis.corregirJornada(env, usuario.usuario, cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json({ ok: true, hora: r.hora, horas: r.horas, trabajador: r.trabajador }, 201);
     }
     return error('Ruta no encontrada', 404);
   }
@@ -969,6 +981,12 @@ async function revisarTablas(env) {
     r.ciclo_mensual = true;
   } catch {
     r.ciclo_mensual = false;
+  }
+  try {
+    await buscar(env, 'marcas?select=origen,registrada_por,motivo&limit=1');
+    r.marcas_con_correccion = true;
+  } catch {
+    r.marcas_con_correccion = false;
   }
   return r;
 }

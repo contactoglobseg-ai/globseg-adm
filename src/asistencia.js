@@ -10,11 +10,18 @@
  * El libro no se edita. Una marca registrada queda como está: eso es lo que
  * hace que sirva de respaldo frente a un reclamo, igual que el libro de papel
  * que nadie puede rehacer después.
+ *
+ * Lo que sí puede hacer la oficina es AGREGAR una corrección: cuando el
+ * guardia se fue sin marcar la salida, alguien con el módulo `personal` pone
+ * la hora real, firma y escribe por qué. Esa salida entra como una marca más,
+ * con `origen = 'oficina'`; la del guardia, si la hay, queda intacta al lado y
+ * el libro muestra las dos. Nada se sobrescribe nunca.
  */
 
 import { buscar, primero, insertar, actualizar, anotar } from './datos.js';
 import { ingresar, hashear } from './sesion.js';
 import { normalizarRut, dvCorrecto, formatearRut } from './rut.js';
+import { sumarDias, esFecha } from './fechas.js';
 
 /**
  * Un turno abierto por más de estas horas ya no se cierra con una salida: es
@@ -63,6 +70,41 @@ export function horaChile(valor = new Date()) {
 }
 
 const horasEntre = (a, b) => (new Date(b) - new Date(a)) / 3600000;
+
+/**
+ * Minutos de desfase de Chile respecto de UTC en ese instante (-180 o -240).
+ *
+ * Se pregunta por instante en vez de fijarlo como constante porque Chile
+ * cambia la hora dos veces al año: una jornada de julio y una de enero no
+ * tienen el mismo desfase, y con uno fijo la mitad del año quedaría corrida.
+ */
+function desfaseChile(d) {
+  const f = conZona({
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }, null);
+  if (!f) return -180;
+  const [dia, hora] = f.format(d).split(', ');   // "2026-10-14, 20:30:00"
+  return (Date.parse(`${dia}T${hora}Z`) - d.getTime()) / 60000;
+}
+
+/**
+ * El instante exacto en que, en Chile, el reloj marcaba esa fecha y esa hora.
+ *
+ * Es lo contrario de `fechaChile`/`horaChile`: la oficina escribe «salió a las
+ * 08:00» y hay que convertirlo al instante que se guarda en `cuando`.
+ */
+export function instanteChile(dia, hora) {
+  const comoSiFueraUTC = Date.parse(`${dia}T${hora}:00Z`);
+  // Dos pasadas: la primera mide el desfase en el instante equivocado y la
+  // segunda en el ya corregido. La diferencia solo aparece en los dos días del
+  // año en que Chile cambia la hora, que es justo donde una pasada falla.
+  let t = comoSiFueraUTC;
+  for (let i = 0; i < 2; i++) t = comoSiFueraUTC - desfaseChile(new Date(t)) * 60000;
+  return new Date(t);
+}
+
+const esHora = (v) => typeof v === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(v);
 
 // ---------------------------------------------------------------- nombre de usuario
 const sinTildes = (s) => String(s ?? '')
@@ -296,6 +338,10 @@ export async function estadoGuardia(env, trabajador) {
       instalacion_id: m.instalacion_id,
       instalacion: m.instalaciones?.nombre ?? null,
       con_ubicacion: m.lat !== null && m.lat !== undefined,
+      // Si la oficina le cerró una jornada, el guardia tiene que verlo en su
+      // propia pantalla. Es su turno: enterarse por terceros sería peor.
+      de_la_oficina: m.origen === 'oficina',
+      motivo: m.origen === 'oficina' ? m.motivo : null,
     })),
     instalaciones,
   };
@@ -364,6 +410,117 @@ export async function marcar(env, trabajador, cuerpo) {
   };
 }
 
+// ---------------------------------------------------------------- corrección
+/**
+ * La oficina cierra una jornada que quedó sin salida.
+ *
+ * No edita nada: agrega la salida que falta como una marca más, con la hora
+ * real, el usuario de quien la puso y el motivo escrito. La entrada del
+ * guardia no se toca, y en el libro la jornada queda señalada como corregida
+ * con el nombre al lado. Si no se notara, el libro perdería lo único que lo
+ * hace valer como respaldo.
+ *
+ * Hoy esto cubre el único caso que existe de verdad: la salida que nadie
+ * marcó. Corregir una hora YA marcada es otra cosa y a propósito no está:
+ * pediría una marca que apunte a la que reemplaza (`corrige_a`) y una regla
+ * sobre cuál de las dos cuenta para las horas. Mientras nadie lo necesite, no
+ * se agrega la ambigüedad.
+ */
+export async function corregirJornada(env, quien, cuerpo) {
+  const motivo = limpio(cuerpo.motivo, 300);
+  if (!motivo || motivo.length < 4) {
+    return {
+      error: 'Escriba por qué se corrige. Queda guardado junto con la marca y ' +
+             'es lo que explica, meses después, de dónde salió esa hora.',
+      status: 400,
+    };
+  }
+  if (!esFecha(cuerpo.fecha)) return { error: 'Falta la fecha de la jornada', status: 400 };
+  if (!esHora(cuerpo.hora)) return { error: 'La hora va como HH:MM, entre 00:00 y 23:59', status: 400 };
+
+  const trabajadorId = Math.round(Number(cuerpo.trabajador_id));
+  if (!Number.isFinite(trabajadorId)) return { error: 'Falta el trabajador', status: 400 };
+  const trabajador = await primero(env, `trabajadores?select=id,nombre,usuario&id=eq.${trabajadorId}`);
+  if (!trabajador) return { error: 'Ese trabajador no existe', status: 404 };
+
+  const marcas = await buscar(env,
+    `marcas?select=*&trabajador_id=eq.${trabajador.id}&fecha=eq.${cuerpo.fecha}&order=cuando.asc`);
+  if (!marcas.length) {
+    return { error: 'Esa jornada no está en el libro. Una corrección agrega la ' +
+                    'salida que falta, no inventa un turno entero.', status: 404 };
+  }
+
+  const entrada = marcas.find((m) => m.tipo === 'entrada');
+  if (!entrada) return { error: 'Esa jornada no tiene entrada: no hay turno que cerrar', status: 409 };
+
+  const salida = [...marcas].reverse().find((m) => m.tipo === 'salida');
+  if (salida) {
+    return {
+      error: `Esa jornada ya tiene salida a las ${horaChile(salida.cuando)}. ` +
+             'El libro no se sobrescribe.',
+      status: 409,
+    };
+  }
+
+  const ahora = new Date();
+  // Mientras el guardia todavía pueda marcar su salida, la marca es suya. La
+  // oficina entra donde él ya no alcanza, no antes: un turno en curso cerrado
+  // desde la oficina es una jornada escrita por quien no estuvo ahí.
+  if (turnoAbierto(entrada, ahora)) {
+    return {
+      error: `Ese turno sigue en curso: entró a las ${horaChile(entrada.cuando)} ` +
+             'y el guardia todavía puede marcar su salida.',
+      status: 409,
+    };
+  }
+
+  // La hora llega sola, sin día, y eso basta: se busca la primera vez que el
+  // reloj marcó esa hora después de la entrada. Un turno que entra a las 20:00
+  // y sale a las 08:00 cae solo en el día siguiente, sin preguntar nada.
+  const dia = fechaChile(entrada.cuando);
+  let cuando = instanteChile(dia, cuerpo.hora);
+  if (cuando <= new Date(entrada.cuando)) cuando = instanteChile(sumarDias(dia, 1), cuerpo.hora);
+
+  if (cuando > ahora) {
+    return { error: `Las ${cuerpo.hora} de esa jornada todavía no ocurren`, status: 400 };
+  }
+
+  const horas = horasEntre(entrada.cuando, cuando);
+  if (horas > MAX_TURNO_HORAS) {
+    return {
+      error: `Entró a las ${horaChile(entrada.cuando)}: con salida a las ${cuerpo.hora} ` +
+             `serían ${horas.toFixed(1)} horas seguidas. Eso no es una jornada; ` +
+             'revise la hora.',
+      status: 400,
+    };
+  }
+
+  const [marca] = await insertar(env, 'marcas', {
+    trabajador_id: trabajador.id,
+    instalacion_id: entrada.instalacion_id,
+    tipo: 'salida',
+    cuando: cuando.toISOString(),
+    // La jornada es la de la entrada, aunque la hora caiga al día siguiente:
+    // misma regla que usa el guardia al marcar, y por la misma razón.
+    fecha: entrada.fecha,
+    lat: null, lon: null, exactitud_m: null, nota: null,
+    origen: 'oficina',
+    registrada_por: quien,
+    motivo,
+  });
+
+  await anotar(env, quien, 'marca', marca.id, 'cerró una jornada sin salida',
+    `${trabajador.nombre} · ${entrada.fecha} · salida ${horaChile(cuando)} ` +
+    `(${horas.toFixed(1)} h) · ${motivo}`);
+
+  return {
+    marca,
+    hora: horaChile(cuando),
+    horas: Number(horas.toFixed(2)),
+    trabajador: trabajador.nombre,
+  };
+}
+
 // ---------------------------------------------------------------- el libro
 /**
  * El libro que lee la oficina: una fila por jornada, no por marca.
@@ -395,6 +552,8 @@ export async function libro(env, { desde, hasta, trabajador_id, instalacion_id }
         instalacion: m.instalaciones?.nombre ?? null,
         entrada: null, salida: null, horas: null,
         entrada_ubicada: false, salida_ubicada: false,
+        entrada_origen: null, salida_origen: null,
+        correcciones: [],
         marcas: 0,
       });
     }
@@ -402,13 +561,44 @@ export async function libro(env, { desde, hasta, trabajador_id, instalacion_id }
     j.marcas++;
     if (!j.instalacion && m.instalaciones?.nombre) j.instalacion = m.instalaciones.nombre;
     const ubicada = m.lat !== null && m.lat !== undefined;
+    const origen = m.origen === 'oficina' ? 'oficina' : 'guardia';
     if (m.tipo === 'entrada') {
       if (!j.entrada || new Date(m.cuando) < new Date(j.entrada)) {
-        j.entrada = m.cuando; j.entrada_ubicada = ubicada;
+        j.entrada = m.cuando; j.entrada_ubicada = ubicada; j.entrada_origen = origen;
       }
     } else if (!j.salida || new Date(m.cuando) > new Date(j.salida)) {
-      j.salida = m.cuando; j.salida_ubicada = ubicada;
+      j.salida = m.cuando; j.salida_ubicada = ubicada; j.salida_origen = origen;
     }
+    // Toda marca de la oficina queda listada aparte, aunque después otra más
+    // nueva le gane el lugar en la columna: lo que el libro no puede perder es
+    // el rastro de que alguien intervino.
+    if (origen === 'oficina') {
+      j.correcciones.push({
+        tipo: m.tipo,
+        hora: horaChile(m.cuando),
+        por: m.registrada_por,
+        por_nombre: m.registrada_por,   // se reemplaza por el nombre más abajo
+        motivo: m.motivo,
+        cuando: m.creada_en,
+      });
+    }
+  }
+
+  // `marcas.registrada_por` guarda el usuario, no un id: no hay clave foránea
+  // que PostgREST pueda seguir, así que los nombres se piden de una vez. Si la
+  // consulta falla, queda el usuario a la vista, que igual identifica a quien
+  // firmó; lo que no puede pasar es que la corrección se muestre sin autor.
+  const autores = [...new Set([...jornadas.values()]
+    .flatMap((j) => j.correcciones.map((c) => c.por)).filter(Boolean))];
+  if (autores.length) {
+    try {
+      const us = await buscar(env,
+        `usuarios?select=usuario,nombre&usuario=in.(${autores.map(encodeURIComponent).join(',')})`);
+      const nombre = Object.fromEntries(us.map((u) => [u.usuario, u.nombre]));
+      for (const j of jornadas.values()) {
+        for (const c of j.correcciones) c.por_nombre = nombre[c.por] || c.por;
+      }
+    } catch { /* se queda el usuario */ }
   }
 
   const filas = [...jornadas.values()].map((j) => ({
@@ -418,6 +608,7 @@ export async function libro(env, { desde, hasta, trabajador_id, instalacion_id }
     horas: j.entrada && j.salida
       ? Number(horasEntre(j.entrada, j.salida).toFixed(2)) : null,
     completa: !!(j.entrada && j.salida),
+    corregida: j.correcciones.length > 0,
   })).sort((a, b) =>
     b.fecha.localeCompare(a.fecha) || a.trabajador.localeCompare(b.trabajador));
 
@@ -428,6 +619,7 @@ export async function libro(env, { desde, hasta, trabajador_id, instalacion_id }
     resumen: {
       jornadas: filas.length,
       sin_salida: filas.filter((f) => !f.completa).length,
+      corregidas: filas.filter((f) => f.corregida).length,
       horas: Number(horas.toFixed(1)),
       trabajadores: new Set(filas.map((f) => f.trabajador_id)).size,
     },
