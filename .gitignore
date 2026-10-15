@@ -6,3 +6,6 @@ node_modules
 .dev.vars
 
 .DS_Store
+
+# Salida de herramientas de análisis que corren sobre la carpeta
+graphify-out

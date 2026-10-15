@@ -147,7 +147,13 @@ const limpio = (v, max) => {
   return t ? t.slice(0, max) : null;
 };
 
-const CARGOS = ['guardia', 'supervisor', 'nochero', 'rondin'];
+// Los cargos que existen en la empresa. Está acá y no en rrhh.js porque el
+// alta del trabajador es una sola: la persona que crea la cuenta de asistencia
+// y la que llena la ficha de RRHH están cargando a la misma persona.
+export const CARGOS = [
+  'guardia', 'supervisor', 'nochero', 'rondin',
+  'jefe_servicio', 'administrativo', 'prevencionista', 'conductor',
+];
 
 async function instalacionValida(env, id) {
   if (id === null || id === undefined || id === '') return null;

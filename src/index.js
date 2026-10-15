@@ -18,6 +18,8 @@ import { hoyISO, sumarDias, diasEntre, esFecha, periodoDe, fechasMovibles }
 import * as cotiz from './cotizaciones.js';
 import * as lote from './lote.js';
 import * as asis from './asistencia.js';
+import * as rrhh from './rrhh.js';
+import * as carga from './carga.js';
 import { redireccionHttps, cabecerasSeguridad, conCabeceras, soloHttps }
   from './seguridad.js';
 import { ipDe, huellaDe, revisarLimite, limpiarHuellas, MENSAJES as MENSAJES_LIMITE }
@@ -402,6 +404,241 @@ async function api(request, env, url, usuario) {
       if (r.error) return error(r.error, r.status);
       return json({ ok: true, hora: r.hora, horas: r.horas, trabajador: r.trabajador }, 201);
     }
+    return error('Ruta no encontrada', 404);
+  }
+
+  // ---------------------------------------------------------- recursos humanos
+  //
+  // Todo el módulo cuelga de `/rrhh` y de un solo permiso. Es el módulo con los
+  // datos más sensibles del sistema —sueldos, salud, cuentas bancarias, RUT— y
+  // por eso no comparte puerta con nada: quien tiene `facturacion` no entra acá,
+  // y quien tiene `rrhh` no ve los cobros.
+  if (ruta === '/rrhh' || ruta.startsWith('/rrhh/')) {
+    if (!puede(usuario, 'rrhh')) return error('Sin acceso a este módulo', 403);
+    const sub = ruta.replace(/^\/rrhh/, '') || '/';
+
+    if (sub === '/panel' && metodo === 'GET') {
+      return json(await rrhh.panelRrhh(env));
+    }
+
+    // Todo lo que los formularios necesitan para armarse, en un viaje.
+    if (sub === '/catalogos' && metodo === 'GET') {
+      const [tipos, afps, instalaciones, params] = await Promise.all([
+        buscar(env, 'tipos_documento?select=*&activo=is.true&order=orden.asc'),
+        buscar(env, 'afps?select=*&activa=is.true&order=nombre.asc'),
+        buscar(env, 'v_instalaciones?select=id,nombre,cliente&activa=is.true&order=nombre.asc'),
+        rrhh.parametros(env),
+      ]);
+      return json({
+        tipos_documento: tipos,
+        afps,
+        instalaciones,
+        cargos: asis.CARGOS,
+        tipos_contrato: rrhh.TIPOS_CONTRATO,
+        jornadas: rrhh.JORNADAS,
+        tipos_ausencia: rrhh.TIPOS_AUSENCIA,
+        causales: rrhh.CAUSALES,
+        plantillas: carga.plantillas(),
+        por_tanda: carga.POR_TANDA,
+        parametros: Object.values(params),
+      });
+    }
+
+    // ------------------------------------------------------------ personal
+    if (sub === '/personal' && metodo === 'GET') {
+      const personal = await buscar(env, 'v_personal?select=*&order=activo.desc,nombre.asc');
+      return json({ personal });
+    }
+
+    // Alta completa: crea a la persona —con su cuenta del libro de asistencia,
+    // que es la misma de siempre— y de paso le llena la ficha de RRHH.
+    if (sub === '/personal' && metodo === 'POST') {
+      const r = await asis.crearTrabajador(env, usuario.usuario, cuerpo);
+      if (r.error) return error(r.error, r.status);
+      const ficha = rrhh.camposFicha(cuerpo);
+      if (Object.keys(ficha).length) {
+        await rrhh.editarFicha(env, usuario.usuario, r.trabajador.id, cuerpo);
+      }
+      return json({ ok: true, trabajador: r.trabajador }, 201);
+    }
+
+    let m = sub.match(/^\/personal\/(\d+)$/);
+    if (m && metodo === 'GET') {
+      const f = await rrhh.fichaCompleta(env, Number(m[1]));
+      return f ? json(f) : error('Esa persona no está en el registro', 404);
+    }
+    if (m && metodo === 'PATCH') {
+      // Lo que ya sabía manejar asistencia (baja, desbloqueo, clave) sigue ahí;
+      // lo propio de RRHH va por su camino. Separarlos evita que un cambio de
+      // ficha reactive sin querer una cuenta dada de baja.
+      const id = Number(m[1]);
+      const deAsistencia = ['activo', 'desbloquear', 'restablecer_clave', 'instalacion_id', 'cargo']
+        .some((k) => k in cuerpo);
+      if (deAsistencia) {
+        const r = await asis.editarTrabajador(env, usuario.usuario, id, cuerpo);
+        if (r.error) return error(r.error, r.status);
+      }
+      const ficha = rrhh.camposFicha(cuerpo);
+      if (Object.keys(ficha).length) {
+        const r = await rrhh.editarFicha(env, usuario.usuario, id, cuerpo);
+        if (r.error) return error(r.error, r.status);
+      } else if (!deAsistencia) {
+        return error('No hay nada que cambiar', 400);
+      }
+      return json({ ok: true });
+    }
+
+    // ------------------------------------------------------------ contratos
+    if (sub === '/contratos' && metodo === 'GET') {
+      const p = url.searchParams;
+      const filtros = ['select=*,trabajadores(nombre,rut,activo),instalaciones(nombre)'];
+      if (entero(p.get('trabajador'))) filtros.push(`trabajador_id=eq.${entero(p.get('trabajador'))}`);
+      if (p.get('estado')) filtros.push(`estado=eq.${encodeURIComponent(p.get('estado'))}`);
+      filtros.push('order=fecha_inicio.desc');
+      return json({ contratos: await buscar(env, `contratos?${filtros.join('&')}`) });
+    }
+    if (sub === '/contratos' && metodo === 'POST') {
+      const r = await rrhh.crearContrato(env, usuario.usuario, cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r, 201);
+    }
+    m = sub.match(/^\/contratos\/(\d+)$/);
+    if (m && metodo === 'PATCH') {
+      const r = await rrhh.editarContrato(env, usuario.usuario, Number(m[1]), cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+
+    // ------------------------------------------------------------ documentos
+    if (sub === '/documentos' && metodo === 'GET') {
+      const p = url.searchParams;
+      const filtros = ['select=*'];
+      if (entero(p.get('trabajador'))) filtros.push(`trabajador_id=eq.${entero(p.get('trabajador'))}`);
+      if (p.get('tipo')) filtros.push(`tipo=eq.${encodeURIComponent(p.get('tipo'))}`);
+      if (p.get('grupo')) filtros.push(`tipo_grupo=eq.${encodeURIComponent(p.get('grupo'))}`);
+      if (p.get('solo_activos') !== 'no') filtros.push('trabajador_activo=is.true');
+      filtros.push('order=fecha_vencimiento.asc.nullslast');
+      const docs = await buscar(env, `v_documentos?${filtros.join('&')}`);
+      // El estado se filtra acá y no en la consulta porque lo calcula la vista
+      // a partir de la fecha de hoy, y PostgREST no filtra por una expresión.
+      const estado = p.get('estado');
+      return json({ documentos: estado ? docs.filter((d) => d.estado === estado) : docs });
+    }
+    if (sub === '/documentos' && metodo === 'POST') {
+      const r = await rrhh.crearDocumento(env, usuario.usuario, cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r, 201);
+    }
+    m = sub.match(/^\/documentos\/(\d+)$/);
+    if (m && metodo === 'PATCH') {
+      const r = await rrhh.editarDocumento(env, usuario.usuario, Number(m[1]), cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+
+    // ------------------------------------------------------------ ausencias
+    if (sub === '/ausencias' && metodo === 'GET') {
+      const p = url.searchParams;
+      const filtros = ['select=*,trabajadores(nombre,rut)'];
+      if (entero(p.get('trabajador'))) filtros.push(`trabajador_id=eq.${entero(p.get('trabajador'))}`);
+      if (p.get('tipo')) filtros.push(`tipo=eq.${encodeURIComponent(p.get('tipo'))}`);
+      if (esFecha(p.get('desde'))) filtros.push(`hasta=gte.${p.get('desde')}`);
+      if (esFecha(p.get('hasta'))) filtros.push(`desde=lte.${p.get('hasta')}`);
+      filtros.push('order=desde.desc');
+      return json({ ausencias: await buscar(env, `ausencias?${filtros.join('&')}`) });
+    }
+    if (sub === '/ausencias' && metodo === 'POST') {
+      const r = await rrhh.crearAusencia(env, usuario.usuario, cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r, 201);
+    }
+    m = sub.match(/^\/ausencias\/(\d+)$/);
+    if (m && metodo === 'PATCH') {
+      const r = await rrhh.editarAusencia(env, usuario.usuario, Number(m[1]), cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+
+    // ------------------------------------------------------------ parámetros
+    if (sub === '/parametros' && metodo === 'GET') {
+      const todos = await buscar(env, 'parametros_rrhh?select=*&order=codigo.asc,vigente_desde.desc');
+      return json({ parametros: todos, vigentes: await rrhh.parametros(env) });
+    }
+    if (sub === '/parametros' && metodo === 'PATCH') {
+      const r = await rrhh.editarParametro(env, usuario.usuario, cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+
+    // ------------------------------------------------------ liquidación
+    // Calcula y devuelve; no guarda nada. Es una estimación para saber, antes
+    // de comprometer un turno o un sueldo, cuánto da y cuánto cuesta.
+    if (sub === '/liquidacion' && metodo === 'POST') {
+      const t = await primero(env, `trabajadores?select=*&id=eq.${entero(cuerpo.trabajador_id)}`);
+      if (!t) return error('Esa persona no está en el registro', 404);
+      const contrato = entero(cuerpo.contrato_id)
+        ? await primero(env, `contratos?select=*&id=eq.${entero(cuerpo.contrato_id)}`)
+        : await primero(env,
+            `contratos?select=*&trabajador_id=eq.${t.id}&estado=eq.vigente&order=fecha_inicio.desc`);
+      if (!contrato) return error('Esa persona no tiene contrato cargado', 409);
+
+      const mes = /^\d{4}-\d{2}$/.test(cuerpo.mes || '') ? cuerpo.mes : hoyISO().slice(0, 7);
+      const p = await rrhh.parametros(env, `${mes}-28`);
+      const [afp, tramos] = await Promise.all([
+        t.afp ? primero(env, `afps?select=*&nombre=eq.${encodeURIComponent(t.afp)}`) : null,
+        buscar(env, 'tramos_impuesto?select=*&order=tramo.asc'),
+      ]);
+      // La UF y la UTM se pueden mandar en la llamada (para probar un mes
+      // distinto) o salen de los parámetros, donde RRHH las carga cada mes.
+      const uf = Number(cuerpo.uf) || rrhh.valor(p, 'uf', 0) || null;
+      const utm = Number(cuerpo.utm) || rrhh.valor(p, 'utm', 0) || null;
+
+      return json({
+        mes,
+        trabajador: { id: t.id, nombre: t.nombre, rut: t.rut, afp: t.afp,
+                      salud_sistema: t.salud_sistema },
+        contrato: { id: contrato.id, tipo: contrato.tipo, cargo: contrato.cargo },
+        liquidacion: rrhh.liquidar({
+          contrato, trabajador: t, p, afp, uf, utm,
+          extra: { ...cuerpo.extra, tramos },
+        }),
+      });
+    }
+
+    // ------------------------------------------------------------ finiquito
+    if (sub === '/finiquito' && metodo === 'POST') {
+      const t = await primero(env, `trabajadores?select=*&id=eq.${entero(cuerpo.trabajador_id)}`);
+      if (!t) return error('Esa persona no está en el registro', 404);
+      const contrato = await primero(env,
+        `contratos?select=*&trabajador_id=eq.${t.id}&order=fecha_inicio.desc`);
+      if (!contrato) return error('Esa persona no tiene contrato cargado', 409);
+      if (!rrhh.CAUSALES[cuerpo.causal]) return error('Falta la causal de término', 400);
+      const fechaTermino = esFecha(cuerpo.fecha_termino) ? cuerpo.fecha_termino : hoyISO();
+
+      const p = await rrhh.parametros(env, fechaTermino);
+      const ausencias = await buscar(env,
+        `ausencias?select=tipo,desde,dias_habiles,estado&trabajador_id=eq.${t.id}`);
+
+      return json({
+        trabajador: { id: t.id, nombre: t.nombre, rut: t.rut },
+        finiquito: rrhh.calcularFiniquito({
+          trabajador: t, contrato,
+          causal: cuerpo.causal, fechaTermino,
+          avisoDado: cuerpo.aviso_dado === true,
+          baseManual: entero(cuerpo.base),
+          saldo: rrhh.saldoFeriado(t, ausencias, fechaTermino),
+          p, uf: Number(cuerpo.uf) || rrhh.valor(p, 'uf', 0) || null,
+        }),
+      });
+    }
+
+    // ------------------------------------------------------------ carga masiva
+    if (sub === '/carga' && metodo === 'POST') {
+      const r = await carga.cargar(env, usuario.usuario, cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+
     return error('Ruta no encontrada', 404);
   }
 
@@ -975,7 +1212,9 @@ async function revisarTablas(env) {
   const r = {};
   for (const t of ['usuarios', 'clientes', 'instalaciones', 'servicios', 'tarifas',
                    'ciclos', 'extras', 'bitacora', 'cotizaciones', 'cotizacion_items',
-                   'contactos', 'trabajadores', 'marcas']) {
+                   'contactos', 'trabajadores', 'marcas',
+                   'contratos', 'documentos_trabajador', 'ausencias',
+                   'tipos_documento', 'parametros_rrhh', 'afps', 'tramos_impuesto']) {
     try {
       await buscar(env, `${t}?select=count&limit=1`);
       r[t] = true;
@@ -1026,6 +1265,25 @@ async function revisarTablas(env) {
     r.contacto_con_limite = true;
   } catch {
     r.contacto_con_limite = false;
+  }
+  // La ficha de RRHH son columnas agregadas a `trabajadores`: la tabla existe
+  // igual, así que hay que preguntar por una columna para saber si la
+  // migración entró.
+  try {
+    await buscar(env, 'trabajadores?select=fecha_ingreso,afp,salud_sistema&limit=1');
+    r.ficha_rrhh = true;
+  } catch {
+    r.ficha_rrhh = false;
+  }
+  // Las vistas pueden faltar aunque las tablas estén: se crean al final de la
+  // migración y son de las que la pantalla de RRHH consulta primero.
+  for (const v of ['v_personal', 'v_documentos']) {
+    try {
+      await buscar(env, `${v}?select=id&limit=1`);
+      r[v] = true;
+    } catch {
+      r[v] = false;
+    }
   }
   return r;
 }
