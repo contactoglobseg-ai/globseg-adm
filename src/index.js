@@ -20,6 +20,7 @@ import * as lote from './lote.js';
 import * as asis from './asistencia.js';
 import * as rrhh from './rrhh.js';
 import * as carga from './carga.js';
+import * as arch from './archivos.js';
 import { redireccionHttps, cabecerasSeguridad, conCabeceras, soloHttps }
   from './seguridad.js';
 import { ipDe, huellaDe, revisarLimite, limpiarHuellas, MENSAJES as MENSAJES_LIMITE }
@@ -284,7 +285,14 @@ async function panel(env) {
 async function api(request, env, url, usuario) {
   const ruta = url.pathname.replace(/^\/api/, '');
   const metodo = request.method;
-  const cuerpo = metodo === 'POST' || metodo === 'PATCH'
+
+  // La subida de un archivo manda bytes, no JSON. Leerla acá como JSON no
+  // fallaría con ruido —el catch la deja en {}— pero sí dejaría el cuerpo
+  // consumido, y más abajo el archivo llegaría vacío sin que nada lo diga.
+  const esSubidaDeArchivo = metodo === 'POST'
+    && /^\/rrhh\/documentos\/\d+\/archivo$/.test(ruta);
+
+  const cuerpo = (metodo === 'POST' || metodo === 'PATCH') && !esSubidaDeArchivo
     ? await request.json().catch(() => ({}))
     : {};
 
@@ -633,6 +641,131 @@ async function api(request, env, url, usuario) {
     }
 
     // ------------------------------------------------------------ carga masiva
+
+    // ------------------------------------------------- archivo de un documento
+    //
+    // El archivo entra y sale por acá, nunca por una URL de Storage: el bucket
+    // es privado y la sesión se mira en cada pasada. Ver src/archivos.js.
+    const mArchivo = sub.match(/^\/documentos\/(\d+)\/archivo$/);
+    if (mArchivo) {
+      const doc = await primero(env,
+        `documentos_trabajador?select=*,trabajadores(nombre)&id=eq.${Number(mArchivo[1])}`);
+      if (!doc) return error('Ese documento no existe', 404);
+      const quien = doc.trabajadores?.nombre || '';
+
+      if (metodo === 'GET') {
+        if (!doc.archivo_ruta) return error('Ese documento no tiene archivo cargado', 404);
+        const contenido = await arch.bajar(env, doc.archivo_ruta);
+        return new Response(contenido, {
+          headers: {
+            // El tipo es el que dedujo el servidor al subirlo, nunca el que
+            // dijo el navegador; con `nosniff`, el navegador tampoco adivina.
+            'content-type': doc.archivo_tipo,
+            'content-disposition': arch.comoAdjunto(doc.archivo_nombre),
+            // CSP solo para las imágenes, no para los PDF.
+            //
+            // Lo que una política así evita es que un archivo que no sea lo
+            // que creemos ejecute algo en nuestro dominio. Eso ya lo frena
+            // `arch.reconocer()`, que mira los bytes y no lo que dijo el
+            // navegador: lo que llega acá es un PDF o una imagen de verdad.
+            //
+            // Y en el PDF la política estorba: el visor de PDF del navegador
+            // se monta con `object`/`embed`, y `default-src 'none'` los
+            // bloquea, así que el gerente apretaría «Ver archivo» y vería una
+            // página en blanco. Eso convierte la función en nada.
+            //
+            // En imagen no cuesta nada y se deja puesta.
+            ...(doc.archivo_tipo === 'application/pdf'
+              ? {}
+              : { 'content-security-policy': "default-src 'none'" }),
+            'x-content-type-options': 'nosniff',
+            'x-frame-options': 'DENY',
+            'cache-control': 'no-store, private',
+            ...soloHttps(),
+          },
+        });
+      }
+
+      if (metodo === 'DELETE') {
+        if (!doc.archivo_ruta) return error('Ese documento no tiene archivo cargado', 404);
+        await arch.borrar(env, doc.archivo_ruta);
+        await actualizar(env, `documentos_trabajador?id=eq.${doc.id}`, {
+          archivo_ruta: null, archivo_nombre: null, archivo_tipo: null,
+          archivo_bytes: null, archivo_subido_por: null, archivo_subido_en: null,
+        });
+        await anotar(env, usuario.usuario, 'documento_rrhh', doc.id,
+          'quitó el archivo', `${quien} · ${doc.archivo_nombre}`);
+        return json({ ok: true });
+      }
+
+      if (metodo === 'POST') {
+        // El tamaño se mira antes de leer nada: un archivo de cien megas no
+        // puede llegar a cargarse en memoria para después rechazarlo.
+        const declarado = Number(request.headers.get('content-length') || 0);
+        if (declarado > arch.MAX_BYTES) {
+          return error(`El archivo pesa más de ${Math.round(arch.MAX_BYTES / 1048576)} MB. `
+            + 'Si es una foto, sáquela de nuevo con menos resolución o conviértala a PDF.', 413);
+        }
+
+        const bytes = new Uint8Array(await request.arrayBuffer());
+        if (!bytes.length) return error('No llegó ningún archivo', 400);
+        if (bytes.length > arch.MAX_BYTES) {
+          return error(`El archivo pesa más de ${Math.round(arch.MAX_BYTES / 1048576)} MB.`, 413);
+        }
+
+        // Lo que el archivo es de verdad, por sus primeros bytes. El
+        // `content-type` que manda el navegador lo elige el cliente.
+        const reconocido = arch.reconocer(bytes);
+        if (!reconocido) {
+          return error('Ese archivo no es un PDF ni una imagen (JPG, PNG, WebP o HEIC). '
+            + 'Si es un Word o un Excel, guárdelo como PDF antes de subirlo.', 415);
+        }
+
+        const nombre = arch.nombreSeguro(
+          decodeURIComponent(request.headers.get('x-archivo-nombre') || ''),
+          reconocido.ext);
+        const ruta = arch.rutaPara(doc.trabajador_id, doc.id, reconocido.ext);
+        const anterior = doc.archivo_ruta;
+
+        await arch.subir(env, ruta, bytes, reconocido.tipo);
+        try {
+          await actualizar(env, `documentos_trabajador?id=eq.${doc.id}`, {
+            archivo_ruta: ruta,
+            archivo_nombre: nombre,
+            archivo_tipo: reconocido.tipo,
+            archivo_bytes: bytes.length,
+            archivo_subido_por: usuario.usuario,
+            archivo_subido_en: new Date().toISOString(),
+          });
+        } catch (e) {
+          // Si la fila no se pudo actualizar, el archivo que acaba de subir no
+          // lo apunta nadie: se saca, o queda ocupando espacio para siempre.
+          await arch.borrar(env, ruta).catch(() => {});
+          throw e;
+        }
+
+        // El anterior se borra al final y aparte: si falla, el documento ya
+        // quedó bien apuntado al nuevo y lo único que sobra es un archivo
+        // suelto. Al revés —borrar primero— un error dejaría al documento sin
+        // ninguno de los dos.
+        if (anterior && anterior !== ruta) {
+          await arch.borrar(env, anterior).catch(
+            (e) => console.error('No se pudo borrar el archivo reemplazado:', e.message));
+        }
+
+        await anotar(env, usuario.usuario, 'documento_rrhh', doc.id,
+          anterior ? 'reemplazó el archivo' : 'subió el archivo',
+          `${quien} · ${nombre} (${bytes.length < 1024
+            ? bytes.length + ' bytes' : Math.round(bytes.length / 1024) + ' KB'})`);
+        return json({
+          ok: true,
+          archivo: { nombre, tipo: reconocido.tipo, bytes: bytes.length },
+          reemplazo: !!anterior,
+        }, 201);
+      }
+      return error('Ruta no encontrada', 404);
+    }
+
     if (sub === '/carga' && metodo === 'POST') {
       const r = await carga.cargar(env, usuario.usuario, cuerpo);
       if (r.error) return error(r.error, r.status);
@@ -1275,6 +1408,16 @@ async function revisarTablas(env) {
   } catch {
     r.ficha_rrhh = false;
   }
+  // El archivo de un documento necesita las dos cosas: las columnas en la
+  // tabla y el bucket en Storage, que van en la misma migración pero por
+  // caminos distintos. Si falta el bucket, subir falla y hay que mirar acá.
+  try {
+    await buscar(env, 'documentos_trabajador?select=archivo_ruta&limit=1');
+    r.documentos_con_archivo = true;
+  } catch {
+    r.documentos_con_archivo = false;
+  }
+  r.bucket_documentos = await arch.bucketListo(env);
   // Las vistas pueden faltar aunque las tablas estén: se crean al final de la
   // migración y son de las que la pantalla de RRHH consulta primero.
   for (const v of ['v_personal', 'v_documentos']) {
@@ -1486,6 +1629,12 @@ export default {
             'publishable en vez de la secreta. Revise SUPABASE_SERVICE_KEY.', 500);
         }
         return error('La base de datos rechazó la operación: ' + e.message, 502);
+      }
+      // Los de Storage ya vienen con el mensaje escrito para quien lo lee en
+      // pantalla: dice qué se estaba haciendo y qué revisar.
+      if (e instanceof arch.ErrorArchivo) {
+        console.error('Storage:', e.status, e.message);
+        return error(e.message, e.status || 502);
       }
       console.error(e);
       return error('Error inesperado: ' + e.message, 500);

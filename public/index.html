@@ -306,6 +306,7 @@ tr.fila-corr td,tr.fila-corr:hover td{background:var(--sup-2);padding:0}
 .bt--fino{background:var(--sup-3);color:var(--acento);border-color:transparent}
 .bt--fino:hover{background:var(--borde-suave)}
 .bt--chico{padding:6px 12px;font-size:.8rem}
+a.bt{text-decoration:none}
 .bt[disabled]{opacity:.42;cursor:not-allowed}
 .bt[disabled]:active{transform:none}
 label.campo{display:flex;flex-direction:column;gap:5px;font-size:.84rem;color:var(--texto-2);min-width:0}
@@ -2676,6 +2677,7 @@ const RRHH = {
   busca: "", soloActivos: true,
   docFiltro: { estado: "", grupo: "", trabajador: "" },
   sueldos: { trabajador: "", mes: hoyISO().slice(0, 7), vista: "liquidacion" },
+  subirA: null,                // documento al que va el archivo que se está eligiendo
   carga: { tipo: "trabajadores", filas: null, encabezados: null, mapa: null,
            revision: null, avance: null },
 };
@@ -2723,6 +2725,43 @@ function enDias(n) {
 }
 
 const rutLindoSeguro = v => { try { return rutLindo(v); } catch { return v || "—"; } };
+
+/** El peso de un archivo como lo diría una persona. Un PDF chico no puede
+ *  salir como «0 KB»: parece que no se subió nada. */
+const pesoArchivo = n => !n ? "—"
+  : n < 1024 ? `${n} bytes`
+  : n < 1048576 ? `${Math.round(n / 1024)} KB`
+  : `${(n / 1048576).toFixed(1)} MB`;
+
+const MAX_ARCHIVO = 10 * 1024 * 1024;
+
+/**
+ * Sube un archivo a un documento.
+ *
+ * Va como bytes crudos y no como formulario: el nombre viaja en una cabecera y
+ * el cuerpo es el archivo tal cual, así que no se arma una copia en memoria
+ * para envolverlo. El tamaño se mira acá antes de mandarlo, para no hacer
+ * subir diez megas por la red y recién entonces decir que no.
+ */
+async function subirArchivo(documentoId, archivo) {
+  if (!archivo) return null;
+  if (archivo.size > MAX_ARCHIVO) {
+    throw new Error(`«${archivo.name}» pesa ${pesoArchivo(archivo.size)} y el máximo es 10 MB. `
+      + "Si es una foto, sáquela con menos resolución o conviértala a PDF.");
+  }
+  const r = await fetch(`/api/rrhh/documentos/${documentoId}/archivo`, {
+    method: "POST",
+    headers: {
+      "content-type": archivo.type || "application/octet-stream",
+      // El nombre puede traer acentos y una cabecera HTTP no los admite tal cual.
+      "x-archivo-nombre": encodeURIComponent(archivo.name || ""),
+    },
+    body: archivo,
+  });
+  const cuerpo = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(cuerpo.error || `Error ${r.status} al subir el archivo`);
+  return cuerpo;
+}
 
 // ------------------------------------------------------------- panel de RRHH
 async function pintarRrhh() {
@@ -3174,12 +3213,12 @@ function seccionDocumentos(documentos, c) {
 
   return `<section class="caja">
     <div class="caja__tit"><h2>Documentos</h2>
-      <span class="nota">No se suben archivos: se registra que existen, cuándo vencen y dónde están</span></div>
+      <span class="nota">El archivo se guarda acá; el enlace a Drive sigue sirviendo para lo que ya está allá</span></div>
     ${documentos.length ? Object.entries(porGrupo).map(([g, docs]) => `
       <div style="padding:10px 16px 0"><b style="font-size:.84rem;color:var(--texto-2)">${esc(GRUPO[g] || g)}</b></div>
       <div class="desliza"><table>
         <thead><tr><th>Documento</th><th>N°</th><th>Emisión</th><th>Vencimiento</th>
-          <th>Estado</th><th></th></tr></thead><tbody>
+          <th>Estado</th><th>Archivo</th><th></th></tr></thead><tbody>
         ${docs.map(d => `<tr${d.estado === "vencido" ? ' class="fila--atrasado"' : ""}>
           <td><b>${esc(d.tipo_nombre)}</b>${d.glosa ? `<span class="sub">${esc(d.glosa)}</span>` : ""}
             ${d.base_legal ? `<span class="sub" title="${esc(d.base_legal)}">${esc(d.base_legal.slice(0, 70))}${d.base_legal.length > 70 ? "…" : ""}</span>` : ""}</td>
@@ -3188,13 +3227,26 @@ function seccionDocumentos(documentos, c) {
           <td class="nowrap">${d.fecha_vencimiento
             ? `${fecha(d.fecha_vencimiento)}<span class="sub">${enDias(d.dias_para_vencer)}</span>` : "—"}</td>
           <td><span class="sello ${SELLO_DOC[d.estado]}">${ROTULO_DOC[d.estado]}</span></td>
+          <td>${d.archivo_ruta
+            ? `<a class="bt bt--fino bt--chico" href="/api/rrhh/documentos/${d.id}/archivo"
+                 target="_blank" rel="noopener">Ver archivo</a>
+               <span class="sub">${esc(d.archivo_nombre)} · ${pesoArchivo(d.archivo_bytes)}</span>`
+            : `<button class="bt bt--fino bt--chico" data-subir="${d.id}">Subir archivo</button>`}
+            ${d.enlace ? `<a class="sub" href="${esc(d.enlace)}" target="_blank" rel="noopener"
+                 style="color:var(--acento)">También en Drive</a>` : ""}</td>
           <td class="nowrap">
-            ${d.enlace ? `<a class="bt bt--fino bt--chico" href="${esc(d.enlace)}" target="_blank" rel="noopener">Abrir</a>` : ""}
+            ${d.archivo_ruta ? `<button class="bt bt--fino bt--chico" data-subir="${d.id}">Reemplazar</button>
+               <button class="bt bt--fino bt--chico" data-quitar-archivo="${d.id}">Quitar archivo</button>` : ""}
             ${d.vigente ? `<button class="bt bt--fino bt--chico" data-anular-doc="${d.id}">Anular</button>` : ""}
           </td>
         </tr>`).join("")}
       </tbody></table></div>`).join("")
       : `<p class="vacio">Sin documentos cargados.</p>`}
+
+    <!-- Uno solo para toda la tabla: un input por fila serían treinta. El
+         botón que se apretó deja su id en RRHH.subirA antes de abrirlo. -->
+    <input type="file" id="archivo-oculto" style="display:none"
+           accept="application/pdf,image/jpeg,image/png,image/webp,image/heic">
 
     <details class="agregar"><summary>Agregar un documento</summary>
       <form id="f-documento">
@@ -3205,7 +3257,10 @@ function seccionDocumentos(documentos, c) {
           <label class="campo"><span>Número o folio</span><input name="numero" autocomplete="off"></label>
           <label class="campo"><span>Fecha de emisión</span><input type="date" name="fecha_emision" value="${hoyISO()}"></label>
           <label class="campo"><span>Vence el</span><input type="date" name="fecha_vencimiento"></label>
-          <label class="campo" style="grid-column:span 2"><span>Enlace a la carpeta o el archivo</span>
+          <label class="campo" style="grid-column:span 2"><span>Archivo (PDF o foto)</span>
+            <input type="file" name="archivo"
+                   accept="application/pdf,image/jpeg,image/png,image/webp,image/heic"></label>
+          <label class="campo" style="grid-column:span 2"><span>Enlace a la carpeta en Drive</span>
             <input name="enlace" placeholder="https://drive.google.com/..." autocomplete="off"></label>
           <label class="campo" style="grid-column:span 2"><span>Observación</span><input name="observacion" autocomplete="off"></label>
         </div>
@@ -3365,7 +3420,40 @@ function conectarFicha(datos) {
   };
 
   enviar("#f-contrato", "/rrhh/contratos", { trabajador_id: id });
-  enviar("#f-documento", "/rrhh/documentos", { trabajador_id: id });
+
+  // El documento se crea primero y el archivo se sube después, contra el id
+  // recién creado. No se puede al revés: el archivo se guarda en una ruta que
+  // lleva ese id adentro.
+  const fdoc = $("#f-documento");
+  if (fdoc) {
+    fdoc.onsubmit = async ev => {
+      ev.preventDefault();
+      const m = fdoc.querySelector(".mensaje"), bt = fdoc.querySelector("button[type=submit]");
+      const archivo = fdoc.archivo.files[0] || null;
+      if (archivo && archivo.size > MAX_ARCHIVO) {
+        return decir(m, `«${archivo.name}» pesa ${pesoArchivo(archivo.size)} y el máximo es 10 MB.`, "error");
+      }
+      decir(m, "Guardando…"); bt.disabled = true;
+      try {
+        const campos = Object.fromEntries(new FormData(fdoc));
+        delete campos.archivo;                 // el archivo no va en el JSON
+        const r = await pedir("/rrhh/documentos", { method: "POST",
+          body: JSON.stringify({ ...campos, trabajador_id: id }) });
+        if (archivo) {
+          decir(m, `Subiendo ${esc(archivo.name)}…`);
+          try {
+            await subirArchivo(r.documento.id, archivo);
+          } catch (e) {
+            // El documento ya quedó creado: decirlo evita que lo carguen de
+            // nuevo y queden dos.
+            alert(`El documento se guardó, pero el archivo no se pudo subir.\n\n${e.message}`
+              + "\n\nPuede subirlo desde el botón «Subir archivo» de su fila.");
+          }
+        }
+        recargar();
+      } catch (e) { decir(m, e.message, "error"); bt.disabled = false; }
+    };
+  }
   enviar("#f-ausencia", "/rrhh/ausencias", { trabajador_id: id }, r => {
     if (r.saldo) {
       alert(`Registrada.\n\nFeriado disponible ahora: ${r.saldo.saldo} días hábiles.`);
@@ -3438,6 +3526,44 @@ function conectarFicha(datos) {
     b.onclick = () => {
       RRHH.sueldos = { trabajador: String(id), mes: hoyISO().slice(0, 7), vista: "finiquito" };
       ir("sueldos");
+    };
+  });
+
+  // Un solo input para toda la tabla: el botón apretado deja su documento acá.
+  const oculto = $("#archivo-oculto");
+  if (oculto) {
+    document.querySelectorAll("[data-subir]").forEach(b => {
+      b.onclick = () => {
+        RRHH.subirA = Number(b.dataset.subir);
+        oculto.value = "";          // sin esto, elegir el mismo archivo no dispara nada
+        oculto.click();
+      };
+    });
+    oculto.onchange = async () => {
+      const archivo = oculto.files[0];
+      if (!archivo || !RRHH.subirA) return;
+      const fila = document.querySelector(`[data-subir="${RRHH.subirA}"]`);
+      const antes = fila ? fila.textContent : "";
+      if (fila) { fila.disabled = true; fila.textContent = "Subiendo…"; }
+      try {
+        const r = await subirArchivo(RRHH.subirA, archivo);
+        if (r?.reemplazo) console.log("archivo reemplazado");
+        recargar();
+      } catch (e) {
+        alert(e.message);
+        if (fila) { fila.disabled = false; fila.textContent = antes; }
+      }
+    };
+  }
+
+  document.querySelectorAll("[data-quitar-archivo]").forEach(b => {
+    b.onclick = async () => {
+      if (!confirm("¿Quitar el archivo?\n\nEl documento sigue registrado con sus fechas; "
+        + "lo que se borra es el archivo subido, y eso no se deshace.")) return;
+      try {
+        await pedir(`/rrhh/documentos/${b.dataset.quitarArchivo}/archivo`, { method: "DELETE" });
+        recargar();
+      } catch (e) { alert(e.message); }
     };
   });
 
