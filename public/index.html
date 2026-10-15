@@ -2009,13 +2009,13 @@ async function guardarCotizacion() {
 // ------------------------------------------------------------- PDF
 const JSPDF = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
 
-function cargarScript(url) {
+function cargarScript(url, queEs = "el generador de PDF") {
   return new Promise((listo, falla) => {
     if (document.querySelector(`script[src="${url}"]`)) return listo();
     const s = document.createElement("script");
     s.src = url;
     s.onload = listo;
-    s.onerror = () => falla(new Error("No se pudo cargar el generador de PDF. ¿Hay internet?"));
+    s.onerror = () => falla(new Error(`No se pudo cargar ${queEs}. ¿Hay internet?`));
     document.head.appendChild(s);
   });
 }
@@ -2399,7 +2399,9 @@ async function pintarLibro() {
 
     <section class="caja">
       <div class="caja__tit"><h2>Libro de asistencia</h2>
-        <span class="nota">${fecha(libro.desde)} a ${fecha(libro.hasta)}</span></div>
+        <span class="nota">${fecha(libro.desde)} a ${fecha(libro.hasta)}</span>
+        <button class="bt bt--fino bt--chico" type="button" id="bajar-excel"
+          ${libro.jornadas.length ? "" : "disabled"}>Descargar Excel</button></div>
       <div class="rejilla">
         <label class="campo"><span>Desde</span>
           <input type="date" id="f-desde" value="${f.desde}"></label>
@@ -2476,6 +2478,15 @@ async function pintarLibro() {
   };
   ["#f-desde", "#f-hasta", "#f-trabajador", "#f-instalacion"].forEach(s => { $(s).onchange = releer; });
 
+  const bt = $("#bajar-excel");
+  bt.onclick = async () => {
+    const antes = bt.textContent;
+    bt.disabled = true; bt.textContent = "Generando…";
+    try { await bajarLibroExcel(libro); }
+    catch (e) { alert(e.message); }
+    finally { bt.disabled = false; bt.textContent = antes; }
+  };
+
   // El formulario de corrección vive debajo de su propia jornada, escondido
   // hasta que lo piden: la fila de al lado dice de cuál se está hablando mejor
   // que cualquier título.
@@ -2512,6 +2523,126 @@ async function pintarLibro() {
       } catch (e) { decir(m, e.message, "error"); bt.disabled = false; }
     };
   });
+}
+
+// ------------------------------------------------------------- Excel del libro
+/**
+ * El libro en una planilla.
+ *
+ * Esto existe para remuneraciones: lo que se hace con el libro al final de mes
+ * es sumar horas por persona, y eso se hace en Excel. Por eso las horas van
+ * como número y no como texto —si no, no se pueden sumar— y la fecha va como
+ * fecha de verdad, para poder ordenar y filtrar por mes.
+ *
+ * Tres hojas: el resumen de lo que se descargó (para que el archivo diga solo
+ * de qué periodo es cuando llegue por correo), una fila por jornada, y las
+ * correcciones aparte, con quién las hizo y por qué. Lo que la oficina
+ * intervino nunca se mezcla en silencio con lo que marcó el guardia.
+ */
+const SHEETJS = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+
+async function bajarLibroExcel(libro) {
+  await cargarScript(SHEETJS, "el generador de Excel");
+  const XLSX = window.XLSX;
+  if (!XLSX) throw new Error("No se pudo cargar el generador de Excel.");
+
+  // Mediodía para que el cambio de huso no corra la fecha un día.
+  const comoFecha = iso => iso ? new Date(iso + "T12:00:00") : null;
+  const r = libro.resumen;
+  const quien = estado.usuario ? `${estado.usuario.nombre} (${estado.usuario.usuario})` : "";
+
+  const resumen = [
+    ["Libro de asistencia"],
+    ["Seguridad Garridos · GLOBSEG SPA"],
+    [],
+    ["Desde", comoFecha(libro.desde)],
+    ["Hasta", comoFecha(libro.hasta)],
+    ["Jornadas", r.jornadas],
+    ["Trabajadores", r.trabajadores],
+    ["Horas registradas", r.horas],
+    ["Sin salida marcada", r.sin_salida],
+    ["Corregidas por la oficina", r.corregidas || 0],
+    [],
+    ["Descargado", new Date()],
+    ["Por", quien],
+  ];
+  if (r.sin_salida) {
+    resumen.push([], ["Aviso", "Las jornadas sin salida no suman horas: falta la marca."]);
+  }
+
+  const jornadas = libro.jornadas.map(j => ({
+    "Fecha": comoFecha(j.fecha),
+    "Trabajador": j.trabajador,
+    "RUT": j.rut || "",
+    "Usuario": j.usuario || "",
+    "Instalación": j.instalacion || "",
+    "Entrada": j.hora_entrada || "",
+    "Salida": j.hora_salida || "",
+    "Horas": j.horas ?? "",
+    "Estado": j.completa ? "Completa" : "Sin salida",
+    "Entrada marcada por": j.entrada_origen === "oficina" ? "Oficina" : (j.entrada ? "El guardia" : ""),
+    "Salida marcada por": j.salida_origen === "oficina" ? "Oficina" : (j.salida ? "El guardia" : ""),
+    "Con ubicación": j.entrada_ubicada || j.salida_ubicada ? "Sí" : "No",
+  }));
+
+  const correcciones = libro.jornadas.flatMap(j =>
+    (j.correcciones || []).map(c => ({
+      "Fecha": comoFecha(j.fecha),
+      "Trabajador": j.trabajador,
+      "RUT": j.rut || "",
+      "Qué se agregó": c.tipo === "entrada" ? "Entrada" : "Salida",
+      "Hora": c.hora || "",
+      "Quién la puso": c.por_nombre || c.por || "",
+      "Motivo": c.motivo || "",
+      "Cuándo se registró": c.cuando ? new Date(c.cuando) : "",
+    })));
+
+  const libroXL = XLSX.utils.book_new();
+
+  const hojaResumen = XLSX.utils.aoa_to_sheet(resumen);
+  hojaResumen["!cols"] = [{ wch: 26 }, { wch: 46 }];
+  formatear(hojaResumen, { "B4": "dd-mm-yyyy", "B5": "dd-mm-yyyy", "B12": "dd-mm-yyyy hh:mm" });
+  XLSX.utils.book_append_sheet(libroXL, hojaResumen, "Resumen");
+
+  const hojaJornadas = XLSX.utils.json_to_sheet(jornadas);
+  hojaJornadas["!cols"] = [{ wch: 11 }, { wch: 28 }, { wch: 13 }, { wch: 13 }, { wch: 22 },
+                           { wch: 9 }, { wch: 9 }, { wch: 8 }, { wch: 12 },
+                           { wch: 19 }, { wch: 19 }, { wch: 13 }];
+  // La primera fila es el encabezado; Excel la congela y se puede filtrar.
+  hojaJornadas["!freeze"] = { xSplit: 0, ySplit: 1 };
+  if (jornadas.length) {
+    hojaJornadas["!autofilter"] = { ref: XLSX.utils.encode_range({
+      s: { r: 0, c: 0 }, e: { r: jornadas.length, c: 11 } }) };
+  }
+  formatearColumna(hojaJornadas, 0, "dd-mm-yyyy", jornadas.length);
+  formatearColumna(hojaJornadas, 7, "0.00", jornadas.length);
+  XLSX.utils.book_append_sheet(libroXL, hojaJornadas, "Jornadas");
+
+  if (correcciones.length) {
+    const hojaCorr = XLSX.utils.json_to_sheet(correcciones);
+    hojaCorr["!cols"] = [{ wch: 11 }, { wch: 28 }, { wch: 13 }, { wch: 14 }, { wch: 8 },
+                         { wch: 24 }, { wch: 52 }, { wch: 19 }];
+    formatearColumna(hojaCorr, 0, "dd-mm-yyyy", correcciones.length);
+    formatearColumna(hojaCorr, 7, "dd-mm-yyyy hh:mm", correcciones.length);
+    XLSX.utils.book_append_sheet(libroXL, hojaCorr, "Correcciones");
+  }
+
+  XLSX.writeFile(libroXL, `asistencia ${libro.desde} a ${libro.hasta}.xlsx`);
+}
+
+/** Pone el formato de una celda suelta, si existe. */
+function formatear(hoja, formatos) {
+  for (const [celda, z] of Object.entries(formatos)) {
+    if (hoja[celda]) hoja[celda].z = z;
+  }
+}
+
+/** Pone el formato a toda una columna de datos, sin tocar el encabezado. */
+function formatearColumna(hoja, columna, z, filas) {
+  for (let i = 1; i <= filas; i++) {
+    const celda = hoja[window.XLSX.utils.encode_cell({ r: i, c: columna })];
+    if (celda && celda.v !== "") celda.z = z;
+  }
 }
 
 const VISTAS = {

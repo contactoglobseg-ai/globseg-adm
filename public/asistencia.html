@@ -418,6 +418,67 @@ function pintarIngreso(mensaje) {
   };
 }
 
+/**
+ * Cambio de clave.
+ *
+ * La primera vez es obligatorio y no hay cómo saltárselo: el servidor no deja
+ * marcar hasta que ocurra. Después queda disponible desde el pie, por si
+ * alguien sospecha que otro se la sabe.
+ *
+ * El texto no dice «contraseña» ni habla de seguridad: dice para qué sirve,
+ * que es que nadie pueda marcar por uno.
+ */
+function pintarCambioClave({ nombre, usuario }, obligatorio) {
+  $("#cabecera").hidden = true;
+  document.body.innerHTML = `<div class="puerta"><div class="puerta__caja">
+    <div class="puerta__tit"><img src="logo.png" alt="">
+      <span><b>${obligatorio ? "Elija su clave" : "Cambiar la clave"}</b>
+        <span>${esc(nombre || usuario || "")}</span></span></div>
+    <form id="f-clave">
+      <label class="campo"><span>${obligatorio ? "Su RUT (la clave con que entró)" : "Clave actual"}</span>
+        <input name="actual" type="password" autocomplete="current-password" required autofocus></label>
+      <label class="campo"><span>Clave nueva</span>
+        <input name="nueva" type="password" autocomplete="new-password" required></label>
+      <label class="campo"><span>Repita la clave nueva</span>
+        <input name="repetir" type="password" autocomplete="new-password" required></label>
+      <button class="bt" type="submit">Guardar</button>
+      <span class="recado"></span>
+      ${obligatorio ? "" : `<button class="bt bt--fino" type="button" id="volver">Volver sin cambiar</button>`}
+    </form>
+    <div class="puerta__aviso">
+      Al menos 6 caracteres, y que no sea su RUT. Es suya: nadie la puede ver,
+      tampoco la oficina. Así nadie puede marcar por usted.
+      Si se le olvida, Joaquín se la devuelve a su RUT.
+    </div>
+  </div></div>`;
+
+  const f = $("#f-clave");
+  const recado = f.querySelector(".recado");
+  const volver = $("#volver");
+  if (volver) volver.onclick = () => location.reload();
+
+  f.onsubmit = async ev => {
+    ev.preventDefault();
+    const bt = f.querySelector("button[type=submit]");
+    if (f.nueva.value !== f.repetir.value) {
+      recado.className = "recado error";
+      recado.textContent = "Las dos claves nuevas no son iguales";
+      f.repetir.value = ""; f.repetir.focus();
+      return;
+    }
+    recado.className = "recado"; recado.textContent = "Guardando…";
+    bt.disabled = true;
+    try {
+      await pedir("/clave", { method: "POST",
+        body: JSON.stringify({ actual: f.actual.value, nueva: f.nueva.value }) });
+      location.reload();
+    } catch (e) {
+      recado.className = "recado error"; recado.textContent = e.message;
+      bt.disabled = false;
+    }
+  };
+}
+
 let estado = null;
 let confirmando = null;      // la salida se pregunta dos veces
 let relojTimer = null;
@@ -475,9 +536,12 @@ function pintar() {
     </div>
 
     <p class="pie">Lo marcado queda guardado y no se puede borrar desde acá.<br>
-      Si algo quedó mal, avísele a Joaquín.</p>`;
+      Si algo quedó mal, avísele a Joaquín.<br>
+      <button class="bt bt--fino bt--chico" type="button" id="mi-clave"
+        style="margin-top:10px">Cambiar mi clave</button></p>`;
 
   $("#marcar").onclick = alMarcar;
+  $("#mi-clave").onclick = () => pintarCambioClave(e.trabajador, false);
   arrancarReloj();
 }
 
@@ -559,6 +623,8 @@ async function arrancar() {
   } catch (e) {
     return pintarIngreso(e.message.includes("Sin sesión") ? "" : e.message);
   }
+  if (estado.debe_cambiar_clave) return pintarCambioClave(estado.trabajador, true);
+
   $("#cabecera").hidden = false;
   $("#salir").onclick = async () => {
     await pedir("/sesion", { method: "DELETE" }).catch(() => {});

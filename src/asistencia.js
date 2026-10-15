@@ -19,7 +19,7 @@
  */
 
 import { buscar, primero, insertar, actualizar, anotar } from './datos.js';
-import { ingresar, hashear } from './sesion.js';
+import { ingresar, hashear, claveCorrecta } from './sesion.js';
 import { normalizarRut, dvCorrecto, formatearRut } from './rut.js';
 import { sumarDias, esFecha } from './fechas.js';
 
@@ -173,6 +173,9 @@ export const fichaTrabajador = (t) => ({
   activo: t.activo,
   bloqueado: !!(t.bloqueado_hasta && new Date(t.bloqueado_hasta) > new Date()),
   ultimo_ingreso: t.ultimo_ingreso,
+  // Sirve para que la oficina vea de un vistazo quién sigue andando con el
+  // RUT de clave, que es lo mismo que no tener clave.
+  debe_cambiar_clave: t.debe_cambiar_clave !== false,
 });
 
 export async function crearTrabajador(env, quien, cuerpo) {
@@ -253,6 +256,9 @@ export async function editarTrabajador(env, quien, id, cuerpo) {
     campos.clave = await hashear(t.rut);
     campos.intentos_fallidos = 0;
     campos.bloqueado_hasta = null;
+    // Vuelve a quedar obligado a cambiarla: el RUT sirve para entrar una vez,
+    // no para quedarse. Si no, restablecer sería dejar la cuenta abierta.
+    campos.debe_cambiar_clave = true;
     notas.push('clave vuelta al RUT');
   }
 
@@ -271,12 +277,77 @@ export async function listarTrabajadores(env) {
 }
 
 // ---------------------------------------------------------------- ingreso del guardia
+/**
+ * Lo tecleado, listo para comparar o para guardar.
+ *
+ * Tiene que ser la misma función al ingresar y al cambiar la clave. Si solo
+ * normalizara el ingreso, un guardia que elige «1234567-8» quedaría con el
+ * hash de lo escrito y al entrar se compararía contra «12345678»: no podría
+ * entrar nunca y nadie entendería por qué.
+ */
+export const prepararClaveGuardia = (c) => normalizarRut(c) || String(c ?? '').trim();
+
 export const ingresoGuardia = (env, usuario, clave) =>
   ingresar(env, usuario, clave, {
     tabla: 'trabajadores',
-    prepararClave: (c) => normalizarRut(c) || String(c ?? '').trim(),
+    prepararClave: prepararClaveGuardia,
     rotuloClave: 'su RUT',
   });
+
+/**
+ * Exigencias de la clave de un guardia. Son más blandas que las de la oficina
+ * a propósito: esto se teclea de noche, con frío y a veces con guantes, y una
+ * clave que cuesta escribir termina anotada en el libro de novedades o pegada
+ * en la caseta, que es peor que una clave corta. Lo que sí se exige es que no
+ * sea el dato que todos saben —su RUT— ni algo que el de al lado adivine.
+ *
+ * Si alguien igual la olvida, Joaquín se la devuelve al RUT desde el panel con
+ * un botón, así que equivocarse acá no deja a nadie fuera de su turno.
+ */
+export function revisarClaveGuardia(clave, trabajador) {
+  if (typeof clave !== 'string' || clave.length < 6) {
+    return 'La clave tiene que tener al menos 6 caracteres';
+  }
+  if (clave.length > 200) return 'La clave es demasiado larga';
+
+  const soloDigitos = clave.replace(/\D/g, '');
+  const rut = trabajador?.rut || '';
+  if (rut && (soloDigitos === rut || soloDigitos === rut.slice(0, -1))) {
+    return 'La clave nueva no puede ser su RUT: esa la sabe cualquiera';
+  }
+  if (trabajador?.usuario && clave.toLowerCase() === trabajador.usuario.toLowerCase()) {
+    return 'La clave no puede ser su propio usuario';
+  }
+  if (/^(.)\1+$/.test(clave)) return 'Esa clave es demasiado fácil de adivinar';
+  const obvias = ['123456', '1234567', '12345678', '123456789', 'abcdef',
+                  'password', 'contrasena', 'guardia', 'globseg', 'seguridad'];
+  if (obvias.includes(clave.toLowerCase())) {
+    return 'Esa clave es demasiado fácil de adivinar';
+  }
+  return null;
+}
+
+/** Cambia la clave del guardia verificando antes la actual. */
+export async function cambiarClaveGuardia(env, trabajador, actual, nueva) {
+  if (!(await claveCorrecta(prepararClaveGuardia(actual), trabajador.clave))) {
+    return { error: 'La clave actual no es correcta', status: 400 };
+  }
+  const preparada = prepararClaveGuardia(nueva);
+  const motivo = revisarClaveGuardia(preparada, trabajador);
+  if (motivo) return { error: motivo, status: 400 };
+  if (await claveCorrecta(preparada, trabajador.clave)) {
+    return { error: 'La clave nueva tiene que ser distinta de la actual', status: 400 };
+  }
+
+  await actualizar(env, `trabajadores?id=eq.${trabajador.id}`, {
+    clave: await hashear(preparada),
+    debe_cambiar_clave: false,
+  });
+  // En la bitácora queda que la cambió, nunca por cuál.
+  await anotar(env, trabajador.usuario, 'trabajador', trabajador.id,
+    'cambió su clave', null);
+  return { ok: true };
+}
 
 export async function trabajadorDeSesion(env, usuario) {
   const t = await primero(env,

@@ -921,8 +921,29 @@ async function apiAsistencia(request, env, url) {
   const trabajador = await asis.trabajadorDeSesion(env, nombre);
   if (!trabajador) return error('Sin sesión', 401);   // dado de baja con la sesión abierta
 
+  // Con la clave inicial sin cambiar, lo único permitido es cambiarla. El RUT
+  // sirve para entregar la cuenta, no para quedarse: lo sabe cualquiera que
+  // haya visto un contrato o una lista de turnos, y con él un compañero podría
+  // marcarle la entrada al que todavía no llega.
+  const debeCambiar = trabajador.debe_cambiar_clave === true;
+  if (debeCambiar && ruta !== '/clave' && ruta !== '/yo') {
+    return error('Tiene que cambiar su clave antes de marcar', 403);
+  }
+
   if (ruta === '/yo' && metodo === 'GET') {
+    if (debeCambiar) {
+      return json({
+        debe_cambiar_clave: true,
+        trabajador: { nombre: trabajador.nombre, usuario: trabajador.usuario },
+      });
+    }
     return json(await asis.estadoGuardia(env, trabajador));
+  }
+
+  if (ruta === '/clave' && metodo === 'POST') {
+    const r = await asis.cambiarClaveGuardia(env, trabajador, cuerpo.actual, cuerpo.nueva);
+    if (r.error) return error(r.error, r.status);
+    return json({ ok: true });
   }
 
   if (ruta === '/marca' && metodo === 'POST') {
