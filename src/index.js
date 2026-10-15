@@ -20,6 +20,8 @@ import * as lote from './lote.js';
 import * as asis from './asistencia.js';
 import { redireccionHttps, cabecerasSeguridad, conCabeceras, soloHttps }
   from './seguridad.js';
+import { ipDe, huellaDe, revisarLimite, limpiarHuellas, MENSAJES as MENSAJES_LIMITE }
+  from './limite.js';
 
 const IVA = 0.19;
 
@@ -1018,6 +1020,13 @@ async function revisarTablas(env) {
   } catch {
     r.trabajador_cambia_clave = false;
   }
+  // Sin esta columna el formulario público sigue recibiendo, pero sin tope.
+  try {
+    await buscar(env, 'contactos?select=ip_huella&limit=1');
+    r.contacto_con_limite = true;
+  } catch {
+    r.contacto_con_limite = false;
+  }
   return r;
 }
 
@@ -1083,6 +1092,24 @@ export default {
             { status: 405, headers: { ...cors, 'content-type': 'application/json' } });
         }
 
+        // Antes de leer el cuerpo: si este remitente ya se pasó, no hay para
+        // qué parsear nada. El CORS de más arriba solo ordena a los
+        // navegadores; lo que frena a un script es esto.
+        const huella = await huellaDe(ipDe(request), env);
+        // Si la revisión falla —la base no contesta, la migración todavía no
+        // corrió—, el envío pasa. Lo que se protege es no perder un cliente:
+        // negar un contacto bueno por eso sería causar el daño que el límite
+        // existe para evitar.
+        const limite = await revisarLimite(env, huella)
+          .catch(e => { console.error('limite contacto:', e.message); return { ok: true }; });
+        if (!limite.ok) {
+          return new Response(JSON.stringify({ error: MENSAJES_LIMITE[limite.motivo] }), {
+            status: 429,
+            headers: { ...cors, 'content-type': 'application/json',
+                       'retry-after': String(limite.segundos) },
+          });
+        }
+
         const d = await request.json().catch(() => ({}));
         const texto = (v, max) => {
           const t = typeof v === 'string' ? v.trim() : '';
@@ -1099,19 +1126,34 @@ export default {
             { status: 400, headers: { ...cors, 'content-type': 'application/json' } });
         }
 
+        const contacto = {
+          nombre,
+          telefono,
+          email: texto(d.Correo ?? d.email, 120),
+          empresa: texto(d.Empresa ?? d.empresa, 160),
+          comuna: texto(d.Comuna ?? d.comuna, 120),
+          que_cuidar: texto(d['Qué hay que cuidar'] ?? d.lugar, 160),
+          servicio: texto(d.Servicio ?? d.servicio, 120),
+          turno: texto(d.Turno ?? d.turno, 60),
+          detalle: texto(d.Detalle ?? d.detalle, 2000),
+          origen: texto(d.Origen ?? d.origen, 120),
+        };
+
         try {
-          await insertar(env, 'contactos', {
-            nombre,
-            telefono,
-            email: texto(d.Correo ?? d.email, 120),
-            empresa: texto(d.Empresa ?? d.empresa, 160),
-            comuna: texto(d.Comuna ?? d.comuna, 120),
-            que_cuidar: texto(d['Qué hay que cuidar'] ?? d.lugar, 160),
-            servicio: texto(d.Servicio ?? d.servicio, 120),
-            turno: texto(d.Turno ?? d.turno, 60),
-            detalle: texto(d.Detalle ?? d.detalle, 2000),
-            origen: texto(d.Origen ?? d.origen, 120),
-          });
+          try {
+            await insertar(env, 'contactos', { ...contacto, ip_huella: huella });
+          } catch (e) {
+            // La huella es para contar, no es parte del contacto. Si la
+            // migración todavía no corrió en la base —ya pasó una vez con las
+            // tablas de asistencia—, el contacto entra igual sin ella.
+            if (!/ip_huella/.test(e.message || '')) throw e;
+            console.error('contacto: falta la columna ip_huella, entra sin límite');
+            await insertar(env, 'contactos', contacto);
+          }
+          // Después del bueno, no del rechazado: así la limpieza queda acotada
+          // por el propio límite y un script no puede provocarla en serie.
+          await limpiarHuellas(env)
+            .catch(e => console.error('limpiar huellas:', e.message));
         } catch (e) {
           console.error('contacto:', e.message);
           return new Response(JSON.stringify({ error: 'No se pudo guardar. Intente de nuevo.' }),
