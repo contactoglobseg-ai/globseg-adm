@@ -104,10 +104,38 @@ export function cabecerasSeguridad(esAsistencia = false) {
   };
 }
 
-/** Copia una respuesta agregándole las cabeceras, sin tocar su cuerpo. */
+/**
+ * Agrega `no-transform` al `cache-control` que ya traiga la respuesta.
+ *
+ * Cloudflare reescribe el HTML al vuelo para meterle la baliza de Web
+ * Analytics, y las dos CSP de acá arriba la bloquean —la de asistencia a
+ * propósito, porque esa página no carga nada de afuera—. El resultado era un
+ * error rojo en la consola en cada carga, de algo que además nunca iba a
+ * funcionar. `no-transform` le dice que no toque la respuesta, y entonces no
+ * hay nada que bloquear.
+ *
+ * Se **agrega** en vez de reemplazar: el servidor de archivos entrega las
+ * páginas con `public, max-age=0, must-revalidate`, y escribir encima un
+ * `public, no-transform` pelado quitaría el `must-revalidate`. Sin él, el
+ * navegador puede quedarse con la página vieja por su cuenta, y un despliegue
+ * dejaría de llegarle a quien ya la tenía abierta.
+ */
+function sinTransformar(cacheControl) {
+  if (!cacheControl) return 'no-transform';
+  if (/(^|,)\s*no-transform\s*($|,)/i.test(cacheControl)) return cacheControl;
+  return cacheControl + ', no-transform';
+}
+
+/**
+ * Copia una respuesta agregándole las cabeceras, sin tocar su cuerpo.
+ *
+ * Solo lo usan las páginas: la API arma sus propias respuestas con
+ * `cache-control: no-store` y no pasa por acá.
+ */
 export function conCabeceras(respuesta, cabeceras) {
   const r = new Response(respuesta.body, respuesta);
   for (const [k, v] of Object.entries(cabeceras)) r.headers.set(k, v);
+  r.headers.set('cache-control', sinTransformar(r.headers.get('cache-control')));
   return r;
 }
 
