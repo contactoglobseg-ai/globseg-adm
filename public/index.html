@@ -179,6 +179,31 @@ tr.fila-corr td,tr.fila-corr:hover td{background:var(--sup-2);padding:0}
 .lineas .quitar:hover{color:var(--rojo);background:var(--rojo-suave)}
 .col-desc{min-width:260px} .col-cant{width:92px} .col-uni{width:96px}
 .col-precio{width:124px} .col-sub{width:124px} .col-x{width:40px}
+/* Los 1080px de .desliza son para las tablas de datos, que llevan diez
+   columnas. Acá sobran seis y heredarlos corría el Subtotal fuera del borde
+   derecho en cualquier pantalla de menos de 1150px: se escribía la cantidad y
+   el precio —que sí se ven— y el total de la línea nunca aparecía. */
+.desliza table.lineas{min-width:736px}
+
+/* Bajo 760px las seis columnas no caben de ninguna manera, y la que se va
+   fuera es justo la que se está mirando mientras se arma el precio. Cada
+   línea pasa a ser una ficha apilada, con el nombre del campo al lado. */
+@media (max-width:760px){
+  .desliza table.lineas{min-width:0}
+  .lineas thead{display:none}
+  .lineas,.lineas tbody,.lineas tr,.lineas td{display:block;width:auto;min-width:0}
+  .lineas tr{border:1px solid var(--borde-suave);border-radius:var(--r);
+    margin:10px 12px;padding:4px 2px}
+  .lineas td{border:0;display:flex;align-items:center;gap:10px;padding:5px 8px}
+  .lineas td::before{content:attr(data-rotulo);flex:none;width:104px;
+    font-size:.72rem;color:var(--texto-3);text-align:left}
+  .lineas td input{flex:1}
+  /* Alineado a la derecha, el número quedaba lejísimos de su rótulo. */
+  .lineas td.num input{text-align:left}
+  .lineas td.col-sub b{display:inline;font-weight:600}
+  .lineas td.col-x{justify-content:flex-end;padding-top:0}
+  .lineas td.col-x::before{content:none}
+}
 .sumas{margin-left:auto;min-width:290px;padding:16px 18px;background:var(--sup-2);
   border-radius:var(--r);border:1px solid var(--borde-suave)}
 .sumas div{display:flex;justify-content:space-between;gap:20px;padding:5px 0;font-size:.92rem}
@@ -1669,9 +1694,14 @@ function cotizacionNueva() {
   };
 }
 
+/** La misma cuenta que hace el servidor en revisarItems(). Estaba escrita tres
+ *  veces en esta vista —la celda, el refresco al teclear y la suma—, que es
+ *  pedir que algún día las tres dejen de decir lo mismo. */
+const subtotalDe = i =>
+  Math.round((Number(i.precio_unitario) || 0) * (Number(i.cantidad) || 0));
+
 const sumasDe = items => {
-  const neto = items.reduce((t, i) =>
-    t + Math.round((Number(i.precio_unitario) || 0) * (Number(i.cantidad) || 0)), 0);
+  const neto = items.reduce((t, i) => t + subtotalDe(i), 0);
   const iva = Math.round(neto * 0.19);
   return { neto, iva, total: neto + iva };
 };
@@ -1810,11 +1840,11 @@ function pintarEditor() {
 function pintarLineas() {
   const c = borrador;
   $("#lineas").innerHTML = c.items.map((i, n) => `<tr>
-    <td class="col-desc"><input data-i="${n}" data-campo="descripcion" value="${esc(i.descripcion)}" placeholder="Qué se cotiza"></td>
-    <td class="col-cant num"><input data-i="${n}" data-campo="cantidad" type="number" min="0.5" step="0.5" value="${i.cantidad}"></td>
-    <td class="col-uni"><input data-i="${n}" data-campo="unidad" value="${esc(i.unidad || "")}" placeholder="turno"></td>
-    <td class="col-precio num"><input data-i="${n}" data-campo="precio_unitario" type="number" min="0" step="1" value="${i.precio_unitario}"></td>
-    <td class="col-sub num"><b>${clp(Math.round((Number(i.precio_unitario)||0) * (Number(i.cantidad)||0)))}</b></td>
+    <td class="col-desc" data-rotulo="Descripción"><input data-i="${n}" data-campo="descripcion" value="${esc(i.descripcion)}" placeholder="Qué se cotiza"></td>
+    <td class="col-cant num" data-rotulo="Cantidad"><input data-i="${n}" data-campo="cantidad" type="number" min="0.5" step="0.5" value="${i.cantidad}"></td>
+    <td class="col-uni" data-rotulo="Unidad"><input data-i="${n}" data-campo="unidad" value="${esc(i.unidad || "")}" placeholder="turno"></td>
+    <td class="col-precio num" data-rotulo="Precio unitario"><input data-i="${n}" data-campo="precio_unitario" type="number" min="0" step="1" value="${i.precio_unitario}"></td>
+    <td class="col-sub num" data-rotulo="Subtotal"><b>${clp(subtotalDe(i))}</b></td>
     <td class="col-x"><button class="quitar" data-quitar="${n}" title="Quitar línea">×</button></td>
   </tr>`).join("");
 
@@ -1825,9 +1855,7 @@ function pintarLineas() {
       ? el.value : Number(el.value);
     c.items[el.dataset.i][el.dataset.campo] = v;
     const fila = el.closest("tr");
-    const it = c.items[el.dataset.i];
-    fila.querySelector(".col-sub b").textContent =
-      clp(Math.round((Number(it.precio_unitario)||0) * (Number(it.cantidad)||0)));
+    fila.querySelector(".col-sub b").textContent = clp(subtotalDe(c.items[el.dataset.i]));
     pintarSumas();
   };
   document.querySelectorAll("[data-quitar]").forEach(b => {
@@ -1864,7 +1892,14 @@ async function guardarCotizacion() {
   try {
     if (c.id) {
       await pedir(`/cotizaciones/${c.id}`, { method: "PATCH", body: JSON.stringify(c) });
-      decir(msj, "Guardada", "ok");
+      // Se vuelve a pedir lo guardado, igual que al crear. El PDF imprime
+      // item.subtotal y los totales de la cabecera, que los calcula el
+      // servidor: una línea agregada en esta pasada todavía no trae subtotal,
+      // y sin este paso el PDF la imprimía en $0 con el neto y el total viejos.
+      const { cotizacion } = await pedir(`/cotizaciones/${c.id}`);
+      borrador = cotizacion;
+      pintarEditor();
+      decir($(".pie-form .mensaje"), "Guardada", "ok");
     } else {
       const r = await pedir("/cotizaciones", { method: "POST", body: JSON.stringify(c) });
       const { cotizacion } = await pedir(`/cotizaciones/${r.cotizacion.id}`);
@@ -1906,6 +1941,15 @@ const cargarLogo = (src, lado = 150) => new Promise(listo => {
 
 async function generarPDF(c) {
   const msj = $(".pie-form .mensaje");
+
+  // El PDF imprime lo que guardó el servidor, no lo que hay en pantalla: es el
+  // documento que se le manda al cliente y tiene que decir lo mismo que la
+  // cotización. Si todavía no se guarda, los montos no calzan y se avisa en
+  // vez de emitir un PDF con otras cifras.
+  if (sumasDe(c.items).total !== c.total) {
+    return decir(msj, "Hay cambios sin guardar: guarde antes de descargar el PDF.", "error");
+  }
+
   decir(msj, "Armando el PDF…");
   try {
     await cargarScript(JSPDF);
