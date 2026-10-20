@@ -323,6 +323,46 @@ tr.fila-corr td,tr.fila-corr:hover td{background:var(--sup-2);padding:0}
 .celda-acciones{white-space:normal}
 .celda-acciones .bt{margin:1px 0}
 
+/* La de documentos generados lleva siete columnas y dos botones en la última.
+   Mismo cuento que las de arriba: 1080px es para las de diez. */
+.desliza table.generados{min-width:860px}
+
+/* ----------------------------------------------- documento y firma
+   El cuerpo del documento es texto armado por el servidor y se muestra tal
+   cual: mismo ancho de lectura que un papel, no el ancho de la pantalla. Un
+   contrato a 1200px de ancho no lo lee nadie. */
+.documento{background:var(--sup);border:1px solid var(--borde);border-radius:var(--r);
+  padding:22px 24px;margin:0 16px 16px;max-width:74ch;white-space:pre-wrap;
+  line-height:1.62;font-size:.92rem;color:var(--texto)}
+.documento b{color:var(--texto)}
+
+/* El recuadro donde se firma. `touch-action:none` es lo que impide que el
+   navegador se lleve el gesto para hacer scroll: sin eso, en un teléfono el
+   trazo se corta apenas el dedo se mueve. */
+.firma-caja{margin:0 16px 12px}
+.firma-lienzo{display:block;width:100%;height:190px;touch-action:none;
+  background:var(--sup-2);border:1px dashed var(--borde);border-radius:var(--r);
+  color:var(--texto);cursor:crosshair}
+.firma-pie{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:8px}
+.firma-linea{flex:1;min-width:150px;border-top:1px solid var(--borde);
+  padding-top:6px;font-size:.78rem;color:var(--texto-3)}
+/* Las firmas ya puestas, al pie del documento. */
+.firmas{display:flex;flex-wrap:wrap;gap:16px;margin:0 16px 16px}
+.firma-hecha{flex:1;min-width:220px;border:1px solid var(--borde-suave);
+  border-radius:var(--r);padding:12px 14px;background:var(--sup-2)}
+.firma-hecha img{display:block;height:64px;max-width:100%;object-fit:contain;
+  object-position:left bottom;margin-bottom:6px}
+/* En oscuro la firma es negra sobre fondo oscuro y no se vería. */
+[data-tema="oscuro"] .firma-hecha img{filter:invert(1)}
+@media (prefers-color-scheme:dark){
+  :root:not([data-tema="light"]):not([data-tema="claro"]) .firma-hecha img{filter:invert(1)}
+}
+@media (max-width:620px){
+  .documento{padding:16px 15px;margin:0 12px 12px;font-size:.88rem}
+  .firma-caja{margin:0 12px 12px}
+  .firma-lienzo{height:160px}
+}
+
 /* Bajo 760px las seis columnas no caben de ninguna manera, y la que se va
    fuera es justo la que se está mirando mientras se arma el precio. Cada
    línea pasa a ser una ficha apilada, con el nombre del campo al lado. */
@@ -551,6 +591,7 @@ body.hay-seleccion .recado{bottom:104px}
 </div>
 
 <script src="apariencia.js"></script>
+<script src="firma.js"></script>
 <script>
 "use strict";
 
@@ -5016,6 +5057,471 @@ async function confirmarCarga() {
   };
 }
 
+// ------------------------------------------------------- documentos y firma
+/**
+ * Generar un documento desde una plantilla y firmarlo.
+ *
+ * El orden es a propósito el mismo que el de la carga masiva: primero se mira,
+ * después se escribe. La vista previa arma el documento completo y no guarda
+ * nada; recién al apretar «Generar» el texto queda congelado, y desde ese
+ * momento no se edita más. Si salió mal, se anula y se hace otro: un documento
+ * que se corrige después de firmado no sirve de respaldo, que es justamente
+ * para lo que existe.
+ */
+const DOCS = {
+  catalogos: null,
+  plantilla: "",
+  trabajador: "",
+  bloque: "",
+  campos: {},
+  previa: null,
+  abierto: null,
+};
+
+/* Los campos del arriendo. Viven acá y no en la base porque son el formulario,
+   no el contrato: el texto —que es lo que se firma— sí vive en la base. */
+const CAMPOS_ARRIENDO = [
+  { k: "arrendador", r: "Arrendador (nombre completo)", ancho: 2 },
+  { k: "arrendador_rut", r: "RUT del arrendador" },
+  { k: "arrendador_domicilio", r: "Domicilio del arrendador", ancho: 2 },
+  { k: "marca", r: "Marca" }, { k: "modelo", r: "Modelo" },
+  { k: "anio", r: "Año" }, { k: "patente", r: "Patente" },
+  { k: "motor", r: "N° de motor" }, { k: "chasis", r: "N° de chasis" },
+  { k: "color", r: "Color" },
+  { k: "desde", r: "Desde", tipo: "date" }, { k: "hasta", r: "Hasta", tipo: "date" },
+  { k: "renta", r: "Renta mensual", tipo: "number" },
+  { k: "dia_pago", r: "Se paga dentro de los primeros (días)", tipo: "number" },
+  { k: "kilometraje", r: "Kilometraje a la entrega" },
+  { k: "combustible", r: "Combustible a la entrega" },
+  { k: "aviso_dias", r: "Aviso para terminar antes (días)", tipo: "number" },
+  { k: "garantia", r: "Garantía (en blanco si no hay)", tipo: "number" },
+];
+
+const catalogosDocs = async () => (DOCS.catalogos ||= await pedir("/documentos/catalogos"));
+
+async function pintarDocumentos() {
+  let c;
+  try {
+    c = await catalogosDocs();
+  } catch (e) {
+    // La migración puede no estar aplicada: nadie las aplica solo desde el
+    // 14-10-2026. Se dice con el nombre del archivo y el resto del sistema
+    // sigue andando igual.
+    $("#app").innerHTML = `<section class="caja"><div class="caja__tit">
+      <h2>Documentos</h2></div>
+      ${aviso("ojo", "No se pueden usar las plantillas todavía. ", e.message)}</section>`;
+    return;
+  }
+
+  const { lista } = await pedir("/documentos").then(r => ({ lista: r.documentos || [] }))
+    .catch(() => ({ lista: [] }));
+
+  const p = c.plantillas.find(x => x.codigo === DOCS.plantilla);
+  const laboral = p && p.clase === "laboral";
+  const bloques = c.bloques.filter(b => b.grupo === "funciones");
+
+  $("#app").innerHTML = `
+    <section class="caja">
+      <div class="caja__tit"><h2>Nuevo documento</h2>
+        <span class="nota">Se arma con los datos de la ficha y del contrato</span></div>
+      ${c.empresa_por_confirmar.length ? aviso("ojo",
+        "Hay datos de la empresa sin confirmar. ",
+        c.empresa_por_confirmar.map(e => e.glosa || e.codigo).join(" ")) : ""}
+      <div class="rejilla">
+        <label class="campo" style="grid-column:span 2"><span>Plantilla</span>
+          <select id="d-plantilla">
+            <option value="">Elija una…</option>
+            ${c.plantillas.map(x => `<option value="${esc(x.codigo)}"
+              ${x.codigo === DOCS.plantilla ? " selected" : ""}
+              ${x.clase === "laboral" && !c.puede_laboral ? " disabled" : ""}>
+              ${esc(x.nombre)}${x.clase === "laboral" && !c.puede_laboral
+                ? " — la generan Recursos Humanos y gerencia" : ""}</option>`).join("")}
+          </select></label>
+        ${laboral ? `
+        <label class="campo" style="grid-column:span 2"><span>Persona</span>
+          <select id="d-trabajador">
+            <option value="">Elija una…</option>
+            ${c.personas.map(x => `<option value="${x.id}"${String(x.id) === String(DOCS.trabajador)
+              ? " selected" : ""}>${esc(x.nombre)} — ${esc(rutLindoSeguro(x.rut))}</option>`).join("")}
+          </select></label>` : ""}
+        ${laboral && DOCS.plantilla === "contrato_trabajo" ? `
+        <label class="campo" style="grid-column:span 2"><span>Funciones del cargo</span>
+          <select id="d-bloque">
+            ${bloques.map(b => `<option value="${esc(b.codigo)}"
+              ${b.codigo === DOCS.bloque ? " selected" : ""}>${esc(b.rotulo)}</option>`).join("")}
+          </select></label>` : ""}
+        ${p && !laboral ? CAMPOS_ARRIENDO.map(f => `
+        <label class="campo"${f.ancho ? ` style="grid-column:span ${f.ancho}"` : ""}>
+          <span>${esc(f.r)}</span>
+          <input id="d-c-${f.k}" type="${f.tipo || "text"}"
+                 value="${esc(DOCS.campos[f.k] ?? "")}"></label>`).join("") : ""}
+      </div>
+      ${p && p.por_confirmar ? aviso("ojo", "Esta plantilla tiene cosas por confirmar. ",
+        p.por_confirmar) : ""}
+      <div class="pie-form">
+        <button class="bt" type="button" id="d-ver"${p ? "" : " disabled"}>Ver cómo queda</button>
+        <span class="mensaje" id="m-docs"></span>
+      </div>
+    </section>
+
+    <div id="d-previa"></div>
+
+    <section class="caja">
+      <div class="caja__tit"><h2>Documentos generados</h2>
+        <span class="nota">${lista.length} en total</span></div>
+      ${lista.length ? `<div class="desliza"><table class="generados">
+        <thead><tr><th>N°</th><th>Documento</th><th>Persona</th><th>Estado</th>
+          <th>Firmas</th><th>Generado</th><th></th></tr></thead><tbody>
+        ${lista.map(d => `<tr>
+          <td class="nowrap"><b>${esc(d.numero)}</b></td>
+          <td>${esc(d.plantilla_nombre)}</td>
+          <td>${esc(d.trabajador || "—")}</td>
+          <td>${selloDoc(d)}</td>
+          <td class="nowrap">${d.firmas} de ${d.firmantes.split(",").length}</td>
+          <td class="nowrap">${fecha(String(d.creado_en).slice(0, 10))}</td>
+          <td class="celda-acciones">
+            <button class="bt bt--fino" type="button" data-abrir="${d.id}">Abrir</button></td>
+        </tr>`).join("")}
+      </tbody></table></div>`
+      : `<p class="sub">Todavía no se ha generado ninguno.</p>`}
+    </section>
+
+    <div id="d-abierto"></div>`;
+
+  $("#d-plantilla").onchange = e => {
+    DOCS.plantilla = e.target.value;
+    DOCS.previa = null;
+    const el = c.plantillas.find(x => x.codigo === DOCS.plantilla);
+    // El bloque se preselecciona con el primero: un contrato sin funciones no
+    // se puede generar, y dejar el desplegable vacío invita a olvidarlo.
+    if (el && el.codigo === "contrato_trabajo" && !DOCS.bloque) {
+      DOCS.bloque = bloques.length ? bloques[0].codigo : "";
+    }
+    pintarDocumentos();
+  };
+  if ($("#d-trabajador")) $("#d-trabajador").onchange = e => { DOCS.trabajador = e.target.value; };
+  if ($("#d-bloque")) $("#d-bloque").onchange = e => { DOCS.bloque = e.target.value; };
+  for (const f of CAMPOS_ARRIENDO) {
+    const el = $(`#d-c-${f.k}`);
+    if (el) el.oninput = ev => { DOCS.campos[f.k] = ev.target.value; };
+  }
+  $("#d-ver").onclick = () => verPrevia().catch(e => decir($("#m-docs"), e.message, "error"));
+  for (const b of document.querySelectorAll("[data-abrir]")) {
+    b.onclick = () => abrirDocumento(Number(b.dataset.abrir))
+      .catch(e => decir($("#m-docs"), e.message, "error"));
+  }
+
+  if (DOCS.previa) pintarPrevia();
+  if (DOCS.abierto) pintarAbierto().catch(e => decir($("#m-docs"), e.message, "error"));
+}
+
+const selloDoc = d => d.estado === "firmado"
+  ? '<span class="sello e-cerrado">Firmado</span>'
+  : d.estado === "anulado"
+    ? '<span class="sello e-rechazada">Anulado</span>'
+    : '<span class="sello e-solicitar_oc">Por firmar</span>';
+
+/** Lo que se manda al servidor para armar el documento. */
+function cuerpoDocumento() {
+  const base = { plantilla: DOCS.plantilla };
+  const p = DOCS.catalogos.plantillas.find(x => x.codigo === DOCS.plantilla);
+  if (p && p.clase === "laboral") {
+    if (!DOCS.trabajador) throw new Error("Elija a la persona.");
+    base.trabajador_id = Number(DOCS.trabajador);
+    if (DOCS.plantilla === "contrato_trabajo") base.bloque = DOCS.bloque;
+  } else {
+    base.campos = DOCS.campos;
+  }
+  return base;
+}
+
+async function verPrevia() {
+  decir($("#m-docs"), "Armando el documento…");
+  const r = await pedir("/documentos/vista-previa", {
+    method: "POST", body: JSON.stringify(cuerpoDocumento()),
+  });
+  DOCS.previa = r.vista_previa;
+  decir($("#m-docs"), "");
+  pintarPrevia();
+  $("#d-previa").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function pintarPrevia() {
+  const v = DOCS.previa;
+  $("#d-previa").innerHTML = `
+    <section class="caja">
+      <div class="caja__tit"><h2>Así va a quedar</h2>
+        <span class="nota">Todavía no se guarda nada</span></div>
+      ${v.por_confirmar ? aviso("ojo", "Por confirmar antes de firmar. ", v.por_confirmar) : ""}
+      ${v.faltan ? aviso("ojo", "Faltan datos. ",
+        `El documento tiene ${v.faltan} ${v.faltan === 1 ? "campo" : "campos"} sin completar, `
+        + "marcados con una línea. Complete la ficha o el contrato y vuelva a verlo.") : ""}
+      <h3 style="margin:0 16px 10px;font-size:1rem">${esc(v.titulo)}</h3>
+      <div class="documento">${esc(v.cuerpo)}</div>
+      <div class="pie-form">
+        <button class="bt" type="button" id="d-generar"${v.faltan ? " disabled" : ""}>
+          Generar y mandar a firmar</button>
+        <span class="mensaje" id="m-previa"></span>
+      </div>
+    </section>`;
+  $("#d-generar").onclick = () => generarDocumento()
+    .catch(e => decir($("#m-previa"), e.message, "error"));
+}
+
+async function generarDocumento() {
+  decir($("#m-previa"), "Generando…");
+  const r = await pedir("/documentos", {
+    method: "POST", body: JSON.stringify(cuerpoDocumento()),
+  });
+  DOCS.previa = null;
+  DOCS.abierto = r.documento.id;
+  await pintarDocumentos();
+}
+
+async function abrirDocumento(id) {
+  DOCS.abierto = id;
+  await pintarAbierto();
+  $("#d-abierto").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function pintarAbierto() {
+  const { documento: d } = await pedir(`/documentos/${DOCS.abierto}`);
+  const puestas = new Set(d.firmas.map(f => f.rol));
+  const faltan = d.firmantes.filter(r => !puestas.has(r));
+  const tocaEmpresa = d.estado === "por_firmar" && faltan.includes("empleador");
+
+  $("#d-abierto").innerHTML = `
+    <section class="caja">
+      <div class="caja__tit"><h2>${esc(d.titulo)}</h2>
+        <span class="nota">N° ${esc(d.numero)} · ${selloDoc(d)}</span></div>
+
+      ${d.descuadrado ? aviso("ojo", "Ojo. ",
+        "Alguna firma no corresponde al texto que está guardado. Este documento no "
+        + "sirve de respaldo: anúlelo y genere otro.") : ""}
+      ${d.estado === "anulado" ? aviso("ojo", "Anulado. ", d.anulado_motivo || "") : ""}
+      ${d.por_confirmar ? aviso("ojo", "Por confirmar. ", d.por_confirmar) : ""}
+      ${d.estado === "por_firmar" && faltan.includes("trabajador") ? aviso("ojo",
+        "Falta que firme el trabajador. ",
+        "Lo ve al entrar a asistencia.seggarridos.com con su propia cuenta, la misma "
+        + "con la que marca turno.") : ""}
+
+      <div class="documento">${esc(d.cuerpo)}</div>
+
+      ${d.firmas.length ? `<div class="firmas">${d.firmas.map(f => `
+        <div class="firma-hecha">
+          <img src="${esc(f.imagen)}" alt="Firma de ${esc(f.nombre)}">
+          <div class="firma-linea" style="border-top:0;padding-top:0">
+            <b style="color:var(--texto)">${esc(f.nombre)}</b><br>
+            ${esc(f.rut || "")}<br>
+            ${esc(rolRotulo(f.rol))} · ${esc(cuando(f.firmado_en))}<br>
+            ${esc(f.origen === "asistencia" ? "Firmado desde el libro de asistencia"
+              : "Firmado desde el panel")}${f.quien ? ` · cuenta ${esc(f.quien)}` : ""}
+          </div>
+        </div>`).join("")}</div>` : ""}
+
+      ${tocaEmpresa ? `
+      <div class="firma-caja">
+        <h3 style="font-size:.95rem;margin:0 0 8px">Firma de la empresa</h3>
+        <canvas class="firma-lienzo" id="d-lienzo"></canvas>
+        <div class="firma-pie">
+          <button class="bt bt--fino" type="button" id="d-limpiar">Borrar y firmar de nuevo</button>
+          <label class="campo" style="flex:1;min-width:220px;margin:0">
+            <span style="display:flex;gap:8px;align-items:flex-start">
+              <input type="checkbox" id="d-leido" style="margin-top:3px">
+              <span style="font-size:.82rem;color:var(--texto-2)">Leí el documento completo
+                y firmo en representación de la empresa.</span></span></label>
+        </div>
+      </div>` : ""}
+
+      <div class="pie-form">
+        ${tocaEmpresa ? '<button class="bt" type="button" id="d-firmar">Firmar</button>' : ""}
+        <button class="bt bt--fino" type="button" id="d-pdf">Descargar en PDF</button>
+        ${d.estado === "firmado" && d.trabajador_id && !d.documento_id
+          ? '<button class="bt bt--fino" type="button" id="d-archivar">Guardar en su ficha</button>'
+          : ""}
+        ${d.documento_id ? '<span class="sub" style="margin:0">Ya está guardado en su ficha</span>' : ""}
+        ${d.estado !== "anulado"
+          ? '<button class="bt bt--fino" type="button" id="d-anular">Anular</button>' : ""}
+        <span class="mensaje" id="m-abierto"></span>
+      </div>
+    </section>`;
+
+  let lienzo = null;
+  if (tocaEmpresa) {
+    lienzo = Firma.conectar($("#d-lienzo"));
+    $("#d-limpiar").onclick = () => lienzo.limpiar();
+    $("#d-firmar").onclick = () => firmarComoEmpresa(d, lienzo)
+      .catch(e => decir($("#m-abierto"), e.message, "error"));
+  }
+  $("#d-pdf").onclick = () => pdfDocumento(d)
+    .catch(e => decir($("#m-abierto"), e.message, "error"));
+  if ($("#d-archivar")) {
+    $("#d-archivar").onclick = () => archivarDocumento(d)
+      .catch(e => decir($("#m-abierto"), e.message, "error"));
+  }
+  if ($("#d-anular")) {
+    $("#d-anular").onclick = () => anularDocumento(d)
+      .catch(e => decir($("#m-abierto"), e.message, "error"));
+  }
+}
+
+const rolRotulo = r => ({ trabajador: "El trabajador", empleador: "Por la empresa",
+                          arrendador: "El arrendador" }[r] || r);
+
+const cuando = iso => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return isNaN(d) ? String(iso).slice(0, 16).replace("T", " ")
+    : d.toLocaleString("es-CL", { dateStyle: "short", timeStyle: "short" });
+};
+
+async function firmarComoEmpresa(d, lienzo) {
+  if (lienzo.vacio()) throw new Error("Falta firmar en el recuadro.");
+  if (!$("#d-leido").checked) throw new Error("Falta marcar que leyó el documento.");
+  decir($("#m-abierto"), "Guardando la firma…");
+  await pedir(`/documentos/${d.id}/firma`, {
+    method: "POST",
+    body: JSON.stringify({ imagen: lienzo.png(), leido: true }),
+  });
+  await pintarDocumentos();
+}
+
+async function anularDocumento(d) {
+  const motivo = prompt("¿Por qué se anula este documento?\n\n"
+    + "El documento y sus firmas no se borran: queda anulado y con el motivo a la vista.");
+  if (!motivo) return;
+  await pedir(`/documentos/${d.id}/anular`, {
+    method: "POST", body: JSON.stringify({ motivo }),
+  });
+  await pintarDocumentos();
+}
+
+/**
+ * Deja el documento firmado colgando de la ficha de la persona, con el PDF
+ * adentro. Son dos pasos: el servidor crea la fila del documento y la pantalla
+ * le sube el PDF por la ruta que ya existe para los archivos de RRHH. No hay
+ * un segundo almacenamiento, y el PDF pasa por la misma revisión de bytes que
+ * cualquier otro archivo que suba la oficina.
+ */
+async function archivarDocumento(d) {
+  decir($("#m-abierto"), "Armando el PDF…");
+  const blob = await pdfDocumento(d, { descargar: false });
+  decir($("#m-abierto"), "Guardando en la ficha…");
+  const r = await pedir(`/documentos/${d.id}/archivar`, { method: "POST" });
+  const nombre = `${d.numero} ${d.titulo}.pdf`.replace(/[\\/:*?"<>|]/g, "-");
+  await subirArchivo(r.documento_id, new File([blob], nombre, { type: "application/pdf" }));
+  await pintarDocumentos();
+}
+
+/**
+ * El PDF.
+ *
+ * Imprime el cuerpo congelado tal cual, sin volver a armar nada: lo que sale
+ * en el papel es lo mismo que leyó y firmó la persona. Las firmas van al pie,
+ * cada una con su nombre, su RUT y la fecha y hora en que se puso, porque una
+ * firma que no se puede fechar no sirve de respaldo.
+ */
+async function pdfDocumento(d, opciones) {
+  const op = opciones || {};
+  await cargarScript(JSPDF);
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const A = 210, H = 297, M = 20;
+  const ancho = A - M * 2;
+  const tinta = [19, 0, 82], gris = [110, 110, 134];
+  let y = M;
+
+  const pie = () => {
+    doc.setFont("helvetica", "normal").setFontSize(7.5).setTextColor(...gris);
+    doc.text(`${d.numero} · ${d.titulo}`, M, H - 10, { maxWidth: ancho - 20 });
+    doc.text(String(doc.getNumberOfPages()), A - M, H - 10, { align: "right" });
+  };
+  const saltar = (alto) => {
+    if (y + alto <= H - 18) return;
+    pie();
+    doc.addPage();
+    y = M;
+  };
+
+  const logo = await cargarLogo("logo.png");
+  if (logo) doc.addImage(logo, "PNG", M, y - 2, 16, 16);
+  doc.setFont("helvetica", "bold").setFontSize(12).setTextColor(...tinta);
+  doc.text("SEGURIDAD GARRIDOS", M + (logo ? 20 : 0), y + 4);
+  doc.setFont("helvetica", "normal").setFontSize(8).setTextColor(...gris);
+  doc.text("GLOBSEG SPA · RUT 78.095.104-4", M + (logo ? 20 : 0), y + 9);
+  doc.text(`Documento N° ${d.numero}`, A - M, y + 4, { align: "right" });
+  y += 22;
+
+  doc.setFont("helvetica", "bold").setFontSize(13).setTextColor(...tinta);
+  for (const linea of String(d.titulo).split("\n")) {
+    doc.text(linea, A / 2, y, { align: "center" });
+    y += 6;
+  }
+  y += 4;
+
+  // El cuerpo. Se respeta el salto de línea del texto guardado y se corta cada
+  // párrafo al ancho de la hoja; los títulos de cláusula van en negrita, que
+  // es como se leen en el papel que la empresa usa hoy.
+  doc.setTextColor(30, 30, 40);
+  for (const parrafo of String(d.cuerpo).split("\n")) {
+    if (!parrafo.trim()) { y += 3; continue; }
+    const esClausula = /^[A-ZÁÉÍÓÚÑ]{4,}[:.–\- ]/.test(parrafo.trim());
+    doc.setFont("helvetica", esClausula ? "bold" : "normal").setFontSize(9.5);
+    for (const linea of doc.splitTextToSize(parrafo, ancho)) {
+      saltar(5);
+      doc.text(linea, M, y);
+      y += 4.6;
+    }
+  }
+
+  // Las firmas. Si no caben, se van a una hoja nueva enteras: una firma
+  // separada de su nombre por un salto de página no se entiende.
+  if (d.firmas && d.firmas.length) {
+    y += 8;
+    saltar(46);
+    const porFila = 2;
+    const col = ancho / porFila;
+    let fila = y;
+    d.firmas.forEach((f, i) => {
+      const x = M + (i % porFila) * col;
+      if (i && i % porFila === 0) { fila += 44; saltar(46); }
+      try {
+        // Con compresión: sin ella jsPDF guarda el mapa de bits entero y un
+        // contrato de tres hojas con dos firmas pesaba más de un mega.
+        if (f.imagen) doc.addImage(f.imagen, "PNG", x, fila, 44, 16, undefined, "FAST");
+      } catch (_) {
+        // Una firma que el PDF no pueda dibujar no bota el documento entero:
+        // lo que importa abajo es el nombre, el RUT y la hora.
+      }
+      doc.setDrawColor(150).line(x, fila + 18, x + col - 10, fila + 18);
+      doc.setFont("helvetica", "bold").setFontSize(8.5).setTextColor(...tinta);
+      doc.text(String(f.nombre || ""), x, fila + 22, { maxWidth: col - 10 });
+      doc.setFont("helvetica", "normal").setFontSize(7.5).setTextColor(...gris);
+      doc.text(`${f.rut || ""}`, x, fila + 26);
+      doc.text(rolRotulo(f.rol), x, fila + 29.5);
+      doc.text(`Firmado el ${cuando(f.firmado_en)}`, x, fila + 33);
+    });
+    y = fila + 44;
+  }
+
+  // Lo que hace que esto sirva de respaldo, dicho en el propio documento.
+  saltar(18);
+  doc.setFont("helvetica", "normal").setFontSize(7).setTextColor(...gris);
+  for (const linea of doc.splitTextToSize(
+      "Firmado electrónicamente en el sistema de Seguridad Garridos. Firma electrónica "
+      + "simple conforme a la Ley 19.799. Cada firma quedó registrada con la cuenta que la "
+      + "puso, la fecha y hora del servidor y el aparato desde el que se firmó. "
+      + `Verificación del texto (SHA-256): ${d.cuerpo_hash || ""}`, ancho)) {
+    doc.text(linea, M, y);
+    y += 3.2;
+  }
+  pie();
+
+  if (op.descargar === false) return doc.output("blob");
+  doc.save(`${d.numero} ${d.titulo}.pdf`.replace(/[\\/:*?"<>|]/g, "-"));
+  return null;
+}
+
 const VISTAS = {
   panel: { rotulo: "Panel", pintar: pintarPanel, modulo: "facturacion" },
   calendario: { rotulo: "Calendario", pintar: pintarCalendario, modulo: "facturacion" },
@@ -5031,6 +5537,11 @@ const VISTAS = {
   personal: { rotulo: "Fichas", pintar: pintarPersonal, modulo: "rrhh" },
   sueldos: { rotulo: "Sueldos", pintar: pintarSueldos, modulo: "rrhh" },
   carga: { rotulo: "Carga masiva", pintar: pintarCarga, modulo: "rrhh" },
+  /* Dos permisos porque la usan dos áreas: RRHH emite los contratos y el
+     prevencionista hace firmar entregas de EPP y charlas, y no comparten
+     permiso. El servidor abre esta puerta con la misma regla. */
+  documentos: { rotulo: "Documentos", pintar: pintarDocumentos,
+                modulo: ["rrhh", "documentos"] },
 };
 
 /* Las pantallas, agrupadas por área de trabajo. Catorce pestañas en una fila
@@ -5048,7 +5559,7 @@ const GRUPOS = [
   { rotulo: "Cobranza",    vistas: ["panel", "calendario", "bitacora"] },
   { rotulo: "Comercial",   vistas: ["contactos", "cotizaciones"] },
   { rotulo: "Operaciones", vistas: ["servicio", "instalaciones", "extra", "libro", "trabajadores"] },
-  { rotulo: "Personas",    vistas: ["rrhh", "personal", "sueldos", "carga"] },
+  { rotulo: "Personas",    vistas: ["rrhh", "personal", "documentos", "sueldos", "carga"] },
 ];
 
 /** Los grupos con las secciones que esta cuenta puede ver; un grupo sin
@@ -5056,8 +5567,15 @@ const GRUPOS = [
  *  final, bajo "Otras": una pantalla nueva que alguien olvide agrupar tiene
  *  que salir mal puesta, no desaparecer sin que nadie se entere. */
 function navegacion() {
-  const puede = k => VISTAS[k] &&
-    (!VISTAS[k].modulo || estado.usuario.permisos.includes(VISTAS[k].modulo));
+  /* `modulo` puede ser uno o un arreglo. Un arreglo es «cualquiera de estos»:
+     lo pide la pantalla de documentos, que abren RRHH y prevención con
+     permisos distintos. */
+  const puede = k => {
+    const m = VISTAS[k] && VISTAS[k].modulo;
+    if (!VISTAS[k]) return false;
+    if (!m) return true;
+    return (Array.isArray(m) ? m : [m]).some(x => estado.usuario.permisos.includes(x));
+  };
   const agrupadas = new Set(GRUPOS.flatMap(g => g.vistas));
   const grupos = GRUPOS
     .map(g => ({ rotulo: g.rotulo, vistas: g.vistas.filter(puede) }))

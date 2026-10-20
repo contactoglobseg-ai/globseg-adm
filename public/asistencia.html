@@ -148,6 +148,31 @@ input:focus,select:focus{outline:none;border-color:var(--acento);
 .s-entrada{background:var(--verde-suave);color:var(--verde)}
 .s-salida{background:var(--ambar-suave);color:var(--ambar)}
 .vacio{padding:26px 16px;text-align:center;color:var(--texto-3);font-size:.9rem}
+
+/* ------------------------------------------------- documentos para firmar */
+/* El aviso de que hay algo que firmar va arriba del botón de marcar, pero no
+   compite con él: el botón grande sigue siendo lo que el guardia viene a
+   apretar. Acá solo tiene que enterarse. */
+.porfirmar{display:block;width:100%;text-align:left;margin:14px 0 0;
+  background:var(--sup);border:1px solid var(--acento);border-radius:var(--r);
+  padding:14px 16px;color:var(--texto);font:inherit;cursor:pointer}
+.porfirmar:active{transform:scale(.99)}
+.porfirmar b{display:block;font-size:.98rem;margin-bottom:3px}
+.porfirmar span{font-size:.84rem;color:var(--texto-2)}
+
+/* El documento se muestra entero. No hay «ver más»: lo que se firma es lo que
+   se leyó, y un resumen con un enlace sería firmar lo que no se leyó. */
+.documento{white-space:pre-wrap;line-height:1.6;font-size:.9rem;
+  padding:16px;color:var(--texto)}
+.firma-lienzo{display:block;width:100%;height:180px;touch-action:none;
+  background:var(--sup-2);border:1px dashed var(--borde);border-radius:var(--r);
+  color:var(--texto);margin-bottom:10px}
+.leido{display:flex;gap:10px;align-items:flex-start;padding:14px 16px;
+  font-size:.9rem;color:var(--texto-2);cursor:pointer}
+.leido input{margin-top:3px;width:20px;height:20px;flex:none}
+.firmado{padding:14px 16px;font-size:.88rem;color:var(--texto-2)}
+.volver{display:block;width:100%;margin:12px 0 0;background:none;border:0;
+  color:var(--acento);font:600 .9rem var(--cuerpo);padding:10px;cursor:pointer}
 .pie{margin-top:22px;text-align:center;color:var(--texto-3);font-size:.8rem;line-height:1.6}
 </style>
 </head>
@@ -184,6 +209,7 @@ input:focus,select:focus{outline:none;border-color:var(--acento);
 </main>
 
 <script src="apariencia.js"></script>
+<script src="firma.js"></script>
 <script>
 "use strict";
 
@@ -355,6 +381,10 @@ function pintarCambioClave({ nombre, usuario }, obligatorio) {
 let estado = null;
 let confirmando = null;      // la salida se pregunta dos veces
 let relojTimer = null;
+/* Los documentos que esta persona tiene que firmar. Se piden aparte de /yo
+   para que, si la migración de documentos no está aplicada, marcar turno siga
+   funcionando igual: marcar es lo que no puede fallar nunca. */
+let pendientes = [];
 
 function pintar() {
   const e = estado;
@@ -387,6 +417,13 @@ function pintar() {
           String(i.id) === String(elegida) ? " selected" : ""}>${esc(i.nombre)}</option>`).join("")}
       </select></label>
 
+    ${pendientes.length ? `
+    <button class="porfirmar" type="button" id="ver-doc">
+      <b>Tiene ${pendientes.length} ${pendientes.length === 1 ? "documento" : "documentos"} para firmar</b>
+      <span>${esc(pendientes[0].titulo)}${pendientes.length > 1
+        ? " y " + (pendientes.length - 1) + " más" : ""} · toque para leerlo y firmarlo</span>
+    </button>` : ""}
+
     <button class="marcar ${entrando ? "marcar--entrada" : "marcar--salida"}" id="marcar">
       ${entrando ? "Marcar entrada" : "Marcar salida"}
       <small>${entrando ? "Empieza su turno" : "Termina su turno"}</small>
@@ -415,6 +452,11 @@ function pintar() {
 
   $("#marcar").onclick = alMarcar;
   $("#mi-clave").onclick = () => pintarCambioClave(e.trabajador, false);
+  if ($("#ver-doc")) {
+    $("#ver-doc").onclick = () => verDocumento(pendientes[0].id)
+      .catch(err => { const r = $("#recado"); if (r) { r.className = "recado error";
+                       r.textContent = err.message; } });
+  }
   arrancarReloj();
 }
 
@@ -490,6 +532,110 @@ async function alMarcar() {
   }
 }
 
+// -------------------------------------------------- documentos para firmar
+/**
+ * Leer un documento y firmarlo con el dedo.
+ *
+ * El control de firmar va **después** del texto, no arriba: para llegar al
+ * recuadro hay que haber pasado por el documento entero. No se exige haber
+ * hecho scroll —la ley no pide demostrar eso, y en un teléfono sería una
+ * pelea— pero tampoco se pone el botón al alcance antes de mostrar lo que se
+ * está firmando.
+ *
+ * Lo que hace que esta firma valga: la persona entró con su propia cuenta y
+ * con la clave que ella misma eligió al primer ingreso. El servidor no deja
+ * usar ninguna ruta mientras la cuenta siga con el RUT de clave, así que acá
+ * no llega nadie que no haya elegido la suya.
+ */
+async function cargarPendientes() {
+  try {
+    const r = await pedir("/documentos");
+    pendientes = r.documentos || [];
+  } catch {
+    // Si la migración no está aplicada o la consulta falla, no hay documentos
+    // que mostrar y el guardia marca turno igual.
+    pendientes = [];
+  }
+}
+
+async function verDocumento(id) {
+  const { documento: d } = await pedir("/documentos/" + id);
+  clearInterval(relojTimer);
+
+  $("#app").innerHTML = `
+    <div class="caja">
+      <div class="caja__tit">${esc(d.titulo)}</div>
+      <div class="documento">${esc(d.cuerpo)}</div>
+    </div>
+
+    ${d.estado === "por_firmar" ? `
+    <div class="caja">
+      <div class="caja__tit">Su firma</div>
+      <label class="leido">
+        <input type="checkbox" id="leido">
+        <span>Leí el documento completo y estoy de acuerdo con lo que dice.</span>
+      </label>
+      <div style="padding:0 16px 16px">
+        <canvas class="firma-lienzo" id="lienzo"></canvas>
+        <p class="firmado" style="padding:0 0 10px">Firme con el dedo dentro del recuadro.</p>
+        <button class="bt bt--fino bt--chico" type="button" id="borrar-firma">
+          Borrar y firmar de nuevo</button>
+      </div>
+    </div>
+
+    <button class="marcar marcar--entrada" id="firmar">
+      Firmar
+      <small>Queda guardado con la fecha y la hora</small>
+    </button>
+    <p class="recado" id="recado-firma"></p>`
+    : `<div class="caja"><p class="firmado">Este documento ya está firmado.</p></div>`}
+
+    <p class="firmado" style="text-align:center">
+      Firma electrónica simple (Ley 19.799). Queda guardado quién firmó, desde qué
+      cuenta y a qué hora.</p>
+
+    <button class="volver" type="button" id="volver">← Volver</button>`;
+
+  $("#volver").onclick = async () => {
+    await cargarPendientes();
+    pintar();
+  };
+
+  if (d.estado !== "por_firmar") return;
+
+  const lienzo = Firma.conectar($("#lienzo"));
+  $("#borrar-firma").onclick = () => lienzo.limpiar();
+  $("#firmar").onclick = () => firmarDocumento(d, lienzo);
+}
+
+async function firmarDocumento(d, lienzo) {
+  const recado = $("#recado-firma");
+  const bt = $("#firmar");
+  const decirlo = (texto, clase) => {
+    recado.className = "recado" + (clase ? " " + clase : "");
+    recado.textContent = texto;
+  };
+
+  if (!$("#leido").checked) return decirlo("Marque que leyó el documento.", "error");
+  if (lienzo.vacio()) return decirlo("Falta su firma en el recuadro.", "error");
+
+  bt.disabled = true;
+  decirlo("Guardando su firma…");
+  try {
+    const r = await pedir(`/documentos/${d.id}/firma`, {
+      method: "POST",
+      body: JSON.stringify({ imagen: lienzo.png(), leido: true }),
+    });
+    decirlo(r.completo ? "Firmado. El documento quedó completo."
+                       : "Firmado. Falta la firma de la empresa.", "ok");
+    await cargarPendientes();
+    setTimeout(pintar, 1600);
+  } catch (e) {
+    bt.disabled = false;
+    decirlo(e.message, "error");
+  }
+}
+
 async function arrancar() {
   try {
     estado = await pedir("/yo");
@@ -498,6 +644,7 @@ async function arrancar() {
   }
   if (estado.debe_cambiar_clave) return pintarCambioClave(estado.trabajador, true);
 
+  await cargarPendientes();
   $("#cabecera").hidden = false;
   $("#salir").onclick = async () => {
     await pedir("/sesion", { method: "DELETE" }).catch(() => {});
@@ -507,7 +654,7 @@ async function arrancar() {
   // Al volver del bloqueo del teléfono, la hora y el turno se refrescan.
   document.addEventListener("visibilitychange", async () => {
     if (document.visibilityState !== "visible" || !estado) return;
-    try { estado = await pedir("/yo"); pintar(); } catch {}
+    try { estado = await pedir("/yo"); await cargarPendientes(); pintar(); } catch {}
   });
 }
 

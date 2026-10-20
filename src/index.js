@@ -22,6 +22,7 @@ import * as rrhh from './rrhh.js';
 import * as carga from './carga.js';
 import * as arch from './archivos.js';
 import * as ing from './ingreso.js';
+import * as docs from './documentos.js';
 import { redireccionHttps, cabecerasSeguridad, conCabeceras, soloHttps }
   from './seguridad.js';
 import { ipDe, huellaDe, revisarLimite, limpiarHuellas, MENSAJES as MENSAJES_LIMITE,
@@ -558,11 +559,13 @@ async function api(request, env, url, usuario) {
       if (p.get('grupo')) filtros.push(`tipo_grupo=eq.${encodeURIComponent(p.get('grupo'))}`);
       if (p.get('solo_activos') !== 'no') filtros.push('trabajador_activo=is.true');
       filtros.push('order=fecha_vencimiento.asc.nullslast');
-      const docs = await buscar(env, `v_documentos?${filtros.join('&')}`);
+      // `lista` y no `docs`: `docs` es el módulo de documentos generados, que se
+      // importa arriba, y una variable local con ese nombre lo tapa.
+      const lista = await buscar(env, `v_documentos?${filtros.join('&')}`);
       // El estado se filtra acá y no en la consulta porque lo calcula la vista
       // a partir de la fecha de hoy, y PostgREST no filtra por una expresión.
       const estado = p.get('estado');
-      return json({ documentos: estado ? docs.filter((d) => d.estado === estado) : docs });
+      return json({ documentos: estado ? lista.filter((d) => d.estado === estado) : lista });
     }
     if (sub === '/documentos' && metodo === 'POST') {
       const r = await rrhh.crearDocumento(env, usuario.usuario, cuerpo);
@@ -802,6 +805,119 @@ async function api(request, env, url, usuario) {
       const r = await carga.cargar(env, usuario.usuario, cuerpo);
       if (r.error) return error(r.error, r.status);
       return json(r);
+    }
+
+    return error('Ruta no encontrada', 404);
+  }
+
+  // ------------------------------------------ documentos desde plantilla
+  //
+  // La puerta es `documentos` **o** `rrhh`, y no uno solo, porque este módulo
+  // lo usan dos áreas distintas: el prevencionista (que tiene `documentos` y
+  // nada más) hace firmar entregas de EPP y charlas, y RRHH (que tiene `rrhh`
+  // y nada más) emite los contratos. Pedir un solo permiso dejaría a una de
+  // las dos afuera de su propio trabajo.
+  //
+  // Adentro hay una segunda puerta: una plantilla de clase `laboral` lleva el
+  // sueldo y la cuenta bancaria escritos en el cuerpo, así que **exige `rrhh`**
+  // aunque la cuenta haya entrado con `documentos`. Sin eso, operaciones vería
+  // los sueldos al generar un contrato.
+  if (ruta === '/documentos' || ruta.startsWith('/documentos/')) {
+    if (!puede(usuario, 'documentos') && !puede(usuario, 'rrhh')) {
+      return error('Sin acceso a este módulo', 403);
+    }
+    const sub = ruta.replace(/^\/documentos/, '') || '/';
+
+    // Si la migración no corrió, se dice con el nombre del archivo y el resto
+    // del sistema sigue andando. Nadie las aplica solo desde el 14-10-2026.
+    if (!(await docs.tablasListas(env))) {
+      return json({ sin_migracion: true, aviso: docs.avisoMigracion(),
+                    migracion: docs.MIGRACION }, 503);
+    }
+
+    const puedeLaboral = puede(usuario, 'rrhh');
+
+    if (sub === '/catalogos' && metodo === 'GET') {
+      const c = await docs.catalogos(env);
+      return json({
+        ...c,
+        // Las laborales se muestran igual, apagadas y con el motivo: esconder
+        // una pantalla hace que la gente crea que el sistema no la tiene.
+        puede_laboral: puedeLaboral,
+        personas: puedeLaboral
+          ? await buscar(env, 'v_personal?select=id,nombre,rut,cargo&activo=is.true&order=nombre.asc')
+          : [],
+      });
+    }
+
+    if (sub === '/' && metodo === 'GET') {
+      return json({ documentos: await docs.listar(env, {
+        trabajador_id: url.searchParams.get('trabajador_id'),
+        estado: url.searchParams.get('estado'),
+      }) });
+    }
+
+    // Vista previa: arma y devuelve, no escribe. La oficina tiene que poder
+    // leer el contrato entero antes de congelarlo, porque después no se edita.
+    if (sub === '/vista-previa' && metodo === 'POST') {
+      const r = await docs.generar(env, usuario.usuario, cuerpo,
+                                   { guardar: false, puedeLaboral });
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+
+    if (sub === '/' && metodo === 'POST') {
+      const r = await docs.generar(env, usuario.usuario, cuerpo,
+                                   { guardar: true, puedeLaboral });
+      // Un documento con campos en blanco vuelve con la vista previa adentro,
+      // para que la pantalla pueda mostrar qué quedó sin llenar en vez de solo
+      // decir que no se pudo.
+      if (r.error) return json({ error: r.error, vista_previa: r.vista_previa }, r.status);
+      return json(r, 201);
+    }
+
+    const mDoc = sub.match(/^\/(\d+)(\/[a-z]+)?$/);
+    if (mDoc) {
+      const id = Number(mDoc[1]);
+      const accion = mDoc[2] || '';
+      const d = await docs.ver(env, id);
+      if (!d) return error('Ese documento no existe', 404);
+      if (d.clase === 'laboral' && !puedeLaboral) {
+        return error('Los documentos laborales los ve Recursos Humanos', 403);
+      }
+
+      if (!accion && metodo === 'GET') return json({ documento: d });
+
+      // La firma de la empresa. Va con el nombre y el RUT del representante
+      // legal, que salen de `datos_empresa`, y queda anotado qué cuenta la
+      // puso: quien firma por la empresa la obliga, y eso tiene que tener
+      // nombre. Ajustar quién puede hacerlo es parte de los permisos por
+      // persona, que lleva otra sesión.
+      if (accion === '/firma' && metodo === 'POST') {
+        const empresa = await docs.catalogos(env);
+        const dato = (c) => empresa.empresa.find((e) => e.codigo === c)?.valor || null;
+        const r = await docs.firmar(env, request, id, {
+          rol: 'empleador', origen: 'panel', quien: usuario.usuario,
+          nombre: dato('representante'), rut: dato('representante_rut'),
+        }, cuerpo);
+        if (r.error) return error(r.error, r.status);
+        return json(r, 201);
+      }
+
+      if (accion === '/anular' && metodo === 'POST') {
+        const r = await docs.anular(env, usuario.usuario, id, cuerpo.motivo);
+        if (r.error) return error(r.error, r.status);
+        return json(r);
+      }
+
+      // Deja el documento firmado colgando de la ficha de la persona. El PDF
+      // lo sube después la pantalla por /rrhh/documentos/:id/archivo, que ya
+      // existe y ya revisa los bytes: no hay un segundo almacenamiento.
+      if (accion === '/archivar' && metodo === 'POST') {
+        const r = await docs.archivar(env, usuario.usuario, id);
+        if (r.error) return error(r.error, r.status);
+        return json(r, 201);
+      }
     }
 
     return error('Ruta no encontrada', 404);
@@ -1366,6 +1482,54 @@ async function apiAsistencia(request, env, url) {
     }, r.repetida ? 200 : 201);
   }
 
+  // ------------------------------------------------ documentos por firmar
+  //
+  // Acá el guardia lee y firma sus contratos. Que esté detrás del mismo portón
+  // que marcar turno no es casualidad: el bloqueo de más arriba impide usar
+  // cualquier ruta mientras la cuenta siga con la clave inicial, y **eso es lo
+  // que hace que esta firma valga algo**. Si el trabajador todavía anda con el
+  // RUT de clave, la cuenta la podría estar usando un compañero, y una firma
+  // puesta así no se podría defender ante nadie.
+  //
+  // Si la migración no corrió, se dice y el guardia sigue marcando turno igual:
+  // marcar es lo que no puede fallar nunca.
+  if (ruta === '/documentos' && metodo === 'GET') {
+    if (!(await docs.tablasListas(env))) {
+      return json({ documentos: [], sin_migracion: true, aviso: docs.avisoMigracion() });
+    }
+    return json({ documentos: await docs.porFirmarDe(env, trabajador.id) });
+  }
+
+  const mFirma = ruta.match(/^\/documentos\/(\d+)$/);
+  if (mFirma && metodo === 'GET') {
+    if (!(await docs.tablasListas(env))) return error(docs.avisoMigracion(), 503);
+    const d = await docs.ver(env, Number(mFirma[1]));
+    if (!d || d.trabajador_id !== trabajador.id) {
+      return error('Ese documento no existe', 404);
+    }
+    // Se manda el cuerpo entero: lo que se firma es lo que se lee, y un
+    // resumen o un enlace a «ver más» sería firmar lo que no se leyó.
+    return json({
+      documento: {
+        id: d.id, numero: d.numero, titulo: d.titulo, cuerpo: d.cuerpo,
+        estado: d.estado, por_confirmar: d.por_confirmar,
+        creado_en: d.creado_en,
+        firmas: d.firmas.map((f) => ({ rol: f.rol, nombre: f.nombre, firmado_en: f.firmado_en })),
+      },
+    });
+  }
+
+  const mPoner = ruta.match(/^\/documentos\/(\d+)\/firma$/);
+  if (mPoner && metodo === 'POST') {
+    if (!(await docs.tablasListas(env))) return error(docs.avisoMigracion(), 503);
+    const r = await docs.firmar(env, request, Number(mPoner[1]), {
+      rol: 'trabajador', origen: 'asistencia',
+      quien: trabajador.usuario, trabajador,
+    }, cuerpo);
+    if (r.error) return error(r.error, r.status);
+    return json(r, 201);
+  }
+
   return error('Ruta no encontrada', 404);
 }
 
@@ -1379,7 +1543,9 @@ async function revisarTablas(env) {
                    'ciclos', 'extras', 'bitacora', 'cotizaciones', 'cotizacion_items',
                    'contactos', 'trabajadores', 'marcas',
                    'contratos', 'documentos_trabajador', 'ausencias',
-                   'tipos_documento', 'parametros_rrhh', 'afps', 'tramos_impuesto']) {
+                   'tipos_documento', 'parametros_rrhh', 'afps', 'tramos_impuesto',
+                   'plantillas_documento', 'bloques_plantilla', 'documentos_generados',
+                   'firmas_documento', 'datos_empresa']) {
     try {
       await buscar(env, `${t}?select=count&limit=1`);
       r[t] = true;
@@ -1450,6 +1616,14 @@ async function revisarTablas(env) {
     r.documentos_con_archivo = false;
   }
   r.bucket_documentos = await arch.bucketListo(env);
+  // La calle de la instalación llegó con las plantillas de contrato: sin ella
+  // el contrato sale diciendo la comuna pero no la dirección.
+  try {
+    await buscar(env, 'instalaciones?select=direccion&limit=1');
+    r.instalaciones_con_direccion = true;
+  } catch {
+    r.instalaciones_con_direccion = false;
+  }
   // La ficha de ingreso por enlace. Sin estas dos, el panel y el libro siguen
   // andando igual: lo que no existe es generar enlaces, y la pantalla lo dice
   // en vez de reventar.
@@ -1463,7 +1637,7 @@ async function revisarTablas(env) {
   }
   // Las vistas pueden faltar aunque las tablas estén: se crean al final de la
   // migración y son de las que la pantalla de RRHH consulta primero.
-  for (const v of ['v_personal', 'v_documentos']) {
+  for (const v of ['v_personal', 'v_documentos', 'v_documentos_generados']) {
     try {
       await buscar(env, `${v}?select=id&limit=1`);
       r[v] = true;
