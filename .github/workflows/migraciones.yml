@@ -1,0 +1,66 @@
+# Aplica las migraciones de supabase/migrations a la base de producción.
+#
+# Existe porque la integración de GitHub de Supabase dejó de aplicarlas el
+# 14-10-2026 y no avisó: el Worker se seguía desplegando, así que el código
+# llegaba a producción y la base se quedaba atrás. Una función se creía
+# desplegada porque el código estaba arriba. Esto falla a la vista —el commit
+# queda con una marca roja y GitHub manda correo a quien hizo el push—, que es
+# toda la diferencia con lo anterior.
+#
+# No reemplaza a /api/diagnostico: lo hace innecesario como rutina, no como
+# comprobación después de un cambio grande.
+
+name: Migraciones
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/migrations/**'
+  # Para poder correrlo a mano después de reparar el historial, sin tener que
+  # inventar un commit.
+  workflow_dispatch:
+
+# Lo único que hace es leer el repositorio y escribir en la base. No necesita
+# tocar el repositorio ni nada de GitHub, así que no se le da permiso: el
+# token de la corrida queda de solo lectura. Importa porque acá adentro vive
+# la cadena de conexión a la base de producción.
+permissions:
+  contents: read
+
+# Dos pasadas a la vez sobre la misma base se pisan: la segunda encuentra a
+# medias lo que la primera está escribiendo. Se encolan.
+concurrency:
+  group: migraciones-produccion
+  cancel-in-progress: false
+
+jobs:
+  aplicar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      # Primero se mira y después se escribe, igual que la carga masiva de
+      # RRHH. Si el historial remoto está descuadrado, se ve acá —en la lista
+      # de pendientes— y no a mitad de la escritura.
+      - name: Qué hay aplicado y qué falta
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: supabase migration list --db-url "$SUPABASE_DB_URL"
+
+      - name: Aplicar lo que falte
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: supabase db push --db-url "$SUPABASE_DB_URL"
+
+      # Deja en el registro de la corrida cómo quedó. Sirve para contestar
+      # "¿esto entró?" meses después sin abrir el panel de Supabase.
+      - name: Cómo quedó
+        if: always()
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: supabase migration list --db-url "$SUPABASE_DB_URL"

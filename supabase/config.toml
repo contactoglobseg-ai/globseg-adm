@@ -1,0 +1,12 @@
+# Mínimo a propósito: solo el identificador del proyecto.
+#
+# `supabase init` genera un archivo largo con puertos, auth y storage para la
+# réplica local. Acá no se usa esa réplica —se levanta Postgres y PostgREST a
+# mano, ver el CLAUDE.md— y un archivo con configuración de auth y storage es
+# algo que una integración puede intentar aplicarle al proyecto remoto. Lo que
+# no está escrito no se puede empujar por error a producción.
+#
+# Lo que sí hace falta es que exista: la CLI de Supabase y la integración de
+# GitHub reconocen la carpeta como proyecto por este archivo, y hasta hoy el
+# repositorio tenía `supabase/migrations/` sin ningún `config.toml`.
+project_id = "hjoljdjjsobweqbvlijr"
