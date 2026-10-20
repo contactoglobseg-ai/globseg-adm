@@ -28,7 +28,7 @@
  * daño que el límite existe para evitar.
  */
 
-import { buscar, actualizar } from './datos.js';
+import { buscar, actualizar, insertar, borrar } from './datos.js';
 
 const HORA = 3600 * 1000;
 const DIA = 24 * HORA;
@@ -157,6 +157,103 @@ export const MENSAJES = {
   global: 'Estamos recibiendo demasiados mensajes en este momento. ' +
           'Intente de nuevo más tarde.',
 };
+
+// =========================================================== otras puertas
+/**
+ * El mismo tope, para las rutas públicas que no escriben en `contactos`.
+ *
+ * La primera es la ficha de ingreso (`/api/ficha/*`), que no tiene sesión y
+ * toca la tabla de personas. Se cuenta contra `intentos_publicos`, que existe
+ * solo para esto: las filas de `fichas_ingreso` las crea la oficina, así que
+ * ahí no hay nada que contar.
+ *
+ * Los topes van altos a propósito. Lo que de verdad protege esa puerta es el
+ * token: 256 bits al azar no se adivinan probando, así que el límite no está
+ * para frenar un ataque de fuerza bruta sino el ruido. Y el daño caro acá es
+ * el otro: dejar afuera a alguien que empieza el lunes y está llenando su
+ * ficha desde el teléfono, con la señal yendo y viniendo.
+ *
+ * Cuarenta por hora porque cuenta cada intento, también los que el formulario
+ * rechazó: alguien tecleando su RUT y su número de cuenta en una pantalla de
+ * cinco pulgadas se equivoca varias veces, y esa persona es justamente a quien
+ * esto tiene que dejar entrar. Llenar la ficha entera son cinco o seis
+ * llamadas; cuarenta deja espacio para equivocarse mucho antes de estorbar.
+ */
+export const TOPES_FICHA = {
+  ipHora: 40,
+  ipDia: 120,
+  globalHora: 200,
+};
+
+/** Anota el intento con el que se cuenta. */
+export const anotarIntento = (env, puerta, huella) =>
+  insertar(env, 'intentos_publicos', { puerta, huella: huella || null });
+
+/**
+ * ¿Se acepta este intento en esta puerta? Misma forma que `revisarLimite`.
+ *
+ * Quien llama deja pasar si esto tira error, por lo mismo de siempre: si la
+ * migración no corrió o la base no contesta la consulta del límite, negar un
+ * ingreso bueno sería causar el daño que el límite existe para evitar.
+ */
+export async function revisarLimitePuerta(env, puerta, huella, topes = TOPES_FICHA) {
+  const ahora = Date.now();
+  const claveIp = huella ? `${puerta}:ip:${huella}` : null;
+  const claveGlobal = `${puerta}:global`;
+
+  for (const clave of [claveIp, claveGlobal]) {
+    if (!clave) continue;
+    const hasta = bloqueados.get(clave);
+    if (hasta === undefined) continue;
+    if (hasta <= ahora) { bloqueados.delete(clave); continue; }
+    return rechazo(clave === claveGlobal ? 'global' : 'ip', hasta, ahora);
+  }
+
+  const base = `intentos_publicos?select=creado_en&puerta=eq.${encodeURIComponent(puerta)}`;
+
+  if (huella) {
+    const filas = await buscar(env,
+      `${base}&huella=eq.${encodeURIComponent(huella)}` +
+      `&creado_en=gte.${new Date(ahora - DIA).toISOString()}` +
+      `&order=creado_en.desc&limit=${topes.ipDia + 1}`);
+    const tiempos = filas.map(f => Date.parse(f.creado_en)).sort((a, b) => a - b);
+    const enHora = tiempos.filter(t => t > ahora - HORA);
+    if (enHora.length >= topes.ipHora) {
+      return bloquear('ip', claveIp, enHora[enHora.length - topes.ipHora] + HORA, ahora);
+    }
+    if (tiempos.length >= topes.ipDia) {
+      return bloquear('ip', claveIp, tiempos[tiempos.length - topes.ipDia] + DIA, ahora);
+    }
+  }
+
+  const globales = await buscar(env,
+    `${base}&creado_en=gte.${new Date(ahora - HORA).toISOString()}` +
+    `&order=creado_en.asc&limit=${topes.globalHora + 1}`);
+  if (globales.length >= topes.globalHora) {
+    const t = Date.parse(globales[globales.length - topes.globalHora].creado_en);
+    return bloquear('global', claveGlobal, t + HORA, ahora);
+  }
+
+  return { ok: true };
+}
+
+/** Lo que se le dice a quien está llenando su ficha y se topó con el límite. */
+export const MENSAJES_PUERTA = {
+  ip: 'Abrió este enlace demasiadas veces seguidas. Espere un rato y vuelva a ' +
+      'intentarlo; si no resulta, avísele a la oficina.',
+  global: 'En este momento no podemos atender el formulario. Intente de nuevo ' +
+          'más tarde.',
+};
+
+/**
+ * Borra los intentos que ya no sirven para contar. Corre después de una ficha
+ * recibida, nunca después de un rechazo: así un script no puede provocarla en
+ * serie, igual que con las huellas de contacto.
+ */
+export async function limpiarIntentos(env) {
+  const limite = new Date(Date.now() - DIAS_HUELLA * DIA).toISOString();
+  await borrar(env, `intentos_publicos?creado_en=lt.${limite}`);
+}
 
 /**
  * Borra las huellas que ya no sirven para contar.

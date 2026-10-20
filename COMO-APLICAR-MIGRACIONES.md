@@ -3,9 +3,19 @@
 Esto reemplaza a "la integración de Supabase las corre sola", que dejó de ser
 cierto el 14-10-2026.
 
+> **Al 20-10-2026 las dos migraciones de RRHH ya están aplicadas en
+> producción**: `/api/diagnostico` responde `true` en todas sus tablas y
+> vistas, y también en `bucket_documentos`. Lo de más abajo se deja porque
+> explica el problema y los dos caminos para resolverlo; lo que no se sabe es
+> **cuál de los dos quedó andando**. La migración siguiente,
+> `20261020120000_ficha_ingreso.sql` (ficha de ingreso por enlace), sirve de
+> prueba: si a los pocos minutos del push `fichas_ingreso` e
+> `intentos_publicos` siguen en `false`, hay que pegarla a mano en el SQL
+> Editor y entonces no quedó andando ninguno.
+
 ## Lo primero: hoy RRHH no existe en la base
 
-`https://adm.seggarridos.com/api/diagnostico` responde, al 18-10-2026:
+`https://adm.seggarridos.com/api/diagnostico` respondía, al 18-10-2026:
 
 ```
 contratos: false          tipos_documento: false     ficha_rrhh: false

@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ficha de ingreso · Seguridad Garridos</title>
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#F5F5F7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="logo.png">
+<script>
+// Antes de pintar nada: si hay tema o tamaño guardados, se aplican ya. Si algo
+// falla acá, la página igual carga con los valores por defecto. Sigue inline y
+// duplicado en las tres páginas a propósito: un archivo aparte se baja después
+// y devuelve el destello blanco que esto existe para evitar.
+try {
+  var t = localStorage.getItem("globseg.tema");
+  if (t === "claro" || t === "oscuro") document.documentElement.dataset.tema = t;
+  var e = localStorage.getItem("globseg.escala");
+  if (e) document.documentElement.style.setProperty("--escala", e);
+} catch (_) {}
+</script>
+<link rel="stylesheet" href="apariencia.css">
+<style>
+/* La ficha de ingreso que llena el propio trabajador.
+   ------------------------------------------------------------------------
+   Esto se llena UNA vez, desde un teléfono, muchas veces antes del primer día
+   y a veces desde el pueblo donde hay señal. Las decisiones de acá salen de
+   eso y de ninguna otra cosa:
+
+   · Una sola columna. No hay rejilla de dos campos ni en pantalla ancha: el
+     formulario se lee de arriba abajo y nadie se salta un campo porque quedó
+     a la derecha de otro.
+   · Los campos miden 16px de letra como mínimo. Con menos, Safari hace zoom
+     solo al tocarlos y deja la página corrida hacia un lado.
+   · Nada es obligatorio salvo el nombre y el RUT. De lo demás, lo que no
+     sepan se deja en blanco y lo completa RRHH: un formulario que no deja
+     avanzar hasta llenar veinte campos es un formulario que nadie termina.
+   · El botón de enviar vive pegado abajo. En un formulario largo, tener que
+     scrollear hasta el final para encontrarlo es la última oportunidad de
+     abandonar.
+   Los tokens de color y tamaño son los de apariencia.css, iguales que el
+   panel y el libro de asistencia. */
+
+.barra{background:var(--cromo);color:var(--texto);
+  -webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);
+  border-bottom:1px solid var(--cromo-borde);
+  padding:7px clamp(12px,2vw,20px);padding-top:calc(7px + env(safe-area-inset-top,0px));
+  display:flex;align-items:center;gap:12px;min-height:50px;position:sticky;top:0;z-index:20}
+.marca{display:flex;align-items:center;gap:10px;margin-right:auto;min-width:0}
+.marca img{width:28px;height:28px}
+.marca b{font-family:var(--marca);font-size:1.05rem;text-transform:uppercase;letter-spacing:.02em}
+.marca span{font-size:.62rem;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--texto-3);display:block}
+
+.ajustes{display:flex;align-items:center;gap:6px}
+.segmento{display:inline-flex;background:var(--sup-3);border-radius:980px;padding:2px;gap:2px}
+.segmento button{border:0;background:none;cursor:pointer;color:var(--texto-2);
+  font:500 .72rem var(--cuerpo);padding:5px 8px;border-radius:980px;line-height:1.2;
+  min-width:26px;transition:background-color .15s,color .15s}
+.segmento button[aria-pressed="true"]{background:var(--sup);color:var(--texto);
+  font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.12)}
+.segmento--letra button:nth-child(1){font-size:.7rem}
+.segmento--letra button:nth-child(2){font-size:.82rem}
+.segmento--letra button:nth-child(3){font-size:.95rem}
+.segmento--letra button:nth-child(4){font-size:1.08rem}
+@media (max-width:620px){
+  .barra{gap:8px;padding:6px 12px;padding-top:calc(6px + env(safe-area-inset-top,0px))}
+  .marca img{width:24px;height:24px}
+  .marca>span>span{display:none}
+  .segmento button{padding:4px 7px;font-size:.68rem;min-width:22px}
+  .segmento--tema{display:none}   /* en el teléfono manda el tema del sistema */
+}
+
+main{padding:clamp(14px,2.5vw,26px);max-width:560px;margin-inline:auto;
+  padding-bottom:calc(120px + env(safe-area-inset-bottom,0px))}
+.cargando{padding:60px 0;text-align:center;color:var(--texto-2)}
+
+.saludo{padding:4px 2px 18px}
+.saludo h1{font:600 1.5rem/1.2 var(--cuerpo);letter-spacing:-.02em;margin:0 0 8px}
+.saludo p{margin:0;color:var(--texto-2);font-size:.95rem;line-height:1.55}
+.saludo b{color:var(--texto)}
+
+.grupo{background:var(--sup);border:1px solid var(--borde-suave);border-radius:var(--r);
+  box-shadow:var(--sombra);margin-bottom:14px;overflow:hidden}
+.grupo>h2{margin:0;padding:14px 16px 2px;font:600 .95rem var(--cuerpo);letter-spacing:-.01em}
+.grupo>.pista{margin:0;padding:2px 16px 0;color:var(--texto-3);font-size:.82rem;line-height:1.45}
+.grupo>.campos{padding:12px 16px 16px;display:flex;flex-direction:column;gap:13px}
+
+label.campo{display:flex;flex-direction:column;gap:5px;min-width:0}
+label.campo>span{font-weight:500;font-size:.84rem;color:var(--texto-2)}
+label.campo>span .req{color:var(--rojo)}
+input,select,textarea{font:400 1rem var(--cuerpo);color:var(--texto);background:var(--sup);
+  border:1px solid var(--borde);border-radius:var(--r-s);padding:11px 12px;width:100%;
+  caret-color:var(--acento);transition:border-color .15s,box-shadow .15s}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--acento);
+  box-shadow:0 0 0 3.5px var(--acento-suave)}
+input[readonly]{background:var(--sup-3);color:var(--texto-2)}
+textarea{min-height:88px;resize:vertical}
+.pista-campo{font-size:.8rem;color:var(--texto-3);line-height:1.4}
+
+/* El pie pegado. Mientras se escribe, el botón tiene que estar a un pulgar. */
+.pie{position:fixed;left:0;right:0;bottom:0;z-index:15;
+  background:var(--cromo);border-top:1px solid var(--cromo-borde);
+  -webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);
+  padding:12px clamp(12px,2.5vw,26px);
+  padding-bottom:calc(12px + env(safe-area-inset-bottom,0px))}
+.pie__caja{max-width:560px;margin-inline:auto;display:flex;flex-direction:column;gap:8px}
+.bt{display:inline-flex;align-items:center;justify-content:center;gap:7px;
+  font:600 1rem var(--cuerpo);letter-spacing:-.01em;padding:14px 18px;border-radius:980px;
+  border:1px solid transparent;cursor:pointer;background:var(--btn);color:var(--btn-texto);
+  width:100%;transition:background-color .15s,transform .08s}
+.bt:hover{background:var(--btn-alta)}
+.bt:active{transform:scale(.985)}
+.bt[disabled]{opacity:.45;cursor:not-allowed}
+.bt[disabled]:active{transform:none}
+.bt--fino{background:var(--sup-3);color:var(--acento);font-size:.9rem;padding:10px 16px}
+
+.mensaje{font-size:.88rem;line-height:1.45;text-align:center;min-height:0}
+.mensaje.error{color:var(--rojo);font-weight:500}
+.mensaje.ok{color:var(--verde);font-weight:600}
+
+.pared{max-width:460px;margin:48px auto;padding:26px 22px;text-align:center;
+  background:var(--sup);border:1px solid var(--borde-suave);border-radius:16px;
+  box-shadow:var(--sombra-alta)}
+.pared img{width:52px;height:52px;margin-bottom:14px}
+.pared h1{font:600 1.25rem var(--cuerpo);letter-spacing:-.02em;margin:0 0 10px}
+.pared p{margin:0 0 8px;color:var(--texto-2);font-size:.95rem;line-height:1.6}
+.pared .grande{font-size:2.6rem;line-height:1;margin-bottom:10px}
+</style>
+</head>
+<body>
+
+<header class="barra">
+  <div class="marca">
+    <img src="logo.png" alt="">
+    <span>
+      <b>Ficha de ingreso</b>
+      <span>Seguridad Garridos</span>
+    </span>
+  </div>
+  <div class="ajustes">
+    <div class="segmento segmento--tema" role="group" aria-label="Apariencia" id="seg-tema">
+      <button type="button" data-tema="claro">Claro</button>
+      <button type="button" data-tema="oscuro">Oscuro</button>
+      <button type="button" data-tema="auto">Auto</button>
+    </div>
+    <div class="segmento segmento--letra" role="group" aria-label="Tamaño de la letra" id="seg-letra">
+      <button type="button" data-escala="0.875" aria-label="Letra chica">A</button>
+      <button type="button" data-escala="1" aria-label="Letra normal">A</button>
+      <button type="button" data-escala="1.125" aria-label="Letra grande">A</button>
+      <button type="button" data-escala="1.25" aria-label="Letra muy grande">A</button>
+    </div>
+  </div>
+</header>
+
+<main id="app">
+  <p class="cargando">Abriendo su ficha…</p>
+</main>
+
+<script src="apariencia.js"></script>
+<script>
+"use strict";
+
+/* Nada de lo que se declare acá puede llamarse igual que algo de
+   apariencia.js: los dos son <script> clásicos y comparten ámbito global, así
+   que un nombre repetido deja la página EN BLANCO, no a medias. */
+
+const $ = (s, r = document) => r.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+/* El token viaja en el fragmento (#) y no en la ruta ni en el query: el
+   navegador no manda el fragmento al servidor, así que no queda escrito en
+   ningún registro de acceso ni se escapa en la cabecera Referer. Acá se lee y
+   se manda en el cuerpo de cada llamada. */
+const TOKEN = decodeURIComponent((location.hash || "").replace(/^#/, "").trim());
+
+async function pedir(ruta, cuerpo) {
+  const r = await fetch("/api/ficha" + ruta, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...cuerpo, token: TOKEN }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || "No pudimos conectarnos. Revise su señal e intente de nuevo.");
+  return d;
+}
+
+// ------------------------------------------------------------- RUT
+/* El RUT se escribe de mil formas y todas tienen que servir. Acá solo se
+   ordena para que se vea bien; quien decide si es válido es el servidor, que
+   es el que además revisa el dígito verificador. */
+function rutLindo(v) {
+  const t = String(v || "").toUpperCase().replace(/[^0-9K]/g, "");
+  if (t.length < 2) return t;
+  const cuerpo = t.slice(0, -1), dv = t.slice(-1);
+  return cuerpo.replace(/\B(?=(\d{3})+(?!\d))/g, ".") + "-" + dv;
+}
+
+// ------------------------------------------------------------- pantallas
+function pared(icono, titulo, texto, extra = "") {
+  $("#app").innerHTML = `<div class="pared">
+    <div class="grande">${icono}</div>
+    <h1>${esc(titulo)}</h1>
+    <p>${texto}</p>${extra}</div>`;
+}
+
+const CAMPO = (nombre, rotulo, extra = {}) => {
+  const { tipo = "text", pista = "", req = false, modo = "", auto = "", place = "" } = extra;
+  return `<label class="campo"><span>${esc(rotulo)}${req ? ' <i class="req">*</i>' : ""}</span>
+    <input type="${tipo}" name="${nombre}"${req ? " required" : ""}
+      ${modo ? `inputmode="${modo}"` : ""} ${auto ? `autocomplete="${auto}"` : 'autocomplete="off"'}
+      ${place ? `placeholder="${esc(place)}"` : ""}>
+    ${pista ? `<span class="pista-campo">${pista}</span>` : ""}</label>`;
+};
+
+function pintarFormulario(d) {
+  const afps = d.afps.length ? d.afps : ["Capital", "Cuprum", "Habitat", "Modelo", "PlanVital", "ProVida", "Uno"];
+  const vence = new Date(d.vence_en);
+  const diaVence = isNaN(vence) ? null
+    : new Intl.DateTimeFormat("es-CL", { day: "numeric", month: "long" }).format(vence);
+
+  $("#app").innerHTML = `
+    <div class="saludo">
+      <h1>Hola, ${esc((d.nombre_referencia || "").split(" ")[0] || "")}</h1>
+      <p>Esto es para tener su ficha lista antes del primer turno, y para no andar
+        pidiéndole los datos por teléfono. Son unos minutos.<br>
+        <b>Lo único que no puede quedar en blanco es su nombre y su RUT.</b>
+        Lo que no sepa de memoria —el número de cuenta, el plan de la isapre— déjelo
+        vacío y lo vemos después.
+        ${diaVence ? `<br>Este enlace sirve hasta el ${esc(diaVence)}, y una sola vez.` : ""}</p>
+    </div>
+
+    <form id="f" novalidate>
+      <section class="grupo">
+        <h2>Quién es usted</h2>
+        <div class="campos">
+          ${CAMPO("nombres", "Nombres", { req: true, auto: "given-name" })}
+          ${CAMPO("apellido_paterno", "Apellido paterno", { req: true, auto: "family-name" })}
+          ${CAMPO("apellido_materno", "Apellido materno")}
+          ${d.rut_fijo
+            ? `<label class="campo"><span>RUT</span>
+                 <input value="${esc(d.rut_fijo)}" readonly>
+                 <span class="pista-campo">Este enlace está a su nombre, así que el RUT ya viene puesto.</span></label>`
+            : CAMPO("rut", "RUT", { req: true, place: "12.345.678-9",
+                pista: "Con puntos o sin ellos, da lo mismo." })}
+          ${CAMPO("fecha_nacimiento", "Fecha de nacimiento", { tipo: "date" })}
+          <label class="campo"><span>Sexo</span><select name="sexo">
+            <option value="">Prefiero no decirlo</option>
+            <option value="F">Femenino</option>
+            <option value="M">Masculino</option>
+            <option value="X">Otro</option></select></label>
+          ${CAMPO("nacionalidad", "Nacionalidad", { place: "Chilena" })}
+          ${CAMPO("estado_civil", "Estado civil", { place: "Soltero, casado…" })}
+          ${CAMPO("nivel_estudios", "Hasta dónde estudió", { place: "Enseñanza media completa" })}
+        </div>
+      </section>
+
+      <section class="grupo">
+        <h2>Dónde ubicarlo</h2>
+        <p class="pista">El teléfono es por el que lo vamos a llamar para el turno.</p>
+        <div class="campos">
+          ${CAMPO("telefono", "Teléfono", { modo: "tel", auto: "tel", place: "+56 9 ..." })}
+          ${CAMPO("email", "Correo", { tipo: "email", modo: "email", auto: "email" })}
+          ${CAMPO("direccion", "Dirección", { auto: "street-address", place: "Calle y número" })}
+          ${CAMPO("comuna", "Comuna", { auto: "address-level2" })}
+          ${CAMPO("region", "Región")}
+        </div>
+      </section>
+
+      <section class="grupo">
+        <h2>Previsión</h2>
+        <p class="pista">Esto es lo que se declara todos los meses en Previred. Si se
+          equivoca acá, se equivoca su liquidación, así que revíselo.</p>
+        <div class="campos">
+          <label class="campo"><span>AFP</span><select name="afp">
+            <option value="">No sé / no tengo</option>
+            ${afps.map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join("")}</select></label>
+          <label class="campo"><span>¿Recibe pensión de vejez o invalidez?</span>
+            <select name="jubilado">
+              <option value="false">No</option>
+              <option value="true">Sí</option></select>
+            <span class="pista-campo">Si recibe pensión, no se le descuenta AFP (DL 3.500).</span></label>
+          <label class="campo"><span>Sistema de salud</span><select name="salud_sistema">
+            <option value="">No sé</option>
+            <option value="fonasa">Fonasa</option>
+            <option value="isapre">Isapre</option></select></label>
+          ${CAMPO("salud_isapre", "¿Cuál isapre?", { pista: "Solo si está en isapre." })}
+          ${CAMPO("salud_plan_uf", "Plan pactado, en UF", { modo: "decimal", place: "3,5",
+            pista: "Sale en su plan. Si no lo tiene a mano, déjelo en blanco." })}
+        </div>
+      </section>
+
+      <section class="grupo">
+        <h2>Dónde le pagamos</h2>
+        <p class="pista">La cuenta tiene que estar a su nombre.</p>
+        <div class="campos">
+          ${CAMPO("banco", "Banco", { place: "BancoEstado" })}
+          ${CAMPO("cuenta_tipo", "Tipo de cuenta", { place: "Cuenta RUT, vista, corriente" })}
+          ${CAMPO("cuenta_numero", "N° de cuenta", { modo: "numeric" })}
+        </div>
+      </section>
+
+      <section class="grupo">
+        <h2>A quién avisamos si pasa algo</h2>
+        <p class="pista">En un parque a cuarenta kilómetros del pueblo, esto es lo
+          primero que se busca. Es el dato que nunca está anotado.</p>
+        <div class="campos">
+          ${CAMPO("emergencia_nombre", "Nombre")}
+          ${CAMPO("emergencia_telefono", "Teléfono", { modo: "tel" })}
+          ${CAMPO("emergencia_parentesco", "Qué es suyo", { place: "Esposa, hijo, hermano…" })}
+        </div>
+      </section>
+
+      <section class="grupo">
+        <h2>Para el uniforme</h2>
+        <div class="campos">
+          ${CAMPO("talla_uniforme", "Talla de uniforme", { place: "S, M, L, XL" })}
+          ${CAMPO("talla_zapato", "Talla de zapato", { modo: "numeric", place: "42" })}
+          ${CAMPO("licencia_conducir", "Licencia de conducir", { place: "Clase B, no tengo" })}
+          <label class="campo"><span>¿Tiene credencial de discapacidad?</span>
+            <select name="discapacidad">
+              <option value="false">No</option>
+              <option value="true">Sí</option></select>
+            <span class="pista-campo">Lo preguntamos porque la empresa tiene que informarlo
+              (Ley 21.015). No cambia en nada su contrato.</span></label>
+        </div>
+      </section>
+
+      <section class="grupo">
+        <h2>¿Algo que debamos saber?</h2>
+        <div class="campos">
+          <label class="campo"><span>Escríbalo acá</span>
+            <textarea name="observaciones" maxlength="1000"
+              placeholder="Alergias, un turno que no puede hacer, algo que nos sirva saber antes."></textarea></label>
+        </div>
+      </section>
+    </form>
+
+    <div class="pie"><div class="pie__caja">
+      <span class="mensaje" id="m"></span>
+      <button class="bt" type="button" id="enviar">Enviar mi ficha</button>
+    </div></div>`;
+
+  const f = $("#f");
+  if (f.rut) f.rut.onblur = () => { if (f.rut.value) f.rut.value = rutLindo(f.rut.value); };
+
+  // Solo tiene sentido preguntar cuál isapre y qué plan si dijo isapre.
+  const salud = f.salud_sistema;
+  const verSalud = () => {
+    const es = salud.value === "isapre";
+    for (const campo of ["salud_isapre", "salud_plan_uf"]) {
+      f[campo].closest("label").style.display = es ? "" : "none";
+    }
+  };
+  salud.onchange = verSalud;
+  verSalud();
+
+  $("#enviar").onclick = () => enviar(d);
+}
+
+async function enviar(d) {
+  const f = $("#f"), m = $("#m"), bt = $("#enviar");
+  const cuerpo = Object.fromEntries(new FormData(f));
+  // Si el enlace venía a nombre de alguien, el RUT ni siquiera está en el
+  // formulario: lo pone el servidor desde la fila del token. Acá se manda solo
+  // para que el mensaje de error, si lo hay, hable del RUT que la persona ve.
+  if (!cuerpo.rut && d.rut_fijo) cuerpo.rut = d.rut_fijo;
+
+  m.className = "mensaje";
+  m.textContent = "Enviando…";
+  bt.disabled = true;
+  try {
+    const r = await pedir("/enviar", cuerpo);
+    // Una vez enviada, el token ya no sirve para nada y no tiene por qué
+    // seguir a la vista en la barra de direcciones.
+    try { history.replaceState(null, "", location.pathname); } catch (_) {}
+    gracias(r.nombre || cuerpo.nombres);
+  } catch (e) {
+    m.className = "mensaje error";
+    m.textContent = e.message;
+    bt.disabled = false;
+    // El error habla de un campo que puede estar arriba de todo: si no se ve,
+    // el mensaje no sirve.
+    const malo = /RUT/i.test(e.message) ? (f.rut || null)
+      : /correo/i.test(e.message) ? f.email
+      : /isapre/i.test(e.message) ? f.salud_isapre
+      : /nacimiento/i.test(e.message) ? f.fecha_nacimiento
+      : /nombre|apellido/i.test(e.message) ? f.nombres : null;
+    if (malo) { malo.focus(); malo.scrollIntoView({ block: "center", behavior: "smooth" }); }
+  }
+}
+
+function gracias(nombre) {
+  pared("✓", "Listo, " + String(nombre || "").split(" ")[0],
+    "Su ficha nos llegó. La vamos a revisar y, si falta algo, lo llamamos.<br>"
+    + "Ya puede cerrar esta página: este enlace no se usa de nuevo.");
+}
+
+// ------------------------------------------------------------- arranque
+conectarApariencia();
+
+(async () => {
+  if (!TOKEN) {
+    return pared("🔗", "Falta la última parte del enlace",
+      "Cuando el enlace se copia y se pega a mano, a veces se corta. "
+      + "Ábralo tocándolo desde el mensaje que le mandaron, o pídale uno nuevo a la oficina.");
+  }
+  try {
+    pintarFormulario(await pedir("/abrir", {}));
+  } catch (e) {
+    pared("🔒", "No pudimos abrir su ficha", esc(e.message));
+  }
+})();
+</script>
+</body>
+</html>

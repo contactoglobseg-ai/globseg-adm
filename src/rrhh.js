@@ -245,7 +245,12 @@ function camposContrato(cuerpo) {
   return {
     tipo,
     fecha_inicio: fechaO(cuerpo.fecha_inicio),
-    fecha_termino: fechaO(cuerpo.fecha_termino),
+    // Un indefinido no lleva fecha de término, y dejarla puesta no es un dato
+    // de más: el panel avisa por `fecha_termino` sin mirar el tipo, así que un
+    // contrato pasado a indefinido seguiría saliendo en la lista de plazos por
+    // vencer. La alerta más cara del módulo quedaría avisando de algo que ya
+    // no existe, y la que avisa de más deja de creerse igual que la que falta.
+    fecha_termino: tipo === 'indefinido' ? null : fechaO(cuerpo.fecha_termino),
     cargo: limpio(cuerpo.cargo, 60),
     instalacion_id: entero(cuerpo.instalacion_id),
     jornada_tipo: jornada,
@@ -326,6 +331,73 @@ function avisosContrato(c, p) {
   return avisos;
 }
 
+/**
+ * Cómo se nombra cada campo del contrato en la bitácora.
+ *
+ * Está escrito para que lo lea alguien que no programó esto: lo que la oficina
+ * necesita del registro es "el 20 de octubre Valeria corrió el término del 14
+ * de diciembre al 31 de marzo", no el nombre de una columna.
+ */
+const ROTULO_CAMPO_CONTRATO = {
+  tipo: 'tipo', fecha_inicio: 'inicio', fecha_termino: 'término',
+  cargo: 'cargo', instalacion_id: 'instalación', jornada_tipo: 'jornada',
+  horas_semanales: 'horas semanales', turno: 'turno',
+  resolucion_dt: 'resolución DT', resolucion_vence: 'vencimiento de la resolución',
+  colacion_minutos: 'minutos de colación', sueldo_base: 'sueldo base',
+  gratificacion: 'gratificación', gratificacion_monto: 'gratificación convencional',
+  colacion: 'colación', movilizacion: 'movilización',
+  asignacion_glosa: 'glosa de la asignación', asignacion_monto: 'asignación',
+  bono_imponible_glosa: 'glosa del bono', bono_imponible_monto: 'bono imponible',
+  firmado: 'firmado', firmado_en: 'fecha de firma', notas: 'notas',
+};
+
+/** Vacío se escribe así y no como "null", que no quiere decir nada. */
+const comoTexto = (v) => (v === null || v === undefined || v === '' ? '—' : String(v));
+
+/**
+ * Qué cambió entre lo que había y lo que se va a guardar.
+ *
+ * Esto existe por la fecha de término: moverla mueve la alerta de plazo por
+ * vencer, que es la más cara del módulo —pasado un día, el contrato es
+ * indefinido y el despido vale tres veces más—. Un registro que solo dijera
+ * "editó el contrato" dejaría esa alerta cambiando sin que se pueda saber
+ * quién la cambió ni desde qué fecha. El resto del sistema ya trabaja así.
+ */
+export function cambiosContrato(antes, despues) {
+  const cambios = [];
+  for (const [campo, rotulo] of Object.entries(ROTULO_CAMPO_CONTRATO)) {
+    if (!(campo in despues)) continue;
+    // Comparado como texto: la base devuelve los numéricos como número y el
+    // formulario como cadena, y 700000 contra "700000" no es un cambio.
+    const a = comoTexto(antes[campo]);
+    const b = comoTexto(despues[campo]);
+    if (a !== b) cambios.push({ campo, rotulo, antes: a, despues: b });
+  }
+  return cambios;
+}
+
+/**
+ * El finiquito que cierra este contrato, si está cargado.
+ *
+ * Un finiquito registrado desde la ficha puede venir sin contrato elegido —el
+ * formulario no lo pedía hasta hoy—, y en ese caso se entiende que es del
+ * último contrato de esa persona, que es de lo único que puede ser. Si está
+ * enganchado a otro contrato, no toca a este.
+ */
+async function finiquitoDe(env, contrato) {
+  const docs = await buscar(env,
+    'documentos_trabajador?select=id,contrato_id,numero,fecha_emision' +
+    `&trabajador_id=eq.${contrato.trabajador_id}&tipo=eq.finiquito&vigente=is.true`);
+  if (!docs.length) return null;
+  const propio = docs.find((d) => d.contrato_id === contrato.id);
+  if (propio) return propio;
+  const sueltos = docs.filter((d) => d.contrato_id === null);
+  if (!sueltos.length) return null;
+  const ultimo = await primero(env,
+    `contratos?select=id&trabajador_id=eq.${contrato.trabajador_id}&order=fecha_inicio.desc`);
+  return ultimo && ultimo.id === contrato.id ? sueltos[0] : null;
+}
+
 export async function crearContrato(env, quien, cuerpo) {
   const t = await primero(env, `trabajadores?select=id,nombre,fecha_ingreso&id=eq.${entero(cuerpo.trabajador_id)}`);
   if (!t) return { error: 'Esa persona no está en el registro', status: 404 };
@@ -372,10 +444,14 @@ export async function crearContrato(env, quien, cuerpo) {
 export async function editarContrato(env, quien, id, cuerpo) {
   const actual = await primero(env, `contratos?select=*,trabajadores(nombre)&id=eq.${id}`);
   if (!actual) return { error: 'Ese contrato no existe', status: 404 };
+  const nombre = actual.trabajadores?.nombre || '';
 
   // Terminar es una operación aparte: necesita causal y fecha, y la causal
   // decide qué se paga.
   if (cuerpo.terminar === true) {
+    if (actual.estado !== 'vigente') {
+      return { error: 'Ese contrato ya no está vigente: no hay nada que terminar', status: 409 };
+    }
     const causal = limpio(cuerpo.termino_causal, 20);
     const fecha = fechaO(cuerpo.termino_fecha);
     if (!causal || !CAUSALES[causal]) return { error: 'Falta la causal de término', status: 400 };
@@ -393,12 +469,32 @@ export async function editarContrato(env, quien, id, cuerpo) {
       await actualizar(env, `trabajadores?id=eq.${actual.trabajador_id}`, { activo: false });
     }
     await anotar(env, quien, 'contrato', actual.id, 'terminó el contrato',
-      `${actual.trabajadores?.nombre || ''} · ${CAUSALES[causal].glosa} al ${fecha}`);
+      `${nombre} · ${CAUSALES[causal].glosa} al ${fecha}`);
     return { ok: true, causal: CAUSALES[causal] };
   }
 
+  // Con el finiquito cargado, las condiciones de este contrato ya están en un
+  // documento firmado por las dos partes y ratificado ante ministro de fe
+  // (art. 177). Corregirlas acá dejaría al sistema diciendo una cosa y al
+  // papel otra, y el que vale es el papel. Va antes de la revisión de estado
+  // porque el motivo es distinto y la pantalla tiene que poder decir cuál es.
+  const finiquito = await finiquitoDe(env, actual);
+  if (finiquito) {
+    return {
+      error: 'Este contrato tiene un finiquito cargado'
+        + (finiquito.fecha_emision ? ` (${finiquito.fecha_emision})` : '')
+        + '. No se edita: lo que se firmó ahí son estas condiciones. Si el finiquito '
+        + 'quedó mal, anúlelo primero desde los documentos de la persona.',
+      status: 409,
+    };
+  }
+
   if (actual.estado !== 'vigente') {
-    return { error: 'Un contrato terminado no se edita. Cargue uno nuevo.', status: 409 };
+    return {
+      error: 'Un contrato terminado no se edita: es lo que decía el contrato en esa fecha, '
+        + 'y de eso salen el feriado y la indemnización. Cargue uno nuevo.',
+      status: 409,
+    };
   }
 
   const c = camposContrato({ ...actual, ...cuerpo });
@@ -406,10 +502,25 @@ export async function editarContrato(env, quien, id, cuerpo) {
   const malo = revisarContrato(c, p);
   if (malo) return { error: malo, status: 400 };
 
+  const cambios = cambiosContrato(actual, c);
+  if (!cambios.length) return { ok: true, cambios: [], avisos: [] };
+
   await actualizar(env, `contratos?id=eq.${actual.id}`, c);
+
+  // El cargo y la instalación del contrato son los de la persona, igual que al
+  // crearlo: si se corrigen acá y la ficha se queda con lo de antes, nadie
+  // sabe cuál de las dos manda.
+  const ficha = {};
+  if (cambios.some((x) => x.campo === 'cargo') && c.cargo) ficha.cargo = c.cargo;
+  if (cambios.some((x) => x.campo === 'instalacion_id')) ficha.instalacion_id = c.instalacion_id;
+  if (Object.keys(ficha).length) {
+    await actualizar(env, `trabajadores?id=eq.${actual.trabajador_id}`, ficha);
+  }
+
   await anotar(env, quien, 'contrato', actual.id, 'editó el contrato',
-    actual.trabajadores?.nombre || '');
-  return { ok: true, avisos: avisosContrato(c, p) };
+    `${nombre} · ` + cambios.map((x) => `${x.rotulo}: ${x.antes} → ${x.despues}`)
+      .join(' · ').slice(0, 900));
+  return { ok: true, cambios, avisos: avisosContrato(c, p) };
 }
 
 // ---------------------------------------------------------------- documentos

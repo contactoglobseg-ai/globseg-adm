@@ -297,6 +297,21 @@ tr.fila-corr td,tr.fila-corr:hover td{background:var(--sup-2);padding:0}
    el precio —que sí se ven— y el total de la línea nunca aparecía. */
 .desliza table.lineas{min-width:736px}
 
+/* Lo mismo con las dos tablas de la ficha de ingreso: seis y cuatro columnas,
+   todas cortas. Con los 1080px heredados, el botón de anular y la columna de
+   lo que mandó la persona quedaban pasadas el borde derecho, que es el error
+   que ya costó una tarde con el Subtotal de las cotizaciones. */
+.desliza table.ingresos{min-width:720px}
+.desliza table.comparar{min-width:560px}
+
+/* La de contratos lleva ocho columnas y dos botones en la última. Con los
+   1080px heredados, «Corregir» quedaba cortado contra el borde derecho a
+   1280px de pantalla, que es el ancho del Mac de la oficina. Los botones se
+   apilan cuando no caben al lado, en vez de empujar la tabla a lo ancho. */
+.desliza table.contratos{min-width:940px}
+.celda-acciones{white-space:normal}
+.celda-acciones .bt{margin:1px 0}
+
 /* Bajo 760px las seis columnas no caben de ninguna manera, y la que se va
    fuera es justo la que se está mirando mientras se arma el precio. Cada
    línea pasa a ser una ficha apilada, con el nombre del campo al lado. */
@@ -2713,6 +2728,8 @@ function formatearColumna(hoja, columna, z, filas) {
 const RRHH = {
   catalogos: null, panel: null, personal: null, ficha: null,
   verFicha: null,            // id de la persona abierta, o null para la lista
+  editaContrato: null,       // contrato que se está corrigiendo dentro de esa ficha
+  ingresos: null, verIngreso: null,   // enlaces de ficha de ingreso y el que se revisa
   busca: "", soloActivos: true,
   docFiltro: { estado: "", grupo: "", trabajador: "" },
   sueldos: { trabajador: "", mes: hoyISO().slice(0, 7), vista: "liquidacion" },
@@ -2834,6 +2851,17 @@ async function pintarRrhh() {
       `${panel.resoluciones.length} resolución${panel.resoluciones.length > 1 ? "es" : ""} de turnos excepcionales por vencer`,
       "Es la autorización de la Dirección del Trabajo para el 4x4 o el 7x7. Vencida, ese turno "
       + "deja de estar autorizado aunque siga saliendo igual todas las semanas.");
+  }
+  // Una ficha que llegó y nadie revisó no es una urgencia legal, pero sí es
+  // trabajo esperando de alguien que ya hizo su parte. Va arriba para que no
+  // se quede dos semanas en una pestaña que nadie abre.
+  const porRevisar = panel.fichas_por_revisar || [];
+  if (porRevisar.length) {
+    html += aviso("ojo",
+      `${porRevisar.length} ficha${porRevisar.length > 1 ? "s" : ""} de ingreso esperando revisión`,
+      porRevisar.map(x => esc(x.nombre_referencia)).join(", ")
+      + ". Lo que mandaron no está en el sistema hasta que alguien lo acepte, "
+      + "acá mismo en Personas → Fichas.");
   }
   if (!urgentes && !panel.resoluciones.length) {
     html += aviso("bien", "Nada vencido ni por vencer en los próximos 15 días",
@@ -2977,16 +3005,26 @@ async function pintarRrhh() {
 
   $("#app").innerHTML = html;
   document.querySelectorAll("[data-ver-ficha]").forEach(b => {
-    b.onclick = () => { RRHH.verFicha = Number(b.dataset.verFicha); ir("personal"); };
+    b.onclick = () => {
+      RRHH.verFicha = Number(b.dataset.verFicha); RRHH.editaContrato = null; ir("personal");
+    };
   });
 }
 
 // ------------------------------------------------------------- personal
 async function pintarPersonal() {
   if (RRHH.verFicha) return pintarFicha(RRHH.verFicha);
+  if (RRHH.verIngreso) return pintarFichaIngreso(RRHH.verIngreso);
 
-  const [{ personal }] = await Promise.all([pedir("/rrhh/personal"), catalogosRrhh()]);
+  const [{ personal }, ingresos] = await Promise.all([
+    pedir("/rrhh/personal"),
+    // Si la migración de la ficha de ingreso todavía no corrió, esto no puede
+    // dejar sin pantalla al resto: la lista queda vacía con su aviso.
+    pedir("/rrhh/fichas-ingreso").catch(e => ({ fichas: [], sin_tabla: true, aviso: e.message })),
+    catalogosRrhh(),
+  ]);
   RRHH.personal = personal;
+  RRHH.ingresos = ingresos;
 
   const q = RRHH.busca.trim().toLowerCase();
   const lista = personal
@@ -2995,6 +3033,7 @@ async function pintarPersonal() {
       .some(v => String(v || "").toLowerCase().includes(q)));
 
   $("#app").innerHTML = `
+    ${seccionIngresos(ingresos)}
     <section class="caja">
       <div class="caja__tit"><h2>Personal</h2>
         <span class="nota">${lista.length} de ${personal.length}</span>
@@ -3044,9 +3083,322 @@ async function pintarPersonal() {
   };
   $("#f-activos").onchange = e => { RRHH.soloActivos = e.target.value === "si"; pintarPersonal(); };
   document.querySelectorAll("[data-ficha]").forEach(b => {
-    b.onclick = () => { RRHH.verFicha = Number(b.dataset.ficha); pintarFicha(RRHH.verFicha); };
+    b.onclick = () => {
+      RRHH.verFicha = Number(b.dataset.ficha); RRHH.editaContrato = null;
+      pintarFicha(RRHH.verFicha);
+    };
   });
   $("#nueva-persona").onclick = pintarNuevaPersona;
+  conectarIngresos();
+}
+
+// ------------------------------------------- fichas de ingreso por enlace
+/**
+ * El enlace que se le manda a quien entra, para que llene su ficha solo.
+ *
+ * Vive dentro de «Fichas» y no en una pestaña aparte a propósito: es parte de
+ * dar de alta a una persona, y una pestaña más en la lateral sería una
+ * pantalla que hay que acordarse de visitar. Acá está donde ya se mira.
+ *
+ * Lo que llega NO entra a la ficha: queda esperando revisión, y de eso se
+ * encarga pintarFichaIngreso().
+ */
+const SELLO_INGRESO = {
+  pendiente: "e-en_curso", recibida: "e-solicitar_oc",
+  aceptada: "e-cerrado", vencida: "e-borrador", anulada: "e-borrador",
+};
+const ROTULO_INGRESO = {
+  pendiente: "Esperando", recibida: "Llegó: hay que revisarla",
+  aceptada: "Aceptada", vencida: "Venció", anulada: "Anulada",
+};
+
+function seccionIngresos(ingresos) {
+  const fichas = ingresos.fichas || [];
+  const porRevisar = fichas.filter(f => f.estado_visible === "recibida");
+  // Las vencidas y las anuladas se guardan, pero no tienen por qué estar a la
+  // vista todos los días: la pregunta de esta pantalla es a quién hay que
+  // perseguir y a quién hay que revisar.
+  const vivas = fichas.filter(f => ["pendiente", "recibida"].includes(f.estado_visible));
+  const viejas = fichas.length - vivas.length;
+
+  return `<section class="caja">
+    <div class="caja__tit"><h2>Fichas de ingreso</h2>
+      <span class="nota">La llena la propia persona, desde su teléfono</span>
+      <button class="bt bt--chico" type="button" id="bt-nuevo-enlace">Generar un enlace</button></div>
+
+    ${ingresos.sin_tabla ? aviso("mal", "Esto todavía no está en la base",
+      ingresos.aviso || "Falta aplicar la migración.") : ""}
+
+    <div id="enlace-recien" hidden></div>
+
+    ${porRevisar.length ? aviso("ojo",
+      `${porRevisar.length} ficha${porRevisar.length > 1 ? "s" : ""} esperando revisión`,
+      "Lo que mandaron no está en el sistema todavía. Revíselo y acéptelo: si alguien se "
+      + "equivocó en el RUT o en la AFP, eso después sale en una liquidación.") : ""}
+
+    ${vivas.length ? `<div class="desliza"><table class="ingresos">
+      <thead><tr><th>A nombre de</th><th>Se mandó a</th><th>Estado</th><th>Vence</th>
+        <th>Generó</th><th></th></tr></thead><tbody>
+      ${vivas.map(f => `<tr>
+        <td><b>${esc(f.nombre_referencia)}</b>${f.rut_esperado
+          ? `<span class="sub">${esc(f.rut_esperado)}</span>` : ""}${f.trabajadores?.nombre
+          ? '<span class="sub">Ya está en el sistema</span>' : ""}</td>
+        <td>${esc(f.enviado_a || "—")}${f.nota ? `<span class="sub">${esc(f.nota)}</span>` : ""}</td>
+        <td><span class="sello ${SELLO_INGRESO[f.estado_visible]}">${ROTULO_INGRESO[f.estado_visible]}</span>
+          ${f.recibido_en ? `<span class="sub">${fecha(f.recibido_en.slice(0, 10))}</span>` : ""}</td>
+        <td class="nowrap">${fecha(f.vence_en.slice(0, 10))}</td>
+        <td><span class="sub" style="margin:0">${esc(f.creado_por)}</span></td>
+        <td class="nowrap">${f.estado_visible === "recibida"
+          ? `<button class="bt bt--chico" data-revisar-ingreso="${f.id}">Revisar</button>` : ""}
+          <button class="bt bt--fino bt--chico" data-anular-ingreso="${f.id}">Anular</button></td>
+      </tr>`).join("")}
+    </tbody></table></div>`
+      : `<p class="vacio">No hay enlaces esperando.
+           ${ingresos.sin_tabla ? "" : "Genere uno y mándeselo por WhatsApp a quien entra."}</p>`}
+    ${viejas ? `<p class="sub" style="padding:0 16px 14px;margin:0">${viejas} más ya aceptadas,
+      vencidas o anuladas. Quedan guardadas.</p>` : ""}
+  </section>`;
+}
+
+function conectarIngresos() {
+  const caja = $("#enlace-recien");
+
+  $("#bt-nuevo-enlace").onclick = () => {
+    caja.hidden = false;
+    caja.innerHTML = `<form id="f-enlace" style="padding:4px 16px 16px">
+      <div class="rejilla">
+        <label class="campo" style="grid-column:span 2"><span>¿Para quién es? *</span>
+          <select name="trabajador_id" id="e-quien">
+            <option value="">Alguien que todavía no está en el sistema</option>
+            ${(RRHH.personal || []).filter(t => t.activo).map(t =>
+              `<option value="${t.id}">${esc(t.nombre)}</option>`).join("")}
+          </select></label>
+        <label class="campo" id="e-nombre-caja" style="grid-column:span 2">
+          <span>Nombre y apellido, para no perderle el rastro al enlace *</span>
+          <input name="nombre_referencia" autocomplete="off" placeholder="Camila Núñez Soto"></label>
+        <label class="campo"><span>RUT, si lo sabe</span>
+          <input name="rut" placeholder="12.345.678-9" autocomplete="off">
+          <span class="sub" style="margin:0">Si lo pone, el enlace queda amarrado a ese RUT y
+            no sirve para cargar a otra persona.</span></label>
+        <label class="campo"><span>¿A qué número o correo se lo va a mandar?</span>
+          <input name="enviado_a" autocomplete="off" placeholder="+56 9 ..."></label>
+        <label class="campo"><span>Sirve por</span><select name="dias">
+          <option value="3">3 días</option>
+          <option value="7" selected>7 días</option>
+          <option value="15">15 días</option>
+          <option value="30">30 días</option></select>
+          <span class="sub" style="margin:0">Pasado el plazo deja de abrir, y hay que generar otro.</span></label>
+        <label class="campo"><span>Nota para la oficina</span><input name="nota" autocomplete="off"></label>
+      </div>
+      <div class="pie-form">
+        <button class="bt" type="submit">Generar el enlace</button>
+        <span class="mensaje"></span>
+      </div></form>`;
+
+    // Para alguien que ya está cargado, el nombre y el RUT salen de su ficha.
+    const quien = $("#e-quien");
+    const verQuien = () => {
+      const propio = !quien.value;
+      $("#e-nombre-caja").style.display = propio ? "" : "none";
+      $("#f-enlace").rut.closest("label").style.display = propio ? "" : "none";
+    };
+    quien.onchange = verQuien;
+    verQuien();
+
+    const f = $("#f-enlace");
+    f.onsubmit = async ev => {
+      ev.preventDefault();
+      const m = f.querySelector(".mensaje"), bt = f.querySelector("button[type=submit]");
+      decir(m, "Generando…"); bt.disabled = true;
+      try {
+        const r = await pedir("/rrhh/fichas-ingreso", { method: "POST",
+          body: JSON.stringify(Object.fromEntries(new FormData(f))) });
+        mostrarEnlace(r);
+      } catch (e) { decir(m, e.message, "error"); bt.disabled = false; }
+    };
+  };
+
+  document.querySelectorAll("[data-revisar-ingreso]").forEach(b => {
+    b.onclick = () => {
+      RRHH.verIngreso = Number(b.dataset.revisarIngreso);
+      pintarFichaIngreso(RRHH.verIngreso);
+    };
+  });
+  document.querySelectorAll("[data-anular-ingreso]").forEach(b => {
+    b.onclick = async () => {
+      const motivo = prompt("¿Por qué se anula este enlace?\n\n"
+        + "Queda guardado con su nombre. Después de esto el enlace deja de abrir.");
+      if (motivo === null) return;
+      try {
+        await pedir(`/rrhh/fichas-ingreso/${b.dataset.anularIngreso}`, { method: "PATCH",
+          body: JSON.stringify({ motivo }) });
+        pintarPersonal();
+      } catch (e) { alert(e.message); }
+    };
+  });
+}
+
+/**
+ * El enlace recién generado, que es la única vez que existe.
+ *
+ * El token no se guarda en ninguna parte: en la base vive su hash. Si esta
+ * pantalla se cierra sin copiarlo, no hay de dónde sacarlo y hay que generar
+ * otro. Por eso se muestra grande, con el texto listo para pegar, y se dice
+ * que es ahora o nunca.
+ */
+function mostrarEnlace(r) {
+  const caja = $("#enlace-recien");
+  const mensaje = `Hola ${r.ficha.nombre_referencia.split(" ")[0]}, le dejo el enlace para que `
+    + `llene su ficha de ingreso en Seguridad Garridos. Son unos minutos y se hace desde el `
+    + `teléfono. Sirve ${r.dias} días y una sola vez: ${r.enlace}`;
+  caja.innerHTML = `<div style="padding:4px 16px 18px">
+    ${aviso("bien", "Enlace listo para " + r.ficha.nombre_referencia,
+      "Cópielo ahora: el sistema no lo guarda en claro en ninguna parte, así que esta es la "
+      + "única vez que se puede ver. Si se pierde, se genera otro. Este deja de servir "
+      + `cuando lo llenen, o el ${fecha(r.ficha.vence_en.slice(0, 10))}.`)}
+    <label class="campo" style="margin-top:10px"><span>El enlace</span>
+      <input id="e-url" readonly value="${esc(r.enlace)}"></label>
+    <label class="campo" style="margin-top:10px"><span>Mensaje listo para pegar en WhatsApp</span>
+      <input id="e-msg" readonly value="${esc(mensaje)}"></label>
+    <div class="pie-form">
+      <button class="bt" type="button" id="e-copiar">Copiar el mensaje</button>
+      <button class="bt bt--fino" type="button" id="e-copiar-url">Copiar solo el enlace</button>
+      <button class="bt bt--fino" type="button" id="e-listo">Listo</button>
+      <span class="mensaje" id="e-m"></span>
+    </div></div>`;
+
+  const copiar = async (campo, que) => {
+    const el = $(campo);
+    try {
+      await navigator.clipboard.writeText(el.value);
+      decir($("#e-m"), que + " copiado", "ok");
+    } catch {
+      // Sin permiso de portapapeles queda seleccionado: copiar a mano sigue
+      // siendo posible, y es mejor que un error que no dice qué hacer.
+      el.focus(); el.select();
+      decir($("#e-m"), "Quedó seleccionado: cópielo con ⌘C o Ctrl+C", "ok");
+    }
+  };
+  $("#e-copiar").onclick = () => copiar("#e-msg", "El mensaje");
+  $("#e-copiar-url").onclick = () => copiar("#e-url", "El enlace");
+  $("#e-listo").onclick = () => pintarPersonal();
+}
+
+/**
+ * Revisar lo que llegó antes de escribirlo.
+ *
+ * La pantalla entera existe por un motivo: lo que manda la persona puede
+ * estar mal, y el RUT y la AFP mal puestos no se notan hasta la primera
+ * liquidación. Así que se muestra lo que llegó al lado de lo que había, se
+ * marca en ámbar lo que pisa un dato que ya existía, y nada se escribe hasta
+ * que alguien acepta.
+ */
+async function pintarFichaIngreso(id) {
+  $("#app").innerHTML = `<p class="cargando">Cargando la ficha que llegó…</p>`;
+  const [d] = await Promise.all([pedir(`/rrhh/fichas-ingreso/${id}`), catalogosRrhh()]);
+  const c = RRHH.catalogos;
+  const f = d.ficha;
+  const nuevos = d.comparacion.filter(x => x.cambia && !x.pisa);
+  const pisados = d.comparacion.filter(x => x.pisa);
+
+  $("#app").innerHTML = `
+    <p style="margin-bottom:14px">
+      <button class="bt bt--fino bt--chico" id="volver">← Volver a las fichas</button></p>
+
+    ${d.rut_distinto ? aviso("mal", "El RUT no calza con el de la ficha que ya existe",
+      `Escribió ${d.rut} y ${d.trabajador.nombre} está cargado con ${d.trabajador.rut}. `
+      + "El RUT es su clave del libro de asistencia, así que no se cambia desde acá. "
+      + "Llámelo, confirme cuál es el bueno y arréglelo en su ficha, o anule este enlace.") : ""}
+    ${pisados.length ? aviso("ojo",
+      `${pisados.length} dato${pisados.length > 1 ? "s" : ""} que cambia${pisados.length > 1 ? "n" : ""} algo que ya estaba`,
+      "Van marcados abajo. Lo que llega donde no había nada es lo que se estaba buscando; "
+      + "lo que pisa un dato distinto es lo que hay que mirar dos veces.") : ""}
+
+    <dl class="resumen">
+      <div class="ficha ficha--plata"><dt>${esc(f.nombre_referencia)}</dt>
+        <dd style="font-size:1.1rem">${esc(d.rut || "sin RUT")}</dd>
+        <small>Llegó el ${f.recibido_en ? fecha(f.recibido_en.slice(0, 10)) : "—"}
+          · enlace generado por ${esc(f.creado_por)}</small></div>
+      <div class="ficha"><dt>${d.trabajador ? "Ya está en el sistema" : "Es alguien nuevo"}</dt>
+        <dd style="font-size:1.05rem">${d.trabajador ? esc(d.trabajador.nombre) : "Se va a crear"}</dd>
+        <small>${d.trabajador
+          ? `usuario ${esc(d.trabajador.usuario)}`
+          : "Con su cuenta del libro de asistencia y el RUT de clave"}</small></div>
+      <div class="ficha ${nuevos.length ? "" : "ficha--ojo"}"><dt>Datos nuevos</dt>
+        <dd class="num">${nuevos.length}</dd>
+        <small>${pisados.length} cambian algo que ya había</small></div>
+    </dl>
+
+    <section class="caja">
+      <div class="caja__tit"><h2>Lo que llegó</h2>
+        <span class="nota">Destilde lo que no quiera escribir</span></div>
+      ${d.comparacion.length ? `<div class="desliza"><table class="comparar">
+        <thead><tr><th style="width:34px"></th><th>Dato</th><th>Lo que hay hoy</th>
+          <th>Lo que mandó</th></tr></thead><tbody>
+        ${d.comparacion.map(x => `<tr${x.pisa ? ' class="fila--solicitar_oc"' : ""}>
+          <td><input type="checkbox" class="campo-ok" value="${x.campo}"
+            ${x.cambia ? " checked" : ""} style="width:auto"></td>
+          <td><b>${esc(x.rotulo)}</b></td>
+          <td>${x.actual ? esc(x.actual) : '<span class="sub" style="margin:0">—</span>'}</td>
+          <td>${x.propuesto ? `<b>${esc(x.propuesto)}</b>` : '<span class="sub" style="margin:0">—</span>'}
+            ${x.pisa ? '<span class="sub" style="color:var(--ambar)">pisa lo anterior</span>' : ""}</td>
+        </tr>`).join("")}
+      </tbody></table></div>` : `<p class="vacio">No mandó ningún dato.</p>`}
+
+      <div style="padding:14px 16px 4px">
+        ${d.trabajador ? "" : `<div class="rejilla">
+          <label class="campo"><span>Cargo</span><select id="i-cargo">
+            ${(d.cargos || c.cargos).map(x => `<option value="${x}">${rotCargo(x)}</option>`).join("")}</select>
+            <span class="sub" style="margin:0">Esto no se le pregunta a la persona: lo decide la oficina.</span></label>
+          <label class="campo"><span>Instalación habitual</span><select id="i-instalacion">
+            <option value="">Sin asignar</option>
+            ${c.instalaciones.map(i => `<option value="${i.id}">${esc(i.nombre)}</option>`).join("")}</select></label>
+        </div>`}
+        <label class="campo" style="margin-top:10px"><span>Nota de la revisión</span>
+          <input id="i-nota" autocomplete="off" placeholder="Qué confirmó por teléfono, si confirmó algo"></label>
+      </div>
+      <div class="pie-form">
+        <button class="bt" type="button" id="i-aceptar">${d.trabajador
+          ? "Aceptar y escribir en su ficha" : "Aceptar y crear su ficha"}</button>
+        <button class="bt bt--fino" type="button" id="i-anular">Anular este enlace</button>
+        <span class="sub" style="margin:0">Hasta que apriete, nada de esto está en el sistema.</span>
+        <span class="mensaje"></span>
+      </div>
+    </section>`;
+
+  const volver = () => { RRHH.verIngreso = null; pintarPersonal(); };
+  $("#volver").onclick = volver;
+
+  $("#i-aceptar").onclick = async () => {
+    const bt = $("#i-aceptar"), m = $("#app .pie-form .mensaje");
+    const campos = [...document.querySelectorAll(".campo-ok:checked")].map(x => x.value);
+    decir(m, "Guardando…"); bt.disabled = true;
+    try {
+      const r = await pedir(`/rrhh/fichas-ingreso/${id}/aceptar`, { method: "POST",
+        body: JSON.stringify({
+          campos,
+          cargo: $("#i-cargo") ? $("#i-cargo").value : undefined,
+          instalacion_id: $("#i-instalacion") ? $("#i-instalacion").value : undefined,
+          nota_revision: $("#i-nota").value,
+        }) });
+      RRHH.verIngreso = null; RRHH.panel = null; RRHH.personal = null;
+      // Se abre su ficha: lo siguiente que hay que hacer con esta persona es
+      // cargarle el contrato y sus papeles, y eso está ahí.
+      RRHH.verFicha = r.trabajador_id;
+      pintarFicha(r.trabajador_id);
+    } catch (e) { decir(m, e.message, "error"); bt.disabled = false; }
+  };
+
+  $("#i-anular").onclick = async () => {
+    const motivo = prompt("¿Por qué se anula?\n\nLo que mandó queda guardado, pero no se escribe "
+      + "en ninguna ficha.");
+    if (motivo === null) return;
+    try {
+      await pedir(`/rrhh/fichas-ingreso/${id}`, { method: "PATCH",
+        body: JSON.stringify({ motivo }) });
+      volver();
+    } catch (e) { alert(e.message); }
+  };
 }
 
 function pintarNuevaPersona() {
@@ -3161,19 +3513,94 @@ async function pintarFicha(id) {
     </dl>
 
     ${seccionContratos(contratos, cv, c)}
-    ${seccionDocumentos(documentos, c)}
+    ${seccionDocumentos(documentos, c, contratos)}
     ${seccionAusencias(ausencias, feriado, t)}
     ${seccionDatos(t, c)}`;
 
-  $("#volver").onclick = () => { RRHH.verFicha = null; pintarPersonal(); };
+  $("#volver").onclick = () => {
+    RRHH.verFicha = null; RRHH.editaContrato = null; pintarPersonal();
+  };
   conectarFicha(datos);
 }
 
+/**
+ * Los campos de un contrato, una sola vez.
+ *
+ * Los usan el alta y la corrección. Escribirlos dos veces es cómo terminan
+ * separándose: alguien agrega un campo en uno, nadie se acuerda del otro, y a
+ * los tres meses el formulario de corrección guarda menos de lo que guarda el
+ * de alta sin que nada lo diga.
+ *
+ * `v` es el contrato que se está corrigiendo, o {} si es uno nuevo.
+ */
+function camposContrato(c, v = {}) {
+  const t = k => esc(v[k] ?? "");
+  const sel = (k, x, pordefecto = false) =>
+    ((k in v && v[k] !== null && v[k] !== undefined && v[k] !== "")
+      ? (String(v[k]) === String(x) ? " selected" : "")
+      : (pordefecto ? " selected" : ""));
+  return `<div class="rejilla">
+    <label class="campo"><span>Tipo *</span><select name="tipo">
+      ${c.tipos_contrato.map(x => `<option value="${x}"${sel("tipo", x, x === "indefinido")}>${ROTULO_CONTRATO[x] || x}</option>`).join("")}</select></label>
+    <label class="campo"><span>Desde *</span><input type="date" name="fecha_inicio" required
+      value="${t("fecha_inicio")}"></label>
+    <label class="campo"><span>Hasta (plazo fijo / por obra)</span><input type="date" name="fecha_termino"
+      value="${t("fecha_termino")}"></label>
+    <label class="campo"><span>Cargo *</span><select name="cargo">
+      ${c.cargos.map(x => `<option value="${x}"${sel("cargo", x)}>${rotCargo(x)}</option>`).join("")}</select></label>
+    <label class="campo"><span>Instalación</span><select name="instalacion_id">
+      <option value="">Sin asignar</option>
+      ${c.instalaciones.map(i => `<option value="${i.id}"${sel("instalacion_id", i.id)}>${esc(i.nombre)}</option>`).join("")}</select></label>
+    <label class="campo"><span>Jornada</span><select name="jornada_tipo">
+      ${c.jornadas.map(x => `<option value="${x}"${sel("jornada_tipo", x, x === "art38_2")}>${ROTULO_JORNADA[x] || x}</option>`).join("")}</select></label>
+    <label class="campo"><span>Horas semanales</span><input name="horas_semanales" inputmode="decimal"
+      placeholder="42" value="${t("horas_semanales")}"></label>
+    <label class="campo"><span>Turno</span><input name="turno" placeholder="4x4 de 12 horas"
+      autocomplete="off" value="${t("turno")}"></label>
+    <label class="campo"><span>Minutos de colación</span><input name="colacion_minutos" inputmode="numeric"
+      value="${t("colacion_minutos")}"></label>
+    <label class="campo"><span>Resolución DT</span><input name="resolucion_dt" placeholder="N° / año"
+      autocomplete="off" value="${t("resolucion_dt")}"></label>
+    <label class="campo"><span>La resolución vence</span><input type="date" name="resolucion_vence"
+      value="${t("resolucion_vence")}"></label>
+    <label class="campo"><span>Sueldo base *</span><input name="sueldo_base" inputmode="numeric" required
+      value="${t("sueldo_base")}"></label>
+    <label class="campo"><span>Gratificación</span><select name="gratificacion">
+      <option value="legal_25"${sel("gratificacion", "legal_25", true)}>Legal: 25% con tope (art. 50)</option>
+      <option value="convencional"${sel("gratificacion", "convencional")}>Convencional (monto fijo)</option>
+      <option value="sin"${sel("gratificacion", "sin")}>Sin gratificación</option></select></label>
+    <label class="campo"><span>Gratificación convencional</span><input name="gratificacion_monto"
+      inputmode="numeric" value="${t("gratificacion_monto")}"></label>
+    <label class="campo"><span>Colación</span><input name="colacion" inputmode="numeric"
+      value="${v.colacion ?? 0}"></label>
+    <label class="campo"><span>Movilización</span><input name="movilizacion" inputmode="numeric"
+      value="${v.movilizacion ?? 0}"></label>
+    <label class="campo"><span>Asignación (glosa)</span><input name="asignacion_glosa" autocomplete="off"
+      value="${t("asignacion_glosa")}"></label>
+    <label class="campo"><span>Asignación (monto)</span><input name="asignacion_monto" inputmode="numeric"
+      value="${v.asignacion_monto ?? 0}"></label>
+    <label class="campo"><span>Bono imponible (glosa)</span><input name="bono_imponible_glosa"
+      autocomplete="off" value="${t("bono_imponible_glosa")}"></label>
+    <label class="campo"><span>Bono imponible (monto)</span><input name="bono_imponible_monto"
+      inputmode="numeric" value="${v.bono_imponible_monto ?? 0}"></label>
+    <label class="campo"><span>¿Está firmado?</span><select name="firmado">
+      <option value="false"${v.firmado ? "" : " selected"}>Todavía no</option>
+      <option value="true"${v.firmado ? " selected" : ""}>Sí</option></select></label>
+    <label class="campo"><span>Fecha de firma</span><input type="date" name="firmado_en"
+      value="${t("firmado_en")}"></label>
+    <label class="campo" style="grid-column:span 2"><span>Notas</span><input name="notas"
+      autocomplete="off" value="${t("notas")}"></label>
+  </div>`;
+}
+
 function seccionContratos(contratos, cv, c) {
+  const editando = RRHH.editaContrato
+    ? contratos.find(x => x.id === RRHH.editaContrato) : null;
+
   return `<section class="caja">
     <div class="caja__tit"><h2>Contratos</h2>
       <span class="nota">${contratos.length} en total</span></div>
-    ${contratos.length ? `<div class="desliza"><table>
+    ${contratos.length ? `<div class="desliza"><table class="contratos">
       <thead><tr><th>Tipo</th><th>Desde</th><th>Hasta</th><th>Cargo</th><th>Jornada</th>
         <th class="num">Sueldo base</th><th>Estado</th><th></th></tr></thead><tbody>
       ${contratos.map(x => `<tr${x.estado === "vigente" ? "" : ' class="fila--cerrado"'}>
@@ -3194,43 +3621,34 @@ function seccionContratos(contratos, cv, c) {
           ? '<span class="sello e-cerrado">Vigente</span>'
           : `<span class="sello e-borrador">Terminado</span>${x.termino_fecha
               ? `<span class="sub">${fecha(x.termino_fecha)}</span>` : ""}`}</td>
-        <td class="nowrap">${x.estado === "vigente"
-          ? `<button class="bt bt--fino bt--chico" data-terminar="${x.id}">Terminar</button>` : ""}</td>
+        <td class="celda-acciones">${x.estado === "vigente"
+          ? `<button class="bt bt--fino bt--chico" data-editar-contrato="${x.id}">Corregir</button>
+             <button class="bt bt--fino bt--chico" data-terminar="${x.id}">Terminar</button>`
+          : '<span class="sub" style="margin:0">No se edita</span>'}</td>
       </tr>`).join("")}
     </tbody></table></div>` : `<p class="vacio">Sin contratos cargados.</p>`}
 
-    <details class="agregar"><summary>Cargar un contrato</summary>
-      <form id="f-contrato">
-        <div class="rejilla">
-          <label class="campo"><span>Tipo *</span><select name="tipo">
-            ${c.tipos_contrato.map(x => `<option value="${x}">${ROTULO_CONTRATO[x] || x}</option>`).join("")}</select></label>
-          <label class="campo"><span>Desde *</span><input type="date" name="fecha_inicio" required
-            value="${cv ? "" : hoyISO()}"></label>
-          <label class="campo"><span>Hasta (plazo fijo / por obra)</span><input type="date" name="fecha_termino"></label>
-          <label class="campo"><span>Cargo *</span><select name="cargo">
-            ${c.cargos.map(x => `<option value="${x}">${rotCargo(x)}</option>`).join("")}</select></label>
-          <label class="campo"><span>Instalación</span><select name="instalacion_id">
-            <option value="">Sin asignar</option>
-            ${c.instalaciones.map(i => `<option value="${i.id}">${esc(i.nombre)}</option>`).join("")}</select></label>
-          <label class="campo"><span>Jornada</span><select name="jornada_tipo">
-            ${c.jornadas.map(x => `<option value="${x}"${x === "art38_2" ? " selected" : ""}>${ROTULO_JORNADA[x] || x}</option>`).join("")}</select></label>
-          <label class="campo"><span>Horas semanales</span><input name="horas_semanales" inputmode="decimal" placeholder="42"></label>
-          <label class="campo"><span>Turno</span><input name="turno" placeholder="4x4 de 12 horas" autocomplete="off"></label>
-          <label class="campo"><span>Resolución DT</span><input name="resolucion_dt" placeholder="N° / año" autocomplete="off"></label>
-          <label class="campo"><span>La resolución vence</span><input type="date" name="resolucion_vence"></label>
-          <label class="campo"><span>Sueldo base *</span><input name="sueldo_base" inputmode="numeric" required></label>
-          <label class="campo"><span>Gratificación</span><select name="gratificacion">
-            <option value="legal_25">Legal: 25% con tope (art. 50)</option>
-            <option value="convencional">Convencional (monto fijo)</option>
-            <option value="sin">Sin gratificación</option></select></label>
-          <label class="campo"><span>Gratificación convencional</span><input name="gratificacion_monto" inputmode="numeric"></label>
-          <label class="campo"><span>Colación</span><input name="colacion" inputmode="numeric" value="0"></label>
-          <label class="campo"><span>Movilización</span><input name="movilizacion" inputmode="numeric" value="0"></label>
-          <label class="campo"><span>Bono imponible (glosa)</span><input name="bono_imponible_glosa" autocomplete="off"></label>
-          <label class="campo"><span>Bono imponible (monto)</span><input name="bono_imponible_monto" inputmode="numeric" value="0"></label>
-          <label class="campo"><span>¿Está firmado?</span><select name="firmado">
-            <option value="false">Todavía no</option><option value="true">Sí</option></select></label>
+    ${editando ? `<details class="agregar" open>
+      <summary>Corregir el contrato que empieza el ${fecha(editando.fecha_inicio)}</summary>
+      <form id="f-editar-contrato">
+        ${aviso("ojo", "Lo que cambie queda anotado con su nombre y la fecha",
+          "La fecha de término manda la alerta de plazo por vencer: pasado un día, el contrato "
+          + "pasa a ser indefinido por el solo hecho de seguir trabajando (art. 159 N°4). "
+          + "Por eso cada cambio queda en la bitácora, con lo que decía antes y lo que dice ahora.")}
+        ${camposContrato(c, editando)}
+        <div class="pie-form">
+          <button class="bt" type="submit">Guardar los cambios</button>
+          <button class="bt bt--fino" type="button" id="bt-no-editar">Dejarlo como está</button>
+          <span class="sub" style="margin:0">Esto corrige el contrato que ya existe. Si lo que hubo
+            fue un cambio de condiciones, lo que corresponde es cargar uno nuevo más abajo.</span>
+          <span class="mensaje"></span>
         </div>
+      </form>
+    </details>` : ""}
+
+    <details class="agregar"${editando ? "" : ""}><summary>Cargar un contrato</summary>
+      <form id="f-contrato">
+        ${camposContrato(c, cv ? {} : { fecha_inicio: hoyISO() })}
         <div class="pie-form">
           <button class="bt" type="submit">Guardar contrato</button>
           <span class="sub" style="margin:0">${cv
@@ -3243,7 +3661,7 @@ function seccionContratos(contratos, cv, c) {
   </section>`;
 }
 
-function seccionDocumentos(documentos, c) {
+function seccionDocumentos(documentos, c, contratos = []) {
   const porGrupo = {};
   for (const d of documentos) (porGrupo[d.tipo_grupo] ||= []).push(d);
   const GRUPO = { contratacion: "Contratación", os10: "Seguridad privada (OS-10)",
@@ -3294,6 +3712,14 @@ function seccionDocumentos(documentos, c) {
             ${c.tipos_documento.map(td => `<option value="${td.codigo}">${esc(td.nombre)}${
               td.obligatorio ? " (obligatorio)" : ""}</option>`).join("")}</select></label>
           <label class="campo"><span>Número o folio</span><input name="numero" autocomplete="off"></label>
+          <!-- A qué contrato pertenece. Importa de verdad en el finiquito: un
+               finiquito enganchado a su contrato es lo que impide que después
+               alguien corrija las condiciones que ya se firmaron. -->
+          <label class="campo"><span>¿De qué contrato?</span><select name="contrato_id">
+            <option value="">No corresponde a uno en particular</option>
+            ${contratos.map(x => `<option value="${x.id}"${x.estado === "vigente" ? " selected" : ""}>${
+              ROTULO_CONTRATO[x.tipo] || x.tipo} desde ${fecha(x.fecha_inicio)}${
+              x.estado === "vigente" ? " (vigente)" : ""}</option>`).join("")}</select></label>
           <label class="campo"><span>Fecha de emisión</span><input type="date" name="fecha_emision" value="${hoyISO()}"></label>
           <label class="campo"><span>Vence el</span><input type="date" name="fecha_vencimiento"></label>
           <label class="campo" style="grid-column:span 2"><span>Archivo (PDF o foto)</span>
@@ -3459,6 +3885,41 @@ function conectarFicha(datos) {
   };
 
   enviar("#f-contrato", "/rrhh/contratos", { trabajador_id: id });
+
+  // Corregir un contrato. Va aparte del ayudante `enviar` porque es un PATCH y
+  // porque lo que devuelve es la lista de lo que cambió: eso hay que
+  // mostrarlo, no tragárselo. Quien corrige tiene que ver lo mismo que quedó
+  // escrito en la bitácora.
+  document.querySelectorAll("[data-editar-contrato]").forEach(b => {
+    b.onclick = () => {
+      RRHH.editaContrato = Number(b.dataset.editarContrato);
+      pintarFicha(id);
+    };
+  });
+  const fec = $("#f-editar-contrato");
+  if (fec) {
+    $("#bt-no-editar").onclick = () => { RRHH.editaContrato = null; pintarFicha(id); };
+    fec.onsubmit = async ev => {
+      ev.preventDefault();
+      const m = fec.querySelector(".mensaje"), bt = fec.querySelector("button[type=submit]");
+      decir(m, "Guardando…"); bt.disabled = true;
+      try {
+        const r = await pedir(`/rrhh/contratos/${RRHH.editaContrato}`, { method: "PATCH",
+          body: JSON.stringify(Object.fromEntries(new FormData(fec))) });
+        if (!r.cambios?.length) {
+          decir(m, "No había nada distinto que guardar", "ok");
+          bt.disabled = false;
+          return;
+        }
+        alert("Guardado y anotado en la bitácora a su nombre:\n\n· "
+          + r.cambios.map(x => `${x.rotulo}: ${x.antes} → ${x.despues}`).join("\n· ")
+          + (r.avisos?.length ? "\n\nTenga presente:\n\n· " + r.avisos.join("\n· ") : ""));
+        RRHH.editaContrato = null;
+        RRHH.panel = null;        // puede haber movido una alerta de plazo por vencer
+        pintarFicha(id);
+      } catch (e) { decir(m, e.message, "error"); bt.disabled = false; }
+    };
+  }
 
   // El documento se crea primero y el archivo se sube después, contra el id
   // recién creado. No se puede al revés: el archivo se guarda en una ruta que

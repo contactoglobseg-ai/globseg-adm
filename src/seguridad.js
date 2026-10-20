@@ -70,10 +70,14 @@ const CSP_PANEL = [
   "frame-ancestors 'none'",
 ].join('; ');
 
-// El libro de asistencia no carga nada de afuera: ni tipografías ni librerías.
-// Se le deja la política más corta que aguanta, que además es la página que un
-// guardia abre desde un teléfono en cualquier red.
-const CSP_ASISTENCIA = [
+// Ni el libro de asistencia ni la ficha de ingreso cargan nada de afuera: ni
+// tipografías ni librerías. Se les deja la política más corta que aguanta, que
+// además son las dos páginas que se abren desde un teléfono en cualquier red.
+// La ficha de ingreso es, encima, la única página de todo el sistema que se
+// entrega sin sesión: lo que ahí se escribe es el RUT, la dirección y la
+// cuenta bancaria de una persona, y no hay un solo origen de fuera que tenga
+// por qué estar en el medio.
+const CSP_CERRADA = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline'",
   "style-src 'self' 'unsafe-inline'",
@@ -89,16 +93,24 @@ const CSP_ASISTENCIA = [
  * Cabeceras para la página. `frame-ancestors 'none'` y X-Frame-Options dicen
  * lo mismo para navegadores nuevos y viejos: el panel no se muestra dentro de
  * otro sitio, que es como se engaña a alguien para que haga clic donde no cree.
+ *
+ * `pagina` es cuál de las tres se está sirviendo, no en qué dominio: el libro
+ * de asistencia también vive en adm.seggarridos.com/asistencia, y si esto
+ * mirara el dominio, por ese camino quedaría con geolocation=() y el guardia
+ * no podría registrar dónde marcó. La ficha de ingreso se sirve igual en los
+ * dos dominios.
  */
-export function cabecerasSeguridad(esAsistencia = false) {
+export function cabecerasSeguridad(pagina = 'panel') {
+  const cerrada = pagina === 'asistencia' || pagina === 'ficha';
   return {
     'strict-transport-security': HSTS,
-    'content-security-policy': esAsistencia ? CSP_ASISTENCIA : CSP_PANEL,
+    'content-security-policy': cerrada ? CSP_CERRADA : CSP_PANEL,
     'x-content-type-options': 'nosniff',
     'x-frame-options': 'DENY',
     'referrer-policy': 'strict-origin-when-cross-origin',
     // La asistencia sí pide ubicación: es la que marca dónde se tomó el turno.
-    'permissions-policy': esAsistencia
+    // La ficha de ingreso no la pide, y por eso tampoco la tiene.
+    'permissions-policy': pagina === 'asistencia'
       ? 'geolocation=(self), microphone=(), camera=(), interest-cohort=()'
       : 'geolocation=(), microphone=(), camera=(), interest-cohort=()',
   };

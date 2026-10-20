@@ -21,10 +21,12 @@ import * as asis from './asistencia.js';
 import * as rrhh from './rrhh.js';
 import * as carga from './carga.js';
 import * as arch from './archivos.js';
+import * as ing from './ingreso.js';
 import { redireccionHttps, cabecerasSeguridad, conCabeceras, soloHttps }
   from './seguridad.js';
-import { ipDe, huellaDe, revisarLimite, limpiarHuellas, MENSAJES as MENSAJES_LIMITE }
-  from './limite.js';
+import { ipDe, huellaDe, revisarLimite, limpiarHuellas, MENSAJES as MENSAJES_LIMITE,
+         revisarLimitePuerta, anotarIntento, limpiarIntentos,
+         MENSAJES_PUERTA } from './limite.js';
 
 const IVA = 0.19;
 
@@ -426,7 +428,12 @@ async function api(request, env, url, usuario) {
     const sub = ruta.replace(/^\/rrhh/, '') || '/';
 
     if (sub === '/panel' && metodo === 'GET') {
-      return json(await rrhh.panelRrhh(env));
+      // Las fichas que llegaron por enlace se agregan acá y no dentro de
+      // `panelRrhh` para no hacer que rrhh.js y ingreso.js se importen el uno
+      // al otro: ingreso.js ya usa `camposFicha` y `editarFicha`.
+      const p = await rrhh.panelRrhh(env);
+      p.fichas_por_revisar = await ing.porRevisar(env);
+      return json(p);
     }
 
     // Todo lo que los formularios necesitan para armarse, en un viaje.
@@ -513,6 +520,39 @@ async function api(request, env, url, usuario) {
     m = sub.match(/^\/contratos\/(\d+)$/);
     if (m && metodo === 'PATCH') {
       const r = await rrhh.editarContrato(env, usuario.usuario, Number(m[1]), cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+
+    // ------------------------------------------------- fichas de ingreso
+    if (sub === '/fichas-ingreso' && metodo === 'GET') {
+      return json(await ing.listarEnlaces(env));
+    }
+    if (sub === '/fichas-ingreso' && metodo === 'POST') {
+      // El enlace sale apuntando al mismo lugar desde donde lo pidieron, así
+      // no hay ningún dominio escrito a mano que se quede viejo. El Host lo
+      // pone Cloudflare y en `wrangler dev` es el localhost.
+      const hostPedido = (request.headers.get('host') || url.host).split(':')[0].toLowerCase();
+      const esLocal = hostPedido === 'localhost' || hostPedido === '127.0.0.1';
+      const base = `${esLocal ? 'http' : 'https'}://${request.headers.get('host') || url.host}`;
+      const r = await ing.crearEnlace(env, usuario.usuario, cuerpo, base);
+      if (r.error) return error(r.error, r.status);
+      return json(r, 201);
+    }
+    m = sub.match(/^\/fichas-ingreso\/(\d+)$/);
+    if (m && metodo === 'GET') {
+      const r = await ing.detalleEnlace(env, Number(m[1]));
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+    if (m && metodo === 'PATCH') {
+      const r = await ing.anularEnlace(env, usuario.usuario, Number(m[1]), cuerpo.motivo);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+    m = sub.match(/^\/fichas-ingreso\/(\d+)\/aceptar$/);
+    if (m && metodo === 'POST') {
+      const r = await ing.aceptarFicha(env, usuario.usuario, Number(m[1]), cuerpo);
       if (r.error) return error(r.error, r.status);
       return json(r);
     }
@@ -1418,6 +1458,17 @@ async function revisarTablas(env) {
     r.documentos_con_archivo = false;
   }
   r.bucket_documentos = await arch.bucketListo(env);
+  // La ficha de ingreso por enlace. Sin estas dos, el panel y el libro siguen
+  // andando igual: lo que no existe es generar enlaces, y la pantalla lo dice
+  // en vez de reventar.
+  for (const t of ['fichas_ingreso', 'intentos_publicos']) {
+    try {
+      await buscar(env, `${t}?select=count&limit=1`);
+      r[t] = true;
+    } catch {
+      r[t] = false;
+    }
+  }
   // Las vistas pueden faltar aunque las tablas estén: se crean al final de la
   // migración y son de las que la pantalla de RRHH consulta primero.
   for (const v of ['v_personal', 'v_documentos']) {
@@ -1452,16 +1503,24 @@ export default {
       const host = (request.headers.get('host') || url.hostname).split(':')[0].toLowerCase();
       const esAsistencia = host.split('.')[0] === 'asistencia';
       const pidePagina = url.pathname === '/' || !url.pathname.slice(1).includes('.');
-      // El libro también se sirve en adm.seggarridos.com/asistencia y en las
-      // pruebas locales, donde el dominio no lo delata. Si se mirara solo el
-      // dominio, por ese camino la página quedaría con geolocation=() y el
+      // Cuál de las tres páginas es, mirando la ruta y no solo el dominio: el
+      // libro también se sirve en adm.seggarridos.com/asistencia, y si esto
+      // mirara el dominio, por ese camino quedaría con geolocation=() y el
       // guardia no podría registrar dónde marcó.
-      const cabeceras = cabecerasSeguridad(esAsistencia || url.pathname === '/asistencia');
+      //
+      // /ficha es la ficha de ingreso, la única página sin sesión. Se entrega
+      // igual en los dos dominios: el enlace sale con el que esté usando la
+      // oficina y no tiene por qué fallar si alguien lo arma con el otro.
+      const cabeceras = cabecerasSeguridad(
+        url.pathname === '/ficha' ? 'ficha'
+        : esAsistencia || url.pathname === '/asistencia' ? 'asistencia'
+        : 'panel');
 
       // Se pide sin la extensión: el servidor de archivos resuelve
       // /asistencia -> asistencia.html, y pedirlo con .html lo hace responder
       // un 307 a la dirección sin extensión en vez de la página.
-      if (esAsistencia && pidePagina && url.pathname !== '/asistencia') {
+      if (esAsistencia && pidePagina
+          && url.pathname !== '/asistencia' && url.pathname !== '/ficha') {
         return conCabeceras(
           await env.ASSETS.fetch(new Request(new URL('/asistencia', url), request)), cabeceras);
       }
@@ -1562,6 +1621,54 @@ export default {
         }
         return new Response(JSON.stringify({ ok: true }),
           { status: 201, headers: { ...cors, 'content-type': 'application/json' } });
+      }
+
+      // La ficha de ingreso. Es la segunda ruta sin sesión que escribe —la
+      // otra es el contacto de la web— y la única que toca la tabla de
+      // personas, así que lleva lo mismo: tope por IP, validación estricta de
+      // todo lo que llega, y un token inválido, vencido o ya usado que
+      // contesta siempre lo mismo.
+      //
+      // No lleva CORS a propósito: la página que la usa la sirve este mismo
+      // Worker, así que no hay nada legítimo llamándola desde otro origen.
+      if (url.pathname.startsWith('/api/ficha/')) {
+        if (request.method !== 'POST') return error('Método no permitido', 405);
+
+        const huella = await huellaDe(ipDe(request), env);
+        // Si la revisión del tope falla —la migración no corrió, la base no
+        // contesta—, el intento pasa. Lo que protege esa puerta es el token,
+        // que no se adivina; dejar afuera a quien empieza el lunes porque la
+        // consulta del contador falló sería el daño que el tope evita.
+        const limite = await revisarLimitePuerta(env, 'ficha', huella)
+          .catch(e => { console.error('limite ficha:', e.message); return { ok: true }; });
+        if (!limite.ok) {
+          return new Response(JSON.stringify({ error: MENSAJES_PUERTA[limite.motivo] }), {
+            status: 429,
+            headers: { 'content-type': 'application/json; charset=utf-8',
+                       'retry-after': String(limite.segundos),
+                       'cache-control': 'no-store', ...soloHttps() },
+          });
+        }
+        await anotarIntento(env, 'ficha', huella)
+          .catch(e => console.error('anotar intento ficha:', e.message));
+
+        const d = await request.json().catch(() => ({}));
+        const token = typeof d.token === 'string' ? d.token : '';
+
+        if (url.pathname === '/api/ficha/abrir') {
+          const r = await ing.abrir(env, token);
+          if (r.error) return error(r.error, r.status);
+          return json(r);
+        }
+        if (url.pathname === '/api/ficha/enviar') {
+          const r = await ing.recibir(env, token, d, huella);
+          if (r.error) return error(r.error, r.status);
+          // Después de una buena, nunca después de una rechazada: así la
+          // limpieza queda acotada por el propio tope.
+          await limpiarIntentos(env).catch(e => console.error('limpiar intentos:', e.message));
+          return json(r);
+        }
+        return error('Ruta no encontrada', 404);
       }
 
       // Revisa la configuración sin mostrar ningún valor: solo responde
