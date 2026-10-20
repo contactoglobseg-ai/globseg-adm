@@ -3,15 +3,20 @@
 Esto reemplaza a "la integración de Supabase las corre sola", que dejó de ser
 cierto el 14-10-2026.
 
-> **Al 20-10-2026 las dos migraciones de RRHH ya están aplicadas en
-> producción**: `/api/diagnostico` responde `true` en todas sus tablas y
-> vistas, y también en `bucket_documentos`. Lo de más abajo se deja porque
-> explica el problema y los dos caminos para resolverlo; lo que no se sabe es
-> **cuál de los dos quedó andando**. La migración siguiente,
-> `20261020120000_ficha_ingreso.sql` (ficha de ingreso por enlace), sirve de
-> prueba: si a los pocos minutos del push `fichas_ingreso` e
-> `intentos_publicos` siguen en `false`, hay que pegarla a mano en el SQL
-> Editor y entonces no quedó andando ninguno.
+> **Al 20-10-2026, comprobado con un push de verdad: no quedó andando
+> ninguno de los dos caminos.**
+>
+> Las dos migraciones de RRHH sí están aplicadas en producción —alguien las
+> puso entre el 18 y el 20— y `/api/diagnostico` responde `true` en todas sus
+> tablas y vistas. Pero el push de `20261020120000_ficha_ingreso.sql` (ficha
+> de ingreso por enlace) sirvió de prueba y falló: el Worker se desplegó en
+> menos de un minuto y la página nueva quedó en línea, y tres minutos después
+> `fichas_ingreso` e `intentos_publicos` seguían las dos en `false`.
+>
+> Conclusión: **ni la integración de Supabase ni el workflow de Actions están
+> aplicando nada**. Toda migración hay que pegarla a mano en el SQL Editor
+> hasta que se haga el paso 2 de esta guía. Esa migración, en particular,
+> sigue sin aplicar.
 
 ## Lo primero: hoy RRHH no existe en la base
 
