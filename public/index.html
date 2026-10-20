@@ -25,40 +25,133 @@ try {
    apariencia.css, que cargan esta página y el libro de asistencia. Acá abajo
    va solo lo propio del panel. */
 
-/* ---------- marco ---------- */
+/* ---------- marco: barra lateral y columna de contenido ----------
+   Catorce pestañas en una sola fila se partían en dos o tres líneas y todas
+   pesaban igual: no se veía de un vistazo qué era de cobranza y qué de
+   personas, y la fila crecía cada vez que aparecía un módulo. Pasan a una
+   barra lateral con los grupos como títulos, que es como ordenan sus
+   secciones el Finder, Mail y Ajustes del Mac: todas a la vista con su
+   nombre completo, y un clic para llegar a cualquiera.
+
+   El ancho vive en --lateral porque lo usan tres cosas: el margen de la
+   columna, la barra de selección flotante y el recado. En teléfono vale 0 y
+   la barra pasa a ser un cajón que se abre por encima del contenido. */
+:root{
+  /* En rem, no en píxeles: con la letra en grande la lateral crece con el
+     texto en vez de partir los nombres en dos líneas. */
+  --lateral:15.5rem;
+  /* La lateral es el plano de abajo y el contenido el de arriba, así que en
+     claro va más gris que el fondo y en oscuro más clara que el negro. Es la
+     misma jerarquía de materiales del Mac: la estructura se hunde, el
+     contenido flota. */
+  --lateral-sup:rgba(235,235,240,.78);
+}
+:root[data-tema="oscuro"]{--lateral-sup:rgba(28,28,30,.74)}
+@media (prefers-color-scheme: dark){
+  :root:not([data-tema="claro"]){--lateral-sup:rgba(28,28,30,.74)}
+}
+
+.saltar{position:fixed;top:10px;left:10px;z-index:60;transform:translateY(-250%);
+  background:var(--sup);color:var(--texto);border:1px solid var(--borde);
+  border-radius:var(--r-s);padding:9px 14px;font:600 .85rem var(--cuerpo);
+  text-decoration:none;box-shadow:var(--sombra-alta)}
+.saltar:focus{transform:none}
+
+.lateral{position:fixed;top:0;left:0;bottom:0;width:var(--lateral);z-index:40;
+  display:flex;flex-direction:column;
+  background:var(--lateral-sup);border-right:1px solid var(--cromo-borde);
+  -webkit-backdrop-filter:saturate(180%) blur(24px);backdrop-filter:saturate(180%) blur(24px)}
+.lateral__marca{display:flex;align-items:center;gap:10px;flex:none;
+  padding:14px 16px 12px;padding-top:calc(14px + env(safe-area-inset-top,0px))}
+.lateral__marca img{width:28px;height:28px;flex:none}
+.lateral__marca b{display:block;font-family:var(--marca);font-size:1.05rem;
+  text-transform:uppercase;letter-spacing:.02em;line-height:1.1}
+.lateral__marca span span{display:block;font-size:.6rem;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--texto-3);margin-top:2px}
+
+/* El contenedor es relativo porque la pastilla de selección se posiciona
+   dentro de él y se mueve con translateY, no cambiando top: así se anima en
+   el compositor y se puede interrumpir a mitad de camino. */
+.lateral__nav{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;
+  position:relative;padding:2px 10px 14px;
+  /* En pantallas bajas la lista no cabe entera. En vez de cortarla con una
+     raya, lo último se desvanece contra el pie: dice "hay más abajo" sin
+     agregar un borde. Cuando cabe entera no se nota, porque esos catorce
+     píxeles finales son el relleno. */
+  -webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 14px),transparent);
+  mask-image:linear-gradient(to bottom,#000 calc(100% - 14px),transparent)}
+.lateral__grupo{font-size:.66rem;font-weight:600;letter-spacing:.075em;
+  text-transform:uppercase;color:var(--texto-3);padding:15px 11px 5px}
+.lateral__grupo:first-of-type{padding-top:3px}
+.lateral__nav button{position:relative;z-index:1;display:flex;align-items:center;
+  width:100%;background:none;border:0;cursor:pointer;text-align:left;
+  color:var(--texto-2);font:500 .875rem var(--cuerpo);letter-spacing:-.01em;
+  padding:0 11px;height:34px;border-radius:9px;white-space:nowrap;
+  touch-action:manipulation;-webkit-tap-highlight-color:transparent;
+  transition:color .18s,background-color .18s}
+.lateral__nav button:hover{color:var(--texto);background:rgba(128,128,140,.12)}
+/* La respuesta va al apretar, no al soltar. */
+.lateral__nav button:active{transform:scale(.985)}
+.lateral__nav button[aria-current="true"]{color:var(--acento);font-weight:600;
+  background:none}
+.lateral__nav button[aria-current="true"]:hover{background:none}
+/* La pastilla es un solo elemento que viaja entre las secciones. El texto
+   elegido queda en color de acento, que se lee igual mientras la pastilla
+   está a medio camino; con texto blanco quedaría invisible en el viaje. */
+.lateral__sel{position:absolute;left:10px;right:10px;top:0;height:34px;z-index:0;
+  border-radius:9px;background:var(--acento-suave);pointer-events:none;opacity:0}
+.lateral__sel.vive{opacity:1}
+
+.lateral__pie{flex:none;border-top:1px solid var(--cromo-borde);
+  padding:11px 14px;padding-bottom:calc(11px + env(safe-area-inset-bottom,0px));
+  display:flex;flex-direction:column;gap:9px}
+.quien{font-size:.78rem;color:var(--texto-3);line-height:1.35;min-width:0}
+.quien b{display:block;color:var(--texto);font-weight:600;font-size:.85rem;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lateral__pie .ajustes{justify-content:space-between}
+.lateral__pie .bt{align-self:flex-start}
+
+/* El velo solo existe cuando el cajón está abierto en teléfono: atenúa lo de
+   atrás para que se entienda que hay una capa encima, y se cierra al tocarlo. */
+.velo{position:fixed;inset:0;z-index:35;background:rgba(0,0,0,.34);opacity:0}
+
+.columna{margin-left:var(--lateral);min-height:100%;display:flex;flex-direction:column}
+
 .barra{background:var(--cromo);color:var(--texto);
   -webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);
-  border-bottom:1px solid var(--cromo-borde);
-  padding:7px clamp(12px,2vw,20px);padding-top:calc(7px + env(safe-area-inset-top,0px));
-  display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-height:50px;
-  position:sticky;top:0;z-index:20}
-.marca{display:flex;align-items:center;gap:10px;margin-right:auto}
-.marca img{width:28px;height:28px}
-.marca b{font-family:var(--marca);font-size:1.05rem;text-transform:uppercase;letter-spacing:.02em}
-.marca span{font-size:.62rem;letter-spacing:.14em;text-transform:uppercase;
-  color:var(--texto-3);display:block}
+  border-bottom:1px solid transparent;
+  padding:9px clamp(12px,2.5vw,28px);padding-top:calc(9px + env(safe-area-inset-top,0px));
+  display:flex;align-items:center;gap:12px;min-height:52px;
+  position:sticky;top:0;z-index:20;transition:border-color .25s}
+/* La línea bajo el encabezado aparece solo cuando hay contenido pasando por
+   debajo. Un borde fijo sobre una página que no ha scrolleado es una raya que
+   no separa nada. */
+.barra--pegada{border-bottom-color:var(--cromo-borde)}
+.barra__menu{display:none;align-items:center;justify-content:center;flex:none;
+  width:34px;height:34px;border-radius:9px;border:0;cursor:pointer;
+  background:var(--sup-3);color:var(--texto);touch-action:manipulation;
+  -webkit-tap-highlight-color:transparent;transition:transform .08s}
+.barra__menu:active{transform:scale(.94)}
+.barra__menu svg{width:18px;height:18px}
+.barra__donde{min-width:0;margin-right:auto}
+.barra__grupo{display:block;font-size:.65rem;font-weight:600;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--texto-3);line-height:1.15}
+.barra__tit{font-size:1.0625rem;font-weight:600;letter-spacing:-.018em;line-height:1.3;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
-/* Pestañas en píldora: la activa se llena, no se subraya. */
-.pestanas{display:flex;gap:2px;flex-wrap:wrap}
-.pestanas button{background:none;border:0;color:var(--texto-2);
-  font:500 .85rem var(--cuerpo);letter-spacing:-.01em;
-  padding:6px 10px;border-radius:980px;cursor:pointer;white-space:nowrap}
-.pestanas button:hover{color:var(--texto);background:var(--sup-3)}
-.pestanas button[aria-current="true"]{color:var(--acento);background:var(--acento-suave);font-weight:600}
-.barra__fin{display:flex;align-items:center;gap:11px;flex-wrap:wrap;
-  justify-content:flex-end;margin-left:auto}
-.quien{font-size:.78rem;color:var(--texto-3);text-align:right;line-height:1.3}
-.quien b{display:block;color:var(--texto);font-weight:600;font-size:.85rem}
-
-main{padding:clamp(16px,2.5vw,28px);max-width:1500px;margin-inline:auto}
+main{padding:clamp(16px,2.5vw,28px);max-width:1500px;margin-inline:auto;width:100%}
 .cargando{padding:60px 0;text-align:center;color:var(--texto-2)}
+/* El contenido entra, no aparece de golpe: un desplazamiento de 6px dice que
+   es una pantalla nueva sin hacer esperar a nadie. */
+.entra{animation:entra .26s cubic-bezier(.22,.8,.3,1)}
+@keyframes entra{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 
 /* ---------- controles de apariencia ---------- */
-.ajustes{display:flex;align-items:center;gap:6px}
+.ajustes{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .segmento{display:inline-flex;background:var(--sup-3);border-radius:980px;padding:2px;gap:2px}
 .segmento button{border:0;background:none;cursor:pointer;color:var(--texto-2);
   font:500 .72rem var(--cuerpo);padding:5px 8px;border-radius:980px;line-height:1.2;
-  min-width:26px;transition:background-color .15s,color .15s}
+  min-width:26px;touch-action:manipulation;transition:background-color .15s,color .15s}
 .segmento button:hover{color:var(--texto)}
 .segmento button[aria-pressed="true"]{background:var(--sup);color:var(--texto);
   font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.12)}
@@ -67,21 +160,40 @@ main{padding:clamp(16px,2.5vw,28px);max-width:1500px;margin-inline:auto}
 .segmento--letra button:nth-child(3){font-size:.95rem}
 .segmento--letra button:nth-child(4){font-size:1.08rem}
 
-/* En teléfono el encabezado se comía un cuarto de la pantalla antes de mostrar
-   un solo dato. Se aprieta todo y el bajada de la marca sale: el escudo y
-   "Administración" ya dicen dónde está uno. */
+/* Bajo 1000px la lateral se come demasiado ancho de la tabla, que es lo que
+   se viene a mirar. Pasa a ser un cajón: se abre con el botón del
+   encabezado, se arrastra con el dedo y se cierra tocando fuera. */
+@media (max-width:1000px){
+  :root{--lateral:0px}
+  .lateral{width:min(18.25rem,84vw);transform:translateX(-100%);
+    will-change:transform;box-shadow:var(--sombra-alta)}
+  .barra__menu{display:inline-flex}
+}
 @media (max-width:620px){
-  .barra{gap:8px;padding:6px 12px;padding-top:calc(6px + env(safe-area-inset-top,0px))}
-  .marca{gap:8px}
-  .marca img{width:24px;height:24px}
-  .marca b{font-size:.98rem}
-  .marca>span>span{display:none}
-  .pestanas{gap:1px}
-  .pestanas button{padding:5px 9px;font-size:.8rem}
-  .barra__fin{gap:8px}
+  .barra{gap:10px;padding:7px 12px;padding-top:calc(7px + env(safe-area-inset-top,0px))}
+  .barra__tit{font-size:1rem}
   .segmento button{padding:4px 7px;font-size:.68rem;min-width:22px}
-  .quien{font-size:.72rem}
-  .quien b{font-size:.8rem}
+}
+
+/* Movimiento reducido: el cambio de estado se sigue viendo, pero sin nada que
+   se desplace. Los resortes del cajón y de la pastilla también se apagan, y
+   eso se decide en el script, no acá. */
+@media (prefers-reduced-motion: reduce){
+  .entra{animation:none}
+  .lateral__nav button:active,.barra__menu:active,.bt:active{transform:none}
+  *,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}
+}
+/* Menos transparencia: los materiales se vuelven sólidos en vez de desaparecer. */
+@media (prefers-reduced-transparency: reduce){
+  .lateral,.barra{-webkit-backdrop-filter:none;backdrop-filter:none}
+  .lateral{background:var(--sup-2)}
+  .barra{background:var(--sup)}
+}
+@media (prefers-contrast: more){
+  .lateral,.barra{-webkit-backdrop-filter:none;backdrop-filter:none}
+  .lateral{background:var(--sup-2);border-right-color:var(--texto-3)}
+  .barra{background:var(--sup);border-bottom-color:var(--texto-3)}
+  .lateral__sel{outline:1.5px solid var(--acento)}
 }
 
 /* ---------- avisos ---------- */
@@ -208,7 +320,8 @@ tr.fila-corr td,tr.fila-corr:hover td{background:var(--sup-2);padding:0}
   border-radius:var(--r);border:1px solid var(--borde-suave)}
 .sumas div{display:flex;justify-content:space-between;gap:20px;padding:5px 0;font-size:.92rem}
 .sumas .total{border-top:1px solid var(--borde);margin-top:8px;padding-top:11px;
-  font-family:var(--display);font-size:1.5rem;font-weight:700;align-items:baseline}
+  font-family:var(--display);font-size:1.5rem;font-weight:700;align-items:baseline;
+  letter-spacing:-.025em}
 .e-borrador{background:var(--gris-suave);color:var(--gris)}
 .e-enviada{background:var(--cian-suave);color:var(--cian)}
 .e-aceptada{background:var(--verde-suave);color:var(--verde)}
@@ -271,7 +384,7 @@ tr.marcada:hover{background:var(--acento-suave)}
 
 /* Panel flotante, no una franja pegada al borde: se despega del contenido y
    deja ver que hay tabla debajo. */
-.barra-sel{position:fixed;left:0;right:0;z-index:30;
+.barra-sel{position:fixed;left:var(--lateral);right:0;z-index:30;
   bottom:calc(14px + env(safe-area-inset-bottom,0px));
   padding:0 clamp(10px,3vw,26px);pointer-events:none}
 .barra-sel__fila,.barra-sel .omitidos{pointer-events:auto}
@@ -343,7 +456,8 @@ tr.marcada:hover{background:var(--acento-suave)}
 }
 .barra-sel label.campo{gap:2px}
 .barra-sel label.campo>span{color:var(--texto-3);font-size:.7rem}
-.recado{position:fixed;left:50%;transform:translateX(-50%);bottom:24px;z-index:50;
+.recado{position:fixed;left:calc(50% + var(--lateral) / 2);transform:translateX(-50%);
+  bottom:24px;z-index:50;
   background:var(--cromo);color:var(--texto);border:1px solid var(--cromo-borde);
   -webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);
   padding:12px 18px;border-radius:980px;font-size:.88rem;font-weight:500;
@@ -356,36 +470,59 @@ body.hay-seleccion .recado{bottom:104px}
 </head>
 <body>
 
-<header class="barra">
-  <div class="marca">
+<a class="saltar" href="#app">Saltar al contenido</a>
+
+<aside class="lateral" id="lateral" aria-label="Secciones">
+  <div class="lateral__marca">
     <img src="logo.png" alt="">
     <span>
       <b>Administración</b>
       <span>Seguridad Garridos</span>
     </span>
   </div>
-  <nav class="pestanas" id="pestanas" aria-label="Secciones"></nav>
-  <div class="barra__fin">
-  <div class="ajustes">
-    <div class="segmento" role="group" aria-label="Apariencia" id="seg-tema">
-      <button type="button" data-tema="claro">Claro</button>
-      <button type="button" data-tema="oscuro">Oscuro</button>
-      <button type="button" data-tema="auto">Auto</button>
-    </div>
-    <div class="segmento segmento--letra" role="group" aria-label="Tamaño de la letra" id="seg-letra">
-      <button type="button" data-escala="0.875" aria-label="Letra chica">A</button>
-      <button type="button" data-escala="1" aria-label="Letra normal">A</button>
-      <button type="button" data-escala="1.125" aria-label="Letra grande">A</button>
-      <button type="button" data-escala="1.25" aria-label="Letra muy grande">A</button>
+  <nav class="lateral__nav" id="pestanas">
+    <div class="lateral__sel" id="lateral-sel" aria-hidden="true"></div>
+  </nav>
+  <div class="lateral__pie">
+    <div class="quien" id="quien"></div>
+    <div class="ajustes">
+      <div class="segmento" role="group" aria-label="Apariencia" id="seg-tema">
+        <button type="button" data-tema="claro">Claro</button>
+        <button type="button" data-tema="oscuro">Oscuro</button>
+        <button type="button" data-tema="auto">Auto</button>
+      </div>
+      <div class="segmento segmento--letra" role="group" aria-label="Tamaño de la letra" id="seg-letra">
+        <button type="button" data-escala="0.875" aria-label="Letra chica">A</button>
+        <button type="button" data-escala="1" aria-label="Letra normal">A</button>
+        <button type="button" data-escala="1.125" aria-label="Letra grande">A</button>
+        <button type="button" data-escala="1.25" aria-label="Letra muy grande">A</button>
+      </div>
     </div>
   </div>
-  <div class="quien" id="quien"></div>
-  </div>
-</header>
+</aside>
+<div class="velo" id="velo" hidden></div>
 
-<main id="app">
-  <p class="cargando">Cargando…</p>
-</main>
+<div class="columna">
+  <header class="barra" id="barra">
+    <button class="barra__menu" id="abrir-lateral" type="button"
+            aria-label="Secciones" aria-expanded="false" aria-controls="lateral">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" aria-hidden="true">
+        <path d="M4 7h16M4 12h16M4 17h16"/>
+      </svg>
+    </button>
+    <!-- Dónde estoy: en teléfono la lateral no se ve, y sin esto la pantalla
+         no dice en qué sección está uno. -->
+    <div class="barra__donde">
+      <span class="barra__grupo" id="donde-grupo"></span>
+      <h1 class="barra__tit" id="donde-vista">Administración</h1>
+    </div>
+  </header>
+
+  <main id="app">
+    <p class="cargando">Cargando…</p>
+  </main>
+</div>
 
 <script src="apariencia.js"></script>
 <script>
@@ -762,7 +899,10 @@ function recado(texto, tipo = "ok") {
   recadoReloj = setTimeout(() => el.remove(), 4200);
 }
 
-let estado = { usuario: null, quienBorra: [], panel: null, catalogos: null, vista: "panel" };
+let estado = { usuario: null, quienBorra: [], panel: null, catalogos: null, vista: "panel",
+  // A qué grupo de la lateral pertenece cada vista, para decirlo en el
+  // encabezado: en teléfono la lateral no se ve y sin esto nadie sabe dónde está.
+  grupoDe: {} };
 
 async function pedir(ruta, opciones) {
   const r = await fetch("/api" + ruta, {
@@ -4289,14 +4429,301 @@ const VISTAS = {
   libro: { rotulo: "Asistencia", pintar: pintarLibro, modulo: "personal" },
   bitacora: { rotulo: "Bitácora", pintar: pintarBitacora, modulo: "facturacion" },
   rrhh: { rotulo: "RRHH", pintar: pintarRrhh, modulo: "rrhh" },
-  personal: { rotulo: "Personal", pintar: pintarPersonal, modulo: "rrhh" },
+  personal: { rotulo: "Fichas", pintar: pintarPersonal, modulo: "rrhh" },
   sueldos: { rotulo: "Sueldos", pintar: pintarSueldos, modulo: "rrhh" },
   carga: { rotulo: "Carga masiva", pintar: pintarCarga, modulo: "rrhh" },
 };
 
-// Cada quien ve solo las pestañas de los módulos a los que tiene acceso.
-const vistasPermitidas = () =>
-  Object.entries(VISTAS).filter(([, v]) => !v.modulo || estado.usuario.permisos.includes(v.modulo));
+/* Las pantallas, agrupadas por área de trabajo. Catorce pestañas en una fila
+   sola se partían en tres líneas y todas pesaban igual: no había forma de ver
+   de un vistazo qué era de cobranza y qué de personas. Ahora cada una vive
+   bajo el título del área que la usa.
+
+   Los grupos calzan casi uno a uno con los permisos, y eso no es casualidad:
+   el permiso ya dice quién usa qué. A una cuenta de RRHH le aparece un grupo
+   y a una de operaciones otro, sin grupos vacíos de por medio.
+
+   El orden de acá manda también para qué se abre al entrar: la primera
+   sección que la cuenta pueda ver. */
+const GRUPOS = [
+  { rotulo: "Cobranza",    vistas: ["panel", "calendario", "bitacora"] },
+  { rotulo: "Comercial",   vistas: ["contactos", "cotizaciones"] },
+  { rotulo: "Operaciones", vistas: ["servicio", "instalaciones", "extra", "libro", "trabajadores"] },
+  { rotulo: "Personas",    vistas: ["rrhh", "personal", "sueldos", "carga"] },
+];
+
+/** Los grupos con las secciones que esta cuenta puede ver; un grupo sin
+ *  ninguna no se dibuja. Lo que no esté en ningún grupo aparece igual, al
+ *  final, bajo "Otras": una pantalla nueva que alguien olvide agrupar tiene
+ *  que salir mal puesta, no desaparecer sin que nadie se entere. */
+function navegacion() {
+  const puede = k => VISTAS[k] &&
+    (!VISTAS[k].modulo || estado.usuario.permisos.includes(VISTAS[k].modulo));
+  const agrupadas = new Set(GRUPOS.flatMap(g => g.vistas));
+  const grupos = GRUPOS
+    .map(g => ({ rotulo: g.rotulo, vistas: g.vistas.filter(puede) }))
+    .filter(g => g.vistas.length);
+  const sueltas = Object.keys(VISTAS).filter(k => !agrupadas.has(k) && puede(k));
+  if (sueltas.length) grupos.push({ rotulo: "Otras", vistas: sueltas });
+  return grupos;
+}
+
+/* ================= El marco: lateral, cajón y movimiento =================
+
+   Esto es lo único de la página con movimiento propio, y sigue tres reglas
+   prestadas de cómo arma Apple sus interfaces:
+
+   1. Todo lo que se puede agarrar se anima con un resorte, no con una
+      transición de CSS. El resorte arranca siempre desde donde está la cosa
+      EN PANTALLA, así que se puede agarrar a mitad de camino y devolver sin
+      que pegue un salto. Una transición no se deja agarrar.
+   2. Al soltar el dedo, la animación sigue a la velocidad que traía el dedo.
+      Sin eso se nota la costura entre arrastrar y soltar.
+   3. Dónde termina un envión no lo decide dónde se soltó, sino dónde iba a
+      parar: la misma proyección con que frena el scroll.
+
+   Con prefers-reduced-motion todo esto se salta y los estados se aplican de
+   una vez. Lo que se reduce es el movimiento, no la respuesta. */
+
+const MENOS_MOVIMIENTO = window.matchMedia("(prefers-reduced-motion: reduce)");
+const ES_ANGOSTO = window.matchMedia("(max-width: 1000px)");
+
+/**
+ * Un resorte, con los dos parámetros con que lo piensa Apple en vez de masa,
+ * rigidez y amortiguación:
+ *   respuesta — en cuánto llega, en segundos. Más chico, más seco.
+ *   rebote    — 0 es crítico y no se pasa; .2 se pasa un poco. El rebote se
+ *               reserva para lo que venía con envión del dedo: una cosa
+ *               lanzada se pasa, un panel que se abrió con un botón no.
+ * Devuelve un mando: `x` y `v` son el valor y la velocidad de este instante,
+ * que es justamente lo que hay que leer para que la animación siguiente
+ * empiece desde acá y no desde el valor lógico.
+ */
+function resorte({ desde, hasta, velocidad = 0, rebote = 0, respuesta = .4, alPaso, alFin }) {
+  const w = 2 * Math.PI / respuesta;
+  const z = 1 - Math.max(0, Math.min(.85, rebote));
+  let x = desde, v = velocidad, antes = null, vivo = true;
+  const paso = t => {
+    if (!vivo) return;
+    if (antes === null) antes = t;
+    // Una pestaña en segundo plano devuelve saltos de varios segundos; sin
+    // este tope la integración explota y la cosa sale disparada.
+    const dt = Math.min((t - antes) / 1000, 1 / 20);
+    antes = t;
+    const n = Math.max(1, Math.ceil(dt * 240)), h = dt / n;
+    for (let i = 0; i < n; i++) {
+      v += (-w * w * (x - hasta) - 2 * z * w * v) * h;
+      x += v * h;
+    }
+    if (Math.abs(x - hasta) < .4 && Math.abs(v) < 5) {
+      x = hasta; v = 0; vivo = false;
+      alPaso(x); if (alFin) alFin();
+      return;
+    }
+    alPaso(x);
+    requestAnimationFrame(paso);
+  };
+  requestAnimationFrame(paso);
+  return {
+    get x() { return x; }, get v() { return v; }, get vivo() { return vivo; },
+    detener() { vivo = false; },
+  };
+}
+
+/** Dónde va a parar un envión, con la misma curva de frenado del scroll. */
+const proyectar = (vel, frenado = .998) => (vel / 1000) * frenado / (1 - frenado);
+
+/** Resistencia pasado el tope: cede cada vez menos en vez de pegar un palo.
+ *  Un freno seco se lee como "esto se trabó"; la resistencia se lee como
+ *  "sigue respondiendo, pero por acá no hay más". */
+const elastico = (exceso, medida, k = .55) =>
+  (exceso * medida * k) / (medida + k * Math.abs(exceso));
+
+const marco = (() => {
+  const lateral = $("#lateral"), velo = $("#velo"), boton = $("#abrir-lateral");
+
+  /* ---------- la pastilla que marca la sección elegida ---------- */
+  let pasY = 0, pasAnim = null, pasPuesta = false;
+
+  function moverPastilla(bt, deGolpe) {
+    const sel = $("#lateral-sel");
+    if (!sel || !bt) return;
+    const destino = bt.offsetTop;
+    let v0 = 0;
+    // Siempre desde el valor que hay en pantalla: si alguien cambia de
+    // sección con la pastilla todavía viajando, sigue desde donde va y con la
+    // velocidad que lleva, en vez de saltar al punto de partida nuevo.
+    if (pasAnim) { pasY = pasAnim.x; v0 = pasAnim.v; pasAnim.detener(); pasAnim = null; }
+    sel.style.height = bt.offsetHeight + "px";
+    if (deGolpe || !pasPuesta || MENOS_MOVIMIENTO.matches) {
+      pasY = destino;
+      sel.style.transform = `translateY(${destino}px)`;
+      sel.classList.add("vive");
+      pasPuesta = true;
+      return;
+    }
+    pasAnim = resorte({
+      desde: pasY, hasta: destino, velocidad: v0, respuesta: .34,
+      alPaso: y => { pasY = y; sel.style.transform = `translateY(${y}px)`; },
+      alFin: () => { pasAnim = null; },
+    });
+  }
+
+  const botonDe = v => document.querySelector(`#pestanas button[data-vista="${v}"]`);
+  const recolocar = () => moverPastilla(botonDe(estado.vista), true);
+
+  /* ---------- el cajón, en teléfono ----------
+     x va de -ancho (cerrado) a 0 (abierto), en píxeles. */
+  let x = 0, ancho = 280, anim = null, arr = null, ultimoArrastre = -9999;
+
+  const medir = () => { ancho = lateral.getBoundingClientRect().width || ancho; };
+
+  function pintar(n) {
+    x = n;
+    lateral.style.transform = `translateX(${n}px)`;
+    const f = Math.min(1, Math.max(0, 1 + n / ancho));
+    velo.style.opacity = String(f);
+    if (f > 0 && velo.hidden) velo.hidden = false;
+  }
+
+  function asentar(destino) {
+    const abierto = destino >= 0;
+    velo.hidden = !abierto;
+    boton.setAttribute("aria-expanded", String(abierto));
+    // Cerrado, el cajón sigue existiendo corrido fuera de pantalla: sin inert
+    // se llega igual a sus botones con Tab y el lector de pantalla los lee.
+    lateral.inert = ES_ANGOSTO.matches && !abierto;
+  }
+
+  function animar(destino, v0 = 0, conEnvion = false) {
+    if (anim) { x = anim.x; if (!v0) v0 = anim.v; anim.detener(); anim = null; }
+    if (destino >= 0) {
+      velo.hidden = false; lateral.inert = false;
+      boton.setAttribute("aria-expanded", "true");
+    }
+    if (MENOS_MOVIMIENTO.matches) { pintar(destino); asentar(destino); return; }
+    anim = resorte({
+      desde: x, hasta: destino, velocidad: v0,
+      rebote: conEnvion ? .2 : 0, respuesta: .33,
+      alPaso: pintar,
+      alFin: () => { anim = null; asentar(destino); },
+    });
+  }
+
+  const abrir = () => { if (!ES_ANGOSTO.matches) return; medir(); animar(0); };
+  const cerrar = () => {
+    if (!ES_ANGOSTO.matches) return;
+    if (!anim && x <= -ancho + .5) return;
+    animar(-ancho);
+  };
+
+  /* El cajón va pegado al dedo, con resistencia pasado el tope, y al soltar
+     se va a donde iba a parar el envión. */
+  function empezar(ev) {
+    if (!ES_ANGOSTO.matches || ev.button > 0 || !ev.isPrimary) return;
+    medir();
+    arr = { x0: ev.clientX, y0: ev.clientY, base: x, activo: false,
+            donde: ev.currentTarget, hist: [{ t: ev.timeStamp, x }] };
+  }
+
+  function seguir(ev) {
+    if (!arr) return;
+    const dx = ev.clientX - arr.x0, dy = ev.clientY - arr.y0;
+    if (!arr.activo) {
+      // Hasta diez píxeles todavía puede ser un toque o un scroll vertical.
+      // Comprometerse antes se roba los clics de los botones de la lateral.
+      if (Math.abs(dx) < 10 || Math.abs(dx) <= Math.abs(dy)) return;
+      arr.activo = true;
+      if (anim) { arr.base = anim.x; anim.detener(); anim = null; }
+      try { arr.donde.setPointerCapture(ev.pointerId); } catch { /* da igual */ }
+    }
+    let n = arr.base + dx;
+    if (n > 0) n = elastico(n, ancho);
+    else if (n < -ancho) n = -ancho;
+    arr.hist.push({ t: ev.timeStamp, x: n });
+    if (arr.hist.length > 6) arr.hist.shift();
+    pintar(n);
+  }
+
+  function soltar(ev) {
+    const a = arr; arr = null;
+    if (!a) return;
+    if (!a.activo) {
+      // No llegó a ser arrastre: fue un toque. En el velo, eso cierra.
+      if (a.donde === velo) cerrar();
+      return;
+    }
+    ultimoArrastre = performance.now();
+    const p = a.hist[0], u = a.hist[a.hist.length - 1];
+    const dt = (u.t - p.t) / 1000;
+    const v = dt > 0 ? (u.x - p.x) / dt : 0;
+    animar(x + proyectar(v) > -ancho / 2 ? 0 : -ancho, v, Math.abs(v) > 120);
+  }
+
+  for (const el of [lateral, velo]) {
+    el.addEventListener("pointerdown", empezar);
+    el.addEventListener("pointermove", seguir);
+    el.addEventListener("pointerup", soltar);
+    el.addEventListener("pointercancel", soltar);
+  }
+  boton.addEventListener("click", () => (x > -ancho / 2 ? cerrar() : abrir()));
+  document.addEventListener("keydown", ev => {
+    if (ev.key === "Escape" && ES_ANGOSTO.matches && x > -ancho + .5) cerrar();
+  });
+
+  /* Al pasar de teléfono a pantalla grande hay que soltar el transform que
+     dejó el cajón: si no, la lateral se queda corrida fuera de pantalla. */
+  function acomodar() {
+    if (anim) { anim.detener(); anim = null; }
+    if (ES_ANGOSTO.matches) {
+      medir();
+      pintar(-ancho); asentar(-ancho);
+    } else {
+      lateral.style.transform = "";
+      velo.hidden = true; velo.style.opacity = "0";
+      x = 0;
+      boton.setAttribute("aria-expanded", "false");
+      lateral.inert = false;
+    }
+    recolocar();
+  }
+  ES_ANGOSTO.addEventListener("change", acomodar);
+  window.addEventListener("resize", recolocar);
+  acomodar();
+
+  /* La línea bajo el encabezado aparece solo cuando hay contenido pasando por
+     debajo: un borde fijo sobre una página sin scroll no separa nada. */
+  const barra = $("#barra");
+  const mirarScroll = () => barra.classList.toggle("barra--pegada", window.scrollY > 2);
+  window.addEventListener("scroll", mirarScroll, { passive: true });
+  mirarScroll();
+
+  return {
+    recolocar,
+    cerrar,
+    /** ¿Veníamos de un arrastre? Para no disparar el clic de un botón de la
+     *  lateral cuando lo que hizo el dedo fue arrastrar el cajón. */
+    arrastrando: () => performance.now() - ultimoArrastre < 220,
+    /** Al elegir una sección: la pastilla viaja, el encabezado dice dónde
+     *  estamos —en teléfono la lateral no se ve— y el cajón se cierra solo. */
+    alElegir(vista) {
+      moverPastilla(botonDe(vista));
+      $("#donde-grupo").textContent = estado.grupoDe[vista] || "";
+      $("#donde-vista").textContent = VISTAS[vista] ? VISTAS[vista].rotulo : "";
+      document.title = (VISTAS[vista] ? VISTAS[vista].rotulo + " · " : "") +
+        "Administración · Seguridad Garridos";
+      cerrar();
+    },
+    /** El contenido nuevo entra en vez de aparecer de golpe. */
+    entrada() {
+      const app = $("#app");
+      if (!app || MENOS_MOVIMIENTO.matches) return;
+      app.classList.remove("entra");
+      void app.offsetWidth;   // sin esto la animación no se vuelve a disparar
+      app.classList.add("entra");
+    },
+  };
+})();
 
 function ir(vista) {
   // Cambiar de sección descarta lo marcado: las acciones de la barra no
@@ -4314,10 +4741,12 @@ function ir(vista) {
   window.scrollTo({ top: 0 });
   document.querySelectorAll("#pestanas button").forEach(b =>
     b.setAttribute("aria-current", String(b.dataset.vista === vista)));
+  marco.alElegir(vista);
   // Varias vistas son asíncronas: si fallan y nadie atrapa el error, la
   // pantalla se queda en blanco sin decir por qué. Mejor mostrar el motivo.
   Promise.resolve()
     .then(() => VISTAS[vista].pintar())
+    .then(() => marco.entrada())
     .catch(e => {
       $("#app").innerHTML = aviso("mal", "No se pudo cargar esta sección", e.message);
     });
@@ -4411,20 +4840,38 @@ async function arrancar() {
     $("#quien").innerHTML =
       `<b>${esc(usuario.nombre)}</b>${esc(usuario.usuario)} · ${esc(usuario.rol)}`;
     $("#quien").insertAdjacentHTML("afterend",
-      `<button class="bt bt--fino bt--chico" id="salir" style="margin-left:12px">Cerrar sesión</button>`);
+      `<button class="bt bt--fino bt--chico" id="salir" type="button">Cerrar sesión</button>`);
     $("#salir").onclick = async () => {
       await pedir("/sesion", { method: "DELETE" }).catch(() => {});
       location.reload();
     };
-    const permitidas = vistasPermitidas();
+
+    const grupos = navegacion();
+    const permitidas = grupos.flatMap(g => g.vistas);
     if (!permitidas.length) {
       $("#app").innerHTML = aviso("ojo", "Su cuenta todavía no tiene módulos asignados",
         "Su rol es «" + esc(usuario.rol) + "». El módulo correspondiente aún no está construido.");
       return;
     }
-    $("#pestanas").innerHTML = permitidas
-      .map(([k, v]) => `<button data-vista="${k}">${v.rotulo}</button>`).join("");
-    document.querySelectorAll("#pestanas button").forEach(b => { b.onclick = () => ir(b.dataset.vista); });
+    estado.grupoDe = {};
+    for (const g of grupos) for (const v of g.vistas) estado.grupoDe[v] = g.rotulo;
+    // La pastilla de selección se vuelve a emitir acá porque este innerHTML se
+    // lleva por delante la que trae el HTML.
+    $("#pestanas").innerHTML =
+      `<div class="lateral__sel" id="lateral-sel" aria-hidden="true"></div>` +
+      grupos.map(g =>
+        `<div class="lateral__grupo">${esc(g.rotulo)}</div>` +
+        g.vistas.map(k =>
+          `<button type="button" data-vista="${k}">${esc(VISTAS[k].rotulo)}</button>`).join("")
+      ).join("");
+    // Un solo oyente en el contenedor: sigue andando si mañana se agrega una
+    // sección desde JavaScript. Y no dispara si el dedo venía arrastrando el
+    // cajón en vez de apuntándole a un botón.
+    $("#pestanas").onclick = ev => {
+      const b = ev.target.closest("button[data-vista]");
+      if (!b || marco.arrastrando()) return;
+      ir(b.dataset.vista);
+    };
 
     // Cada cosa se pide solo si la cuenta puede pedirla. Una cuenta de solo
     // RRHH no tiene acceso a /catalogos, y pedirlo igual la dejaba sin entrar.
@@ -4432,7 +4879,7 @@ async function arrancar() {
       estado.catalogos = await pedir("/catalogos");
     }
     if (usuario.permisos.includes("facturacion")) estado.panel = await pedir("/panel");
-    ir(permitidas[0][0]);
+    ir(permitidas[0]);
   } catch (e) {
     $("#app").innerHTML = aviso("mal", "No se pudo entrar", e.message);
   }
