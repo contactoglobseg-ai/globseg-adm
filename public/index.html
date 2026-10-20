@@ -237,6 +237,17 @@ tbody tr:hover{background:var(--sup-2)}
 td.num,th.num{text-align:right}
 .vacio{padding:30px 16px;text-align:center;color:var(--texto-3);font-size:.9rem}
 
+/* Fila que abre cada empresa cuando el panel va agrupado. No es una fila de
+   datos: no se marca, no se ilumina al pasar por encima y no lleva casilla. */
+tr.grupo td{background:var(--sup-2);font-weight:600;padding:9px 12px;
+  border-bottom:1px solid var(--borde)}
+tr.grupo:hover td{background:var(--sup-2)}
+tr.grupo .sub{display:inline;margin-left:10px;font-weight:400}
+/* Trece columnas no caben en el Mac de la oficina, así que esta tabla se
+   arrastra a lo ancho. El nombre de la empresa se queda pegado al borde: si se
+   va con el arrastre, las filas de la derecha quedan sin dueño a la vista. */
+tr.grupo .grupo__eti{position:sticky;left:12px;display:inline-block}
+
 /* Formularios de "agregar" plegados: la ficha de una persona tiene cuatro
    secciones con alta propia, y desplegadas todas no se ve ningún dato. */
 details.agregar{border-top:1px solid var(--borde-suave)}
@@ -915,6 +926,10 @@ function recado(texto, tipo = "ok") {
 }
 
 let estado = { usuario: null, quienBorra: [], panel: null, catalogos: null, vista: "panel",
+  // Qué empresa se está mirando en el panel y en qué orden. Vive en memoria,
+  // como el filtro del libro de asistencia: son un puñado de clientes y todo
+  // lo que hay que filtrar ya llegó en /panel.
+  panelFiltro: { empresa: "", orden: "urgencia" },
   // A qué grupo de la lateral pertenece cada vista, para decirlo en el
   // encabezado: en teléfono la lateral no se ve y sin esto nadie sabe dónde está.
   grupoDe: {} };
@@ -930,12 +945,104 @@ async function pedir(ruta, opciones) {
 }
 
 // ------------------------------------------------------------- vistas
-function pintarPanel() {
-  const { ciclos, extras_sueltos: sueltos, resumen: r } = estado.panel;
-  const porEstado = e => ciclos.filter(c => c.estado === e);
-  const pendientes = [...porEstado("solicitar_oc"), ...porEstado("pendiente_facturacion")];
+/**
+ * Los totales de las fichas, calculados sobre las filas que están a la vista.
+ * Antes venían hechos del servidor; con una empresa elegida tienen que cuadrar
+ * con lo que se está mirando, y tener la misma cuenta escrita en las dos
+ * puntas es pedir que un día digan cosas distintas.
+ */
+function resumirPanel(ciclos, sueltos) {
+  const abiertos = ciclos.filter(c => c.estado !== "cerrado");
+  // Facturado y todavía sin cobrar: la plata que salió en factura y no entró.
+  const sinCobrar = ciclos.filter(c => c.estado === "cerrado" && c.pago_estado === "por_cobrar");
+  return {
+    solicitar_oc:          ciclos.filter(c => c.estado === "solicitar_oc").length,
+    pendiente_facturacion: ciclos.filter(c => c.estado === "pendiente_facturacion").length,
+    en_curso:              ciclos.filter(c => c.estado === "en_curso").length,
+    neto_por_cobrar:       abiertos.reduce((t, c) => t + c.total_neto, 0),
+    facturado_sin_cobrar:  sinCobrar.length,
+    neto_facturado_sin_cobrar: sinCobrar.reduce((t, c) => t + c.total_neto, 0),
+    dias_mas_antiguo:      sinCobrar.reduce((m, c) => Math.max(m, c.dias_desde_factura || 0), 0),
+    extras_sin_asignar:    sueltos.length,
+    neto_extras_sueltos:   sueltos.reduce((t, e) => t + (Number(e.monto_neto) || 0), 0),
+    abiertos:              abiertos.length,
+  };
+}
 
-  let html = "";
+/**
+ * Las empresas que ofrece el filtro salen de lo que hay en el panel, no de
+ * /catalogos: así no se ofrece un cliente sin nada que cobrar, y esta pantalla
+ * no depende de un catálogo que algunas cuentas no pueden pedir. La elegida se
+ * mantiene en la lista aunque se quede sin filas, o al cobrar lo último de una
+ * empresa el filtro desaparecería solo y nadie entendería por qué.
+ */
+function empresasDelPanel(ciclos, sueltos, elegida) {
+  const cuenta = new Map();
+  const sumar = (nombre, cuantos) =>
+    cuenta.set(nombre || "Sin empresa", (cuenta.get(nombre || "Sin empresa") || 0) + cuantos);
+  for (const c of ciclos) sumar(c.cliente, 1);
+  for (const e of sueltos) sumar(e.cliente, 0);
+  if (elegida && !cuenta.has(elegida)) cuenta.set(elegida, 0);
+  return [...cuenta.entries()].sort((a, b) => a[0].localeCompare(b[0], "es"));
+}
+
+/** Un extra sin instalación con cliente cae en el mismo saco que en el filtro. */
+const empresaDe = f => f.cliente || "Sin empresa";
+
+/**
+ * Agrupar es ordenar por empresa y abrir cada grupo con su nombre. El orden de
+ * urgencia que trae el servidor se mantiene dentro de cada una, porque el sort
+ * es estable: primero el cliente, y adentro lo que hay que cobrar antes.
+ */
+function ordenarPorEmpresa(filas) {
+  if (estado.panelFiltro.orden !== "empresa") return filas;
+  return [...filas].sort((a, b) => empresaDe(a).localeCompare(empresaDe(b), "es"));
+}
+
+const agrupandoPanel = () =>
+  estado.panelFiltro.orden === "empresa" && !estado.panelFiltro.empresa;
+
+const filaGrupo = (empresa, cuantos, neto, columnas) =>
+  `<tr class="grupo"><td colspan="${columnas}"><span class="grupo__eti">${esc(empresa)}
+    <span class="sub">${cuantos} · ${clp(neto)} neto</span></span></td></tr>`;
+
+function pintarPanel() {
+  const f = estado.panelFiltro || (estado.panelFiltro = { empresa: "", orden: "urgencia" });
+  const todos = estado.panel.ciclos, todosSueltos = estado.panel.extras_sueltos;
+  const empresas = empresasDelPanel(todos, todosSueltos, f.empresa);
+
+  const mio = fila => !f.empresa || empresaDe(fila) === f.empresa;
+  const ciclos = ordenarPorEmpresa(todos.filter(mio));
+  const sueltos = ordenarPorEmpresa(todosSueltos.filter(mio));
+  const r = resumirPanel(ciclos, sueltos);
+
+  const porEstado = e => ciclos.filter(c => c.estado === e);
+  // Los pendientes son dos estados pegados uno detrás del otro, así que hay
+  // que volver a ordenar: sin esto una empresa abría dos grupos, uno en cada
+  // mitad, y cada encabezado mostraba el total entero de la empresa.
+  const pendientes = ordenarPorEmpresa(
+    [...porEstado("solicitar_oc"), ...porEstado("pendiente_facturacion")]);
+
+  let html = `<section class="caja">
+    <div class="caja__tit">
+      <h2>${f.empresa ? esc(f.empresa) : "Todas las empresas"}</h2>
+      <span class="nota">${ciclos.length} periodo${ciclos.length === 1 ? "" : "s"} ·
+        ${clp(r.neto_por_cobrar)} neto por cobrar</span>
+      ${f.empresa ? `<button class="bt bt--fino bt--chico" type="button" id="f-todas">Ver todas</button>` : ""}
+    </div>
+    <div class="rejilla">
+      <label class="campo"><span>Empresa</span>
+        <select id="f-empresa"><option value="">Todas las empresas</option>
+          ${empresas.map(([nombre, n]) => `<option value="${esc(nombre)}"${
+            nombre === f.empresa ? " selected" : ""}>${esc(nombre)} (${n})</option>`).join("")}
+        </select></label>
+      <label class="campo"><span>Ordenar</span>
+        <select id="f-orden">
+          <option value="urgencia"${f.orden === "urgencia" ? " selected" : ""}>Lo más urgente primero</option>
+          <option value="empresa"${f.orden === "empresa" ? " selected" : ""}>Agrupado por empresa</option>
+        </select></label>
+    </div>
+  </section>`;
 
   if (r.extras_sin_asignar > 0) {
     html += aviso("mal",
@@ -948,12 +1055,20 @@ function pintarPanel() {
       "Hay que pedir la orden de compra al cliente para poder facturar.");
   }
   if (!r.extras_sin_asignar && !r.solicitar_oc && !r.pendiente_facturacion && ciclos.length) {
-    html += aviso("bien", "No hay nada pendiente de cobro", "Todos los periodos cerrados o en curso.");
+    html += aviso("bien",
+      f.empresa ? `No hay nada pendiente de cobro en ${f.empresa}` : "No hay nada pendiente de cobro",
+      "Todos los periodos cerrados o en curso.");
+  }
+  // Una empresa que no tiene nada en el panel deja la pantalla vacía, y sin
+  // esto parecería que el sistema se quedó en blanco.
+  if (f.empresa && !ciclos.length && !sueltos.length) {
+    html += aviso("ojo", `${f.empresa} no tiene periodos ni extras registrados`,
+      "Puede volver a «Todas las empresas» con el botón de arriba.");
   }
 
   html += `<dl class="resumen">
     <div class="ficha ficha--plata"><dt>Neto por cobrar</dt><dd class="num">${clp(r.neto_por_cobrar)}</dd>
-      <small>IVA aparte · ${ciclos.filter(c => c.estado !== "cerrado").length} periodos abiertos</small></div>
+      <small>IVA aparte · ${r.abiertos} periodo${r.abiertos === 1 ? "" : "s"} abierto${r.abiertos === 1 ? "" : "s"}</small></div>
     <div class="ficha ficha--ojo"><dt>Solicitar OC</dt><dd class="num">${r.solicitar_oc}</dd>
       <small>El periodo ya cerró</small></div>
     <div class="ficha"><dt>Pendiente de facturación</dt><dd class="num">${r.pendiente_facturacion}</dd>
@@ -999,7 +1114,15 @@ function tablaCiclos(titulo, filas, vacio) {
       <th class="num">Base</th><th class="num">Extras</th><th class="num">Neto</th>
       <th class="num">Total con IVA</th><th>OC</th><th>Factura</th><th>Cobranza</th><th></th>
     </tr></thead><tbody>`;
+  // Trece columnas: las doce de la tabla más la casilla de selección. Es el
+  // mismo colspan que usa la fila del formulario de más abajo.
+  let grupo = null;
   for (const c of filas) {
+    if (agrupandoPanel() && empresaDe(c) !== grupo) {
+      grupo = empresaDe(c);
+      const dentro = filas.filter(x => empresaDe(x) === grupo);
+      h += filaGrupo(grupo, dentro.length, dentro.reduce((t, x) => t + x.total_neto, 0), 13);
+    }
     h += `<tr class="fila--${marcaDeFila(c)}">
       ${celdaSel("ciclos", c.id)}
       <td><b>${esc(c.instalacion)}</b><span class="sub">${esc(c.cliente)}</span></td>
@@ -1100,8 +1223,18 @@ function tablaSueltos(sueltos) {
       <th>Fecha</th><th>Instalación</th><th>Ítem</th>
       <th class="num">Cant.</th><th class="num">Precio</th><th class="num">Neto</th>
       <th>Asignar al periodo</th></tr></thead><tbody>`;
-    const abiertos = estado.panel.ciclos.filter(c => c.estado !== "cerrado");
+    // Los periodos que se ofrecen son los de lo que se está mirando: con una
+    // empresa elegida, asignarle un extra a un periodo de otra es un error.
+    const abiertos = estado.panel.ciclos.filter(c => c.estado !== "cerrado"
+      && (!estado.panelFiltro.empresa || empresaDe(c) === estado.panelFiltro.empresa));
+    let grupo = null;
     for (const e of sueltos) {
+      if (agrupandoPanel() && empresaDe(e) !== grupo) {
+        grupo = empresaDe(e);
+        const dentro = sueltos.filter(x => empresaDe(x) === grupo);
+        h += filaGrupo(grupo, dentro.length,
+          dentro.reduce((t, x) => t + (Number(x.monto_neto) || 0), 0), 8);
+      }
       h += `<tr>${celdaSel("extras", e.id)}<td class="num">${fecha(e.fecha)}</td><td>${esc(e.instalacion)}</td>
         <td>${esc(e.item)}${e.detalle ? `<br><span style="color:var(--texto-2);font-size:.8rem">${esc(e.detalle)}</span>` : ""}</td>
         <td class="num">${e.cantidad}</td>
@@ -1119,6 +1252,11 @@ function tablaSueltos(sueltos) {
 
 function conectarPanel() {
   conectarSeleccion();
+  const f = estado.panelFiltro;
+  $("#f-empresa").onchange = ev => { f.empresa = ev.target.value; pintarPanel(); };
+  $("#f-orden").onchange = ev => { f.orden = ev.target.value; pintarPanel(); };
+  const todas = $("#f-todas");
+  if (todas) todas.onclick = () => { f.empresa = ""; pintarPanel(); };
   document.querySelectorAll("[data-editar]").forEach(b => {
     b.onclick = () => {
       const fila = $(`[data-form="${b.dataset.editar}"]`);

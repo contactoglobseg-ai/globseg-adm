@@ -244,10 +244,17 @@ async function cicloDeLaFecha(env, instalacion_id, fecha) {
 const ORDEN = { solicitar_oc: 1, pendiente_facturacion: 2, en_curso: 3, cerrado: 4 };
 
 async function panel(env) {
-  const [ciclos, sueltos] = await Promise.all([
+  const [ciclos, sueltos, instalaciones] = await Promise.all([
     buscar(env, 'v_ciclos?select=*'),
     buscar(env, 'v_extras?select=*&ciclo_id=is.null&order=fecha.asc'),
+    // v_ciclos trae el cliente; v_extras no, y el panel ahora filtra por
+    // empresa. Se arma acá en vez de rehacer la vista: son unas pocas filas y
+    // en este proyecto una migración no se aplica sola.
+    buscar(env, 'v_instalaciones?select=id,cliente'),
   ]);
+
+  const clienteDe = new Map(instalaciones.map((i) => [i.id, i.cliente]));
+  for (const e of sueltos) e.cliente = clienteDe.get(e.instalacion_id) || '';
 
   for (const c of ciclos) {
     // La vista entrega neto e IVA; el total se arma acá para no repetir la
@@ -260,27 +267,12 @@ async function panel(env) {
   ciclos.sort((a, b) =>
     (ORDEN[a.estado] - ORDEN[b.estado]) || a.hasta.localeCompare(b.hasta));
 
-  const abiertos = ciclos.filter((c) => c.estado !== 'cerrado');
-  // Facturado y todavía sin cobrar: la plata que salió en factura y no entró.
-  const facturadosSinCobrar = ciclos.filter(
-    (c) => c.estado === 'cerrado' && c.pago_estado === 'por_cobrar');
-  return {
-    hoy: hoyISO(),
-    ciclos,
-    extras_sueltos: sueltos,
-    resumen: {
-      solicitar_oc:          ciclos.filter((c) => c.estado === 'solicitar_oc').length,
-      pendiente_facturacion: ciclos.filter((c) => c.estado === 'pendiente_facturacion').length,
-      en_curso:              ciclos.filter((c) => c.estado === 'en_curso').length,
-      neto_por_cobrar:       abiertos.reduce((t, c) => t + c.total_neto, 0),
-      facturado_sin_cobrar:  facturadosSinCobrar.length,
-      neto_facturado_sin_cobrar: facturadosSinCobrar.reduce((t, c) => t + c.total_neto, 0),
-      dias_mas_antiguo:      facturadosSinCobrar.reduce(
-                               (m, c) => Math.max(m, c.dias_desde_factura || 0), 0),
-      extras_sin_asignar:    sueltos.length,
-      neto_extras_sueltos:   sueltos.reduce((t, e) => t + (Number(e.monto_neto) || 0), 0),
-    },
-  };
+  // El resumen de las fichas se dejó de calcular acá: con una empresa elegida
+  // tiene que cuadrar con las filas que se están viendo, y eso solo lo sabe la
+  // pantalla. Escrito en las dos puntas, un día dirían cosas distintas, que es
+  // justo lo que pasó con el subtotal de las cotizaciones. Lo hace
+  // `resumirPanel()` en public/index.html, con los mismos datos de acá.
+  return { hoy: hoyISO(), ciclos, extras_sueltos: sueltos };
 }
 
 // ---------------------------------------------------------------- API
