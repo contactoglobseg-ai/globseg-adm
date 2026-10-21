@@ -1659,36 +1659,45 @@ export default {
     if (aHttps) return aHttps;
 
     if (!url.pathname.startsWith('/api/')) {
-      // Un Worker, dos páginas. asistencia.seggarridos.com muestra el libro de
-      // asistencia y adm.seggarridos.com el panel; comparten base de datos,
-      // sesión y código, que es justamente lo que se quería evitar duplicar.
-      // /asistencia sirve además para probar las dos en el mismo localhost.
+      // Un Worker, tres páginas con dominio propio: adm.seggarridos.com el
+      // panel de cobranza y operaciones, asistencia.seggarridos.com el libro
+      // del guardia, y rrhh.seggarridos.com Personas. Comparten base de datos,
+      // sesión y código, que es justamente lo que se quería evitar duplicar: la
+      // ficha de un guardia es una fila, la misma con la que marca turno y la
+      // misma de la que sale su contrato.
+      //
       // El dominio se lee de la cabecera Host y no de url.hostname: en
       // `wrangler dev` la URL de la petición es siempre la de la dirección
       // local, así que mirar ahí hacía que el subdominio no se pudiera probar.
+      // Por eso mismo cada página se sirve además en su ruta (/asistencia,
+      // /rrhh), que es como se prueban todas en el mismo localhost.
       const host = (request.headers.get('host') || url.hostname).split(':')[0].toLowerCase();
-      const esAsistencia = host.split('.')[0] === 'asistencia';
+      const sub = host.split('.')[0];
       const pidePagina = url.pathname === '/' || !url.pathname.slice(1).includes('.');
-      // Cuál de las tres páginas es, mirando la ruta y no solo el dominio: el
-      // libro también se sirve en adm.seggarridos.com/asistencia, y si esto
-      // mirara el dominio, por ese camino quedaría con geolocation=() y el
-      // guardia no podría registrar dónde marcó.
+
+      // Qué página es, mirando la ruta y no solo el dominio: el libro también
+      // se sirve en adm.seggarridos.com/asistencia, y si esto mirara el
+      // dominio, por ese camino quedaría con geolocation=() y el guardia no
+      // podría registrar dónde marcó.
       //
       // /ficha es la ficha de ingreso, la única página sin sesión. Se entrega
-      // igual en los dos dominios: el enlace sale con el que esté usando la
-      // oficina y no tiene por qué fallar si alguien lo arma con el otro.
-      const cabeceras = cabecerasSeguridad(
+      // igual en todos los dominios: el enlace sale con el que esté usando la
+      // oficina y no tiene por qué fallar si alguien lo arma con otro.
+      const cual =
         url.pathname === '/ficha' ? 'ficha'
-        : esAsistencia || url.pathname === '/asistencia' ? 'asistencia'
-        : 'panel');
+        : sub === 'asistencia' || url.pathname === '/asistencia' ? 'asistencia'
+        : sub === 'rrhh' || url.pathname === '/rrhh' ? 'rrhh'
+        : 'panel';
+      const cabeceras = cabecerasSeguridad(cual);
 
-      // Se pide sin la extensión: el servidor de archivos resuelve
-      // /asistencia -> asistencia.html, y pedirlo con .html lo hace responder
-      // un 307 a la dirección sin extensión en vez de la página.
-      if (esAsistencia && pidePagina
-          && url.pathname !== '/asistencia' && url.pathname !== '/ficha') {
+      // En el dominio de una página que no es el panel, cualquier ruta que
+      // pida una página entrega la suya. Se pide sin la extensión: el servidor
+      // de archivos resuelve /rrhh -> rrhh.html, y pedirlo con .html lo hace
+      // responder un 307 a la dirección sin extensión en vez de la página.
+      const propia = { asistencia: '/asistencia', rrhh: '/rrhh' }[sub];
+      if (propia && pidePagina && url.pathname !== propia && url.pathname !== '/ficha') {
         return conCabeceras(
-          await env.ASSETS.fetch(new Request(new URL('/asistencia', url), request)), cabeceras);
+          await env.ASSETS.fetch(new Request(new URL(propia, url), request)), cabeceras);
       }
       return conCabeceras(await env.ASSETS.fetch(request), cabeceras);
     }

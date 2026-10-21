@@ -3,39 +3,40 @@
 Esto reemplaza a "la integración de Supabase las corre sola", que dejó de ser
 cierto el 14-10-2026.
 
-> **Al 20-10-2026, comprobado con un push de verdad: no quedó andando
-> ninguno de los dos caminos.**
->
-> Las dos migraciones de RRHH sí están aplicadas en producción —alguien las
-> puso entre el 18 y el 20— y `/api/diagnostico` responde `true` en todas sus
-> tablas y vistas. Pero el push de `20261020120000_ficha_ingreso.sql` (ficha
-> de ingreso por enlace) sirvió de prueba y falló: el Worker se desplegó en
-> menos de un minuto y la página nueva quedó en línea, y tres minutos después
-> `fichas_ingreso` e `intentos_publicos` seguían las dos en `false`.
->
-> Conclusión: **ni la integración de Supabase ni el workflow de Actions están
-> aplicando nada**. Toda migración hay que pegarla a mano en el SQL Editor
-> hasta que se haga el paso 2 de esta guía. Esa migración, en particular,
-> sigue sin aplicar.
+> **Ni la integración de Supabase ni el workflow de Actions están aplicando
+> nada.** Comprobado con un push de verdad el 20-10-2026: el Worker se desplegó
+> en menos de un minuto y tres minutos después las tablas nuevas seguían en
+> `false`. Toda migración hay que pegarla a mano en el SQL Editor hasta que se
+> haga el paso 2 de esta guía.
 
-## Lo primero: hoy RRHH no existe en la base
+## Qué falta hoy (21-10-2026, recién consultado)
 
-`https://adm.seggarridos.com/api/diagnostico` respondía, al 18-10-2026:
+RRHH y la ficha de ingreso **ya están aplicadas**: alguien las pegó entre el 18
+y el 20, y `/api/diagnostico` responde `true` en todas sus tablas y vistas.
+
+Falta **una sola migración**, la del módulo de documentos y firma con el dedo
+(`20261020180000_documentos_firma.sql`). Estas siete están en `false`:
 
 ```
-contratos: false          tipos_documento: false     ficha_rrhh: false
-documentos_trabajador: false  parametros_rrhh: false  v_personal: false
-ausencias: false          afps: false                v_documentos: false
-                          tramos_impuesto: false     bucket_documentos: false
+plantillas_documento        documentos_generados    datos_empresa
+bloques_plantilla           firmas_documento        v_documentos_generados
+instalaciones_con_direccion
 ```
 
-El módulo de Recursos Humanos está desplegado en el Worker y **no tiene ni una
-tabla detrás**. Las dos migraciones que lo crean —`20261015170000_rrhh.sql` y
-`20261015200000_archivos_rrhh.sql`— nunca se aplicaron. Quien entre a las
-pestañas de RRHH se va a encontrar con errores, no con pantallas vacías.
+**Para pegarla no hay que buscar nada:** está lista y con su cabecera en
+`CORRER-EN-SUPABASE-21-10-2026.sql`, en la carpeta de la empresa, un nivel
+arriba de esta. Se copia entera al portapapeles con:
 
-Es exactamente el problema que esto viene a resolver, otra vez: el código subió,
-la base no, y nada avisó.
+```bash
+pbcopy < "/Users/macbookpro/Desktop/EMPRESAS/Seguridad Garridos/CORRER-EN-SUPABASE-21-10-2026.sql"
+```
+
+y se pega en
+`https://supabase.com/dashboard/project/hjoljdjjsobweqbvlijr/sql/new`.
+Se puede correr las veces que sea.
+
+Mientras no se pegue, el panel avisa en la pantalla de Documentos con el nombre
+del archivo y **todo lo demás sigue andando igual**, incluido marcar turno.
 
 ## Los tres pasos
 
@@ -63,9 +64,10 @@ después de comprobar en el catálogo que lo que esa migración crea está
 realmente en la base — no se cree una lista escrita a mano, mira. Se puede
 correr las veces que sea.
 
-Al terminar muestra la lista. Hoy tiene que dar **16 filas**, de `inicial` a
-`limite_contacto`, y las dos de RRHH NO deben aparecer: son justamente las que
-falta aplicar.
+Al terminar muestra la lista. Al 21-10-2026 tiene que dar **19 filas**, de
+`inicial` a `ficha_ingreso`, y `documentos_firma` NO debe aparecer: es
+justamente la que falta aplicar. (Si se pega antes el SQL de más arriba, serán
+20 y no faltará ninguna.)
 
 ### 2. Elegir quién las aplica de ahora en adelante
 
@@ -114,12 +116,12 @@ Dos cuidados con esa cadena, que es donde se pierde la tarde:
 ### 3. Aplicar lo que falta y comprobar
 
 Con el historial reparado y el secreto puesto: en GitHub, pestaña **Actions** →
-**Migraciones** → **Run workflow**. Eso aplica las dos de RRHH.
+**Migraciones** → **Run workflow**. Eso aplica lo que falte — hoy,
+`documentos_firma`, si no se pegó antes a mano.
 
 Después, mirar otra vez
-`https://adm.seggarridos.com/api/diagnostico`: `contratos`, `tipos_documento`,
-`ficha_rrhh`, `v_personal`, `v_documentos` y `documentos_con_archivo` tienen que
-haber pasado a `true`.
+`https://adm.seggarridos.com/api/diagnostico`: las siete de la lista de arriba
+tienen que haber pasado a `true`.
 
 `bucket_documentos` es aparte: va en la misma migración pero por otro camino
 (Storage, no la base). Si queda en `false`, hay que crear el bucket privado

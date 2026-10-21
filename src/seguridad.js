@@ -94,11 +94,16 @@ const CSP_CERRADA = [
  * lo mismo para navegadores nuevos y viejos: el panel no se muestra dentro de
  * otro sitio, que es como se engaña a alguien para que haga clic donde no cree.
  *
- * `pagina` es cuál de las tres se está sirviendo, no en qué dominio: el libro
+ * `pagina` es cuál de las cuatro se está sirviendo, no en qué dominio: el libro
  * de asistencia también vive en adm.seggarridos.com/asistencia, y si esto
  * mirara el dominio, por ese camino quedaría con geolocation=() y el guardia
- * no podría registrar dónde marcó. La ficha de ingreso se sirve igual en los
- * dos dominios.
+ * no podría registrar dónde marcó. La ficha de ingreso se sirve igual en todos
+ * los dominios.
+ *
+ * Personas ('rrhh') se lleva la política del panel y no la cerrada: baja
+ * planillas con SheetJS y emite PDF con jsPDF, los dos desde cdnjs, y con la
+ * cerrada esos dos botones quedarían muertos. Geolocalización no pide, así que
+ * la tiene en () como el panel.
  */
 export function cabecerasSeguridad(pagina = 'panel') {
   const cerrada = pagina === 'asistencia' || pagina === 'ficha';

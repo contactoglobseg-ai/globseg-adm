@@ -1,0 +1,520 @@
+/* La apariencia de las páginas de la oficina: el panel de adm.seggarridos.com
+   y Personas en rrhh.seggarridos.com.
+
+   Los tokens —colores, tamaños, formas, los dos temas— viven en
+   apariencia.css, que cargan además el libro de asistencia y la ficha de
+   ingreso. Este archivo va enlazado DESPUÉS de aquel: son los valores base y
+   acá se agrega lo propio de la oficina.
+
+   Va entero en las dos páginas, sin partirlo por pantalla. Una regla de más
+   que nadie usa no se nota; una de menos deja una tabla descuadrada y recién
+   se descubre mirando. Y partirlo obliga a acordarse de dos archivos cada vez
+   que se toca una pantalla. */
+
+/* ---------- marco: barra lateral y columna de contenido ----------
+   Catorce pestañas en una sola fila se partían en dos o tres líneas y todas
+   pesaban igual: no se veía de un vistazo qué era de cobranza y qué de
+   personas, y la fila crecía cada vez que aparecía un módulo. Pasan a una
+   barra lateral con los grupos como títulos, que es como ordenan sus
+   secciones el Finder, Mail y Ajustes del Mac: todas a la vista con su
+   nombre completo, y un clic para llegar a cualquiera.
+
+   El ancho vive en --lateral porque lo usan tres cosas: el margen de la
+   columna, la barra de selección flotante y el recado. En teléfono vale 0 y
+   la barra pasa a ser un cajón que se abre por encima del contenido. */
+:root{
+  /* En rem, no en píxeles: con la letra en grande la lateral crece con el
+     texto en vez de partir los nombres en dos líneas. */
+  --lateral:15.5rem;
+  /* La lateral es el plano de abajo y el contenido el de arriba, así que en
+     claro va más gris que el fondo y en oscuro más clara que el negro. Es la
+     misma jerarquía de materiales del Mac: la estructura se hunde, el
+     contenido flota. */
+  --lateral-sup:rgba(235,235,240,.78);
+}
+:root[data-tema="oscuro"]{--lateral-sup:rgba(28,28,30,.74)}
+@media (prefers-color-scheme: dark){
+  :root:not([data-tema="claro"]){--lateral-sup:rgba(28,28,30,.74)}
+}
+
+.saltar{position:fixed;top:10px;left:10px;z-index:60;transform:translateY(-250%);
+  background:var(--sup);color:var(--texto);border:1px solid var(--borde);
+  border-radius:var(--r-s);padding:9px 14px;font:600 .85rem var(--cuerpo);
+  text-decoration:none;box-shadow:var(--sombra-alta)}
+.saltar:focus{transform:none}
+
+.lateral{position:fixed;top:0;left:0;bottom:0;width:var(--lateral);z-index:40;
+  display:flex;flex-direction:column;
+  background:var(--lateral-sup);border-right:1px solid var(--cromo-borde);
+  -webkit-backdrop-filter:saturate(180%) blur(24px);backdrop-filter:saturate(180%) blur(24px)}
+.lateral__marca{display:flex;align-items:center;gap:10px;flex:none;
+  padding:14px 16px 12px;padding-top:calc(14px + env(safe-area-inset-top,0px))}
+.lateral__marca img{width:28px;height:28px;flex:none}
+.lateral__marca b{display:block;font-family:var(--marca);font-size:1.05rem;
+  text-transform:uppercase;letter-spacing:.02em;line-height:1.1}
+.lateral__marca span span{display:block;font-size:.6rem;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--texto-3);margin-top:2px}
+
+/* El contenedor es relativo porque la pastilla de selección se posiciona
+   dentro de él y se mueve con translateY, no cambiando top: así se anima en
+   el compositor y se puede interrumpir a mitad de camino. */
+.lateral__nav{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;
+  position:relative;padding:2px 10px 14px;
+  /* En pantallas bajas la lista no cabe entera. En vez de cortarla con una
+     raya, lo último se desvanece contra el pie: dice "hay más abajo" sin
+     agregar un borde. Cuando cabe entera no se nota, porque esos catorce
+     píxeles finales son el relleno. */
+  -webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 14px),transparent);
+  mask-image:linear-gradient(to bottom,#000 calc(100% - 14px),transparent)}
+.lateral__grupo{font-size:.66rem;font-weight:600;letter-spacing:.075em;
+  text-transform:uppercase;color:var(--texto-3);padding:15px 11px 5px}
+.lateral__grupo:first-of-type{padding-top:3px}
+.lateral__nav button{position:relative;z-index:1;display:flex;align-items:center;
+  width:100%;background:none;border:0;cursor:pointer;text-align:left;
+  color:var(--texto-2);font:500 .875rem var(--cuerpo);letter-spacing:-.01em;
+  padding:0 11px;height:34px;border-radius:9px;white-space:nowrap;
+  touch-action:manipulation;-webkit-tap-highlight-color:transparent;
+  transition:color .18s,background-color .18s}
+.lateral__nav button:hover{color:var(--texto);background:rgba(128,128,140,.12)}
+/* La respuesta va al apretar, no al soltar. */
+.lateral__nav button:active{transform:scale(.985)}
+.lateral__nav button[aria-current="true"]{color:var(--acento);font-weight:600;
+  background:none}
+.lateral__nav button[aria-current="true"]:hover{background:none}
+/* La pastilla es un solo elemento que viaja entre las secciones. El texto
+   elegido queda en color de acento, que se lee igual mientras la pastilla
+   está a medio camino; con texto blanco quedaría invisible en el viaje. */
+.lateral__sel{position:absolute;left:10px;right:10px;top:0;height:34px;z-index:0;
+  border-radius:9px;background:var(--acento-suave);pointer-events:none;opacity:0}
+.lateral__sel.vive{opacity:1}
+
+.lateral__pie{flex:none;border-top:1px solid var(--cromo-borde);
+  padding:11px 14px;padding-bottom:calc(11px + env(safe-area-inset-bottom,0px));
+  display:flex;flex-direction:column;gap:9px}
+.quien{font-size:.78rem;color:var(--texto-3);line-height:1.35;min-width:0}
+.quien b{display:block;color:var(--texto);font-weight:600;font-size:.85rem;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lateral__pie .ajustes{justify-content:space-between}
+.lateral__pie .bt{align-self:flex-start}
+
+/* El velo solo existe cuando el cajón está abierto en teléfono: atenúa lo de
+   atrás para que se entienda que hay una capa encima, y se cierra al tocarlo. */
+.velo{position:fixed;inset:0;z-index:35;background:rgba(0,0,0,.34);opacity:0}
+
+.columna{margin-left:var(--lateral);min-height:100%;display:flex;flex-direction:column}
+
+.barra{background:var(--cromo);color:var(--texto);
+  -webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);
+  border-bottom:1px solid transparent;
+  padding:9px clamp(12px,2.5vw,28px);padding-top:calc(9px + env(safe-area-inset-top,0px));
+  display:flex;align-items:center;gap:12px;min-height:52px;
+  position:sticky;top:0;z-index:20;transition:border-color .25s}
+/* La línea bajo el encabezado aparece solo cuando hay contenido pasando por
+   debajo. Un borde fijo sobre una página que no ha scrolleado es una raya que
+   no separa nada. */
+.barra--pegada{border-bottom-color:var(--cromo-borde)}
+.barra__menu{display:none;align-items:center;justify-content:center;flex:none;
+  width:34px;height:34px;border-radius:9px;border:0;cursor:pointer;
+  background:var(--sup-3);color:var(--texto);touch-action:manipulation;
+  -webkit-tap-highlight-color:transparent;transition:transform .08s}
+.barra__menu:active{transform:scale(.94)}
+.barra__menu svg{width:18px;height:18px}
+.barra__donde{min-width:0;margin-right:auto}
+.barra__grupo{display:block;font-size:.65rem;font-weight:600;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--texto-3);line-height:1.15}
+.barra__tit{font-size:1.0625rem;font-weight:600;letter-spacing:-.018em;line-height:1.3;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+main{padding:clamp(16px,2.5vw,28px);max-width:1500px;margin-inline:auto;width:100%}
+.cargando{padding:60px 0;text-align:center;color:var(--texto-2)}
+/* El contenido entra, no aparece de golpe: un desplazamiento de 6px dice que
+   es una pantalla nueva sin hacer esperar a nadie. */
+.entra{animation:entra .26s cubic-bezier(.22,.8,.3,1)}
+@keyframes entra{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+/* ---------- controles de apariencia ---------- */
+.ajustes{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.segmento{display:inline-flex;background:var(--sup-3);border-radius:980px;padding:2px;gap:2px}
+.segmento button{border:0;background:none;cursor:pointer;color:var(--texto-2);
+  font:500 .72rem var(--cuerpo);padding:5px 8px;border-radius:980px;line-height:1.2;
+  min-width:26px;touch-action:manipulation;transition:background-color .15s,color .15s}
+.segmento button:hover{color:var(--texto)}
+.segmento button[aria-pressed="true"]{background:var(--sup);color:var(--texto);
+  font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.12)}
+.segmento--letra button:nth-child(1){font-size:.7rem}
+.segmento--letra button:nth-child(2){font-size:.82rem}
+.segmento--letra button:nth-child(3){font-size:.95rem}
+.segmento--letra button:nth-child(4){font-size:1.08rem}
+
+/* Bajo 1000px la lateral se come demasiado ancho de la tabla, que es lo que
+   se viene a mirar. Pasa a ser un cajón: se abre con el botón del
+   encabezado, se arrastra con el dedo y se cierra tocando fuera. */
+@media (max-width:1000px){
+  :root{--lateral:0px}
+  .lateral{width:min(18.25rem,84vw);transform:translateX(-100%);
+    will-change:transform;box-shadow:var(--sombra-alta)}
+  .barra__menu{display:inline-flex}
+}
+@media (max-width:620px){
+  .barra{gap:10px;padding:7px 12px;padding-top:calc(7px + env(safe-area-inset-top,0px))}
+  .barra__tit{font-size:1rem}
+  .segmento button{padding:4px 7px;font-size:.68rem;min-width:22px}
+}
+
+/* Movimiento reducido: el cambio de estado se sigue viendo, pero sin nada que
+   se desplace. Los resortes del cajón y de la pastilla también se apagan, y
+   eso se decide en el script, no acá. */
+@media (prefers-reduced-motion: reduce){
+  .entra{animation:none}
+  .lateral__nav button:active,.barra__menu:active,.bt:active{transform:none}
+  *,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}
+}
+/* Menos transparencia: los materiales se vuelven sólidos en vez de desaparecer. */
+@media (prefers-reduced-transparency: reduce){
+  .lateral,.barra{-webkit-backdrop-filter:none;backdrop-filter:none}
+  .lateral{background:var(--sup-2)}
+  .barra{background:var(--sup)}
+}
+@media (prefers-contrast: more){
+  .lateral,.barra{-webkit-backdrop-filter:none;backdrop-filter:none}
+  .lateral{background:var(--sup-2);border-right-color:var(--texto-3)}
+  .barra{background:var(--sup);border-bottom-color:var(--texto-3)}
+  .lateral__sel{outline:1.5px solid var(--acento)}
+}
+
+/* ---------- avisos ---------- */
+.aviso{border-radius:4px;padding:14px 16px;margin-bottom:18px;display:flex;gap:12px;
+  align-items:flex-start;font-size:.92rem;line-height:1.5}
+.aviso b{display:block;font-weight:600;margin-bottom:2px}
+.aviso--mal{background:var(--rojo-suave);color:var(--rojo)}
+.aviso--ojo{background:var(--ambar-suave);color:var(--ambar)}
+.aviso--bien{background:var(--verde-suave);color:var(--verde)}
+.aviso svg{width:20px;height:20px;flex:none;margin-top:1px}
+
+/* ---------- tarjetas de resumen ---------- */
+.resumen{display:grid;grid-template-columns:repeat(auto-fit,minmax(196px,1fr));gap:12px;margin-bottom:20px}
+.ficha{background:var(--sup);border:1px solid var(--borde-suave);border-radius:var(--r);
+  padding:16px 18px;box-shadow:var(--sombra)}
+.ficha dt{font-size:.8rem;color:var(--texto-2);font-weight:500;letter-spacing:-.005em}
+.ficha dd{margin:8px 0 0;font-size:1.8rem;line-height:1.05;font-weight:600;
+  letter-spacing:-.03em;overflow-wrap:anywhere}
+.ficha small{display:block;margin-top:6px;font-size:.78rem;color:var(--texto-3)}
+.ficha--ojo dd{color:var(--ambar)} .ficha--plata dd{color:var(--texto)}
+
+/* ---------- tablas ---------- */
+.caja{background:var(--sup);border:1px solid var(--borde-suave);border-radius:var(--r);
+  overflow:hidden;margin-bottom:22px;box-shadow:var(--sombra)}
+.caja__tit{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  padding:13px 16px;background:var(--sup-2);border-bottom:1px solid var(--borde-suave)}
+.caja__tit h2{font-size:1.02rem}
+.caja__tit .nota{font-size:.82rem;color:var(--texto-3);margin-left:auto}
+.desliza{overflow-x:auto}
+.desliza table{min-width:1080px}
+.sub{color:var(--texto-3);font-size:.8rem;display:block;margin-top:2px}
+.nowrap{white-space:nowrap}
+td b{display:block}
+table{border-collapse:collapse;width:100%;font-size:.88rem}
+th{text-align:left;font-size:.72rem;letter-spacing:.02em;
+  color:var(--texto-3);font-weight:500;padding:10px 12px;
+  border-bottom:1px solid var(--borde-suave);white-space:nowrap}
+td{padding:12px;border-bottom:1px solid var(--borde-suave);vertical-align:top}
+tbody tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--sup-2)}
+td.num,th.num{text-align:right}
+.vacio{padding:30px 16px;text-align:center;color:var(--texto-3);font-size:.9rem}
+
+/* Fila que abre cada empresa cuando el panel va agrupado. No es una fila de
+   datos: no se marca, no se ilumina al pasar por encima y no lleva casilla. */
+tr.grupo td{background:var(--sup-2);font-weight:600;padding:9px 12px;
+  border-bottom:1px solid var(--borde)}
+tr.grupo:hover td{background:var(--sup-2)}
+tr.grupo .sub{display:inline;margin-left:10px;font-weight:400}
+/* Trece columnas no caben en el Mac de la oficina, así que esta tabla se
+   arrastra a lo ancho. El nombre de la empresa se queda pegado al borde: si se
+   va con el arrastre, las filas de la derecha quedan sin dueño a la vista. */
+tr.grupo .grupo__eti{position:sticky;left:12px;display:inline-block}
+
+/* Formularios de "agregar" plegados: la ficha de una persona tiene cuatro
+   secciones con alta propia, y desplegadas todas no se ve ningún dato. */
+details.agregar{border-top:1px solid var(--borde-suave)}
+details.agregar>summary{cursor:pointer;padding:13px 16px;font-size:.86rem;font-weight:600;
+  color:var(--acento);list-style:none;display:flex;align-items:center;gap:8px}
+details.agregar>summary::-webkit-details-marker{display:none}
+details.agregar>summary::before{content:"+";font-size:1.05rem;line-height:1;
+  width:18px;height:18px;border-radius:50%;background:var(--acento-suave);
+  display:inline-flex;align-items:center;justify-content:center}
+details.agregar[open]>summary::before{content:"−"}
+details.agregar>summary:hover{background:var(--sup-2)}
+details.agregar[open]>summary{border-bottom:1px solid var(--borde-suave)}
+
+/* ---------- cobranza ---------- */
+.p-pagado{background:var(--verde-suave);color:var(--verde)}
+.p-factorizado{background:var(--violeta-suave);color:var(--violeta)}
+.p-por_cobrar{background:var(--cian-suave);color:var(--cian)}
+.p-por_cobrar.atrasado{background:var(--ambar-suave);color:var(--ambar)}
+tr.fila--cobrado td:first-child{box-shadow:inset 3px 0 0 var(--verde)}
+tr.fila--facturado td:first-child{box-shadow:inset 3px 0 0 var(--cian)}
+tr.fila--atrasado td:first-child{box-shadow:inset 3px 0 0 var(--ambar)}
+
+/* ---------- estados ---------- */
+.sello{display:inline-block;font-size:.7rem;letter-spacing:.01em;
+  font-weight:700;padding:4px 8px;border-radius:3px;white-space:nowrap}
+.e-solicitar_oc{background:var(--ambar-suave);color:var(--ambar)}
+.e-pendiente_facturacion{background:var(--cian-suave);color:var(--cian)}
+.e-cerrado{background:var(--verde-suave);color:var(--verde)}
+.e-en_curso{background:var(--gris-suave);color:var(--gris)}
+tr.fila--cerrado{background:var(--sup-2)}
+tr.fila--cerrado td:first-child{box-shadow:inset 3px 0 0 var(--verde)}
+tr.fila--solicitar_oc td:first-child{box-shadow:inset 3px 0 0 var(--ambar)}
+
+/* ---------- jornadas corregidas por la oficina ----------
+   Una jornada que cerró la oficina no puede parecerse a una que marcó el
+   guardia: el libro vale por eso. Franja cian al costado y el nombre de quien
+   la corrigió en la misma fila, no escondido en un tooltip. */
+tr.fila--corregida td:first-child{box-shadow:inset 3px 0 0 var(--cian)}
+.e-corregida{background:var(--cian-suave);color:var(--cian)}
+tr[hidden]{display:none}
+tr.fila-corr td,tr.fila-corr:hover td{background:var(--sup-2);padding:0}
+
+/* ---------- cotizaciones ---------- */
+.cot__cab{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;padding:16px}
+.lineas{width:100%;border-collapse:collapse}
+.lineas th{font-size:.64rem;padding:8px 10px}
+.lineas td{padding:6px 8px;vertical-align:middle;border-bottom:1px solid var(--sup-2)}
+.lineas input,.lineas select{padding:7px 9px;font-size:.86rem}
+.lineas td.num input{text-align:right}
+.lineas .quitar{background:none;border:0;color:var(--texto-2);cursor:pointer;font-size:1.1rem;
+  line-height:1;padding:4px 7px;border-radius:3px}
+.lineas .quitar:hover{color:var(--rojo);background:var(--rojo-suave)}
+.col-desc{min-width:260px} .col-cant{width:92px} .col-uni{width:96px}
+.col-precio{width:124px} .col-sub{width:124px} .col-x{width:40px}
+/* Los 1080px de .desliza son para las tablas de datos, que llevan diez
+   columnas. Acá sobran seis y heredarlos corría el Subtotal fuera del borde
+   derecho en cualquier pantalla de menos de 1150px: se escribía la cantidad y
+   el precio —que sí se ven— y el total de la línea nunca aparecía. */
+.desliza table.lineas{min-width:736px}
+
+/* Lo mismo con las dos tablas de la ficha de ingreso: seis y cuatro columnas,
+   todas cortas. Con los 1080px heredados, el botón de anular y la columna de
+   lo que mandó la persona quedaban pasadas el borde derecho, que es el error
+   que ya costó una tarde con el Subtotal de las cotizaciones. */
+.desliza table.ingresos{min-width:720px}
+.desliza table.comparar{min-width:560px}
+
+/* La de contratos lleva ocho columnas y dos botones en la última. Con los
+   1080px heredados, «Corregir» quedaba cortado contra el borde derecho a
+   1280px de pantalla, que es el ancho del Mac de la oficina. Los botones se
+   apilan cuando no caben al lado, en vez de empujar la tabla a lo ancho. */
+.desliza table.contratos{min-width:940px}
+.celda-acciones{white-space:normal}
+.celda-acciones .bt{margin:1px 0}
+
+/* La de documentos generados lleva siete columnas y dos botones en la última.
+   Mismo cuento que las de arriba: 1080px es para las de diez. */
+.desliza table.generados{min-width:860px}
+
+/* ----------------------------------------------- documento y firma
+   El cuerpo del documento es texto armado por el servidor y se muestra tal
+   cual: mismo ancho de lectura que un papel, no el ancho de la pantalla. Un
+   contrato a 1200px de ancho no lo lee nadie. */
+.documento{background:var(--sup);border:1px solid var(--borde);border-radius:var(--r);
+  padding:22px 24px;margin:0 16px 16px;max-width:74ch;white-space:pre-wrap;
+  line-height:1.62;font-size:.92rem;color:var(--texto)}
+.documento b{color:var(--texto)}
+
+/* El recuadro donde se firma. `touch-action:none` es lo que impide que el
+   navegador se lleve el gesto para hacer scroll: sin eso, en un teléfono el
+   trazo se corta apenas el dedo se mueve. */
+.firma-caja{margin:0 16px 12px}
+.firma-lienzo{display:block;width:100%;height:190px;touch-action:none;
+  background:var(--sup-2);border:1px dashed var(--borde);border-radius:var(--r);
+  color:var(--texto);cursor:crosshair}
+.firma-pie{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:8px}
+.firma-linea{flex:1;min-width:150px;border-top:1px solid var(--borde);
+  padding-top:6px;font-size:.78rem;color:var(--texto-3)}
+/* Las firmas ya puestas, al pie del documento. */
+.firmas{display:flex;flex-wrap:wrap;gap:16px;margin:0 16px 16px}
+.firma-hecha{flex:1;min-width:220px;border:1px solid var(--borde-suave);
+  border-radius:var(--r);padding:12px 14px;background:var(--sup-2)}
+.firma-hecha img{display:block;height:64px;max-width:100%;object-fit:contain;
+  object-position:left bottom;margin-bottom:6px}
+/* En oscuro la firma es negra sobre fondo oscuro y no se vería. */
+[data-tema="oscuro"] .firma-hecha img{filter:invert(1)}
+@media (prefers-color-scheme:dark){
+  :root:not([data-tema="light"]):not([data-tema="claro"]) .firma-hecha img{filter:invert(1)}
+}
+@media (max-width:620px){
+  .documento{padding:16px 15px;margin:0 12px 12px;font-size:.88rem}
+  .firma-caja{margin:0 12px 12px}
+  .firma-lienzo{height:160px}
+}
+
+/* Bajo 760px las seis columnas no caben de ninguna manera, y la que se va
+   fuera es justo la que se está mirando mientras se arma el precio. Cada
+   línea pasa a ser una ficha apilada, con el nombre del campo al lado. */
+@media (max-width:760px){
+  .desliza table.lineas{min-width:0}
+  .lineas thead{display:none}
+  .lineas,.lineas tbody,.lineas tr,.lineas td{display:block;width:auto;min-width:0}
+  .lineas tr{border:1px solid var(--borde-suave);border-radius:var(--r);
+    margin:10px 12px;padding:4px 2px}
+  .lineas td{border:0;display:flex;align-items:center;gap:10px;padding:5px 8px}
+  .lineas td::before{content:attr(data-rotulo);flex:none;width:104px;
+    font-size:.72rem;color:var(--texto-3);text-align:left}
+  .lineas td input{flex:1}
+  /* Alineado a la derecha, el número quedaba lejísimos de su rótulo. */
+  .lineas td.num input{text-align:left}
+  .lineas td.col-sub b{display:inline;font-weight:600}
+  .lineas td.col-x{justify-content:flex-end;padding-top:0}
+  .lineas td.col-x::before{content:none}
+}
+.sumas{margin-left:auto;min-width:290px;padding:16px 18px;background:var(--sup-2);
+  border-radius:var(--r);border:1px solid var(--borde-suave)}
+.sumas div{display:flex;justify-content:space-between;gap:20px;padding:5px 0;font-size:.92rem}
+.sumas .total{border-top:1px solid var(--borde);margin-top:8px;padding-top:11px;
+  font-family:var(--display);font-size:1.5rem;font-weight:700;align-items:baseline;
+  letter-spacing:-.025em}
+.e-borrador{background:var(--gris-suave);color:var(--gris)}
+.e-enviada{background:var(--cian-suave);color:var(--cian)}
+.e-aceptada{background:var(--verde-suave);color:var(--verde)}
+.e-rechazada{background:var(--rojo-suave);color:var(--rojo)}
+.vencida{color:var(--ambar);font-size:.76rem}
+
+/* ---------- entrada ---------- */
+.puerta{min-height:100%;display:grid;place-items:center;padding:24px 16px;background:var(--fondo)}
+.puerta__caja{width:100%;max-width:400px;background:var(--sup);border-radius:16px;
+  border:1px solid var(--borde-suave);box-shadow:var(--sombra-alta);overflow:hidden}
+.puerta__tit{padding:26px 26px 18px;display:flex;align-items:center;gap:12px}
+.puerta__tit img{width:40px;height:40px}
+.puerta__tit b{display:block;font-family:var(--marca);font-size:1.2rem;text-transform:uppercase}
+.puerta__tit span{display:block;font-size:.64rem;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--texto-3);margin-top:3px}
+.puerta form{padding:6px 26px 26px;display:flex;flex-direction:column;gap:14px}
+.puerta .campo>span{color:var(--texto-2)}
+.puerta .bt{justify-content:center;padding:12px;font-size:.92rem}
+.puerta__aviso{margin:0 26px 24px;padding:12px 14px;border-radius:var(--r-s);
+  font-size:.84rem;line-height:1.5}
+
+/* ---------- controles ---------- */
+.bt{display:inline-flex;align-items:center;gap:7px;font:600 .86rem var(--cuerpo);
+  letter-spacing:-.01em;padding:9px 16px;border-radius:980px;border:1px solid transparent;
+  cursor:pointer;background:var(--btn);color:var(--btn-texto);
+  transition:background-color .15s,transform .08s}
+.bt:hover{background:var(--btn-alta)}
+.bt:active{transform:scale(.97)}
+.bt--fino{background:var(--sup-3);color:var(--acento);border-color:transparent}
+.bt--fino:hover{background:var(--borde-suave)}
+.bt--chico{padding:6px 12px;font-size:.8rem}
+a.bt{text-decoration:none}
+.bt[disabled]{opacity:.42;cursor:not-allowed}
+.bt[disabled]:active{transform:none}
+label.campo{display:flex;flex-direction:column;gap:5px;font-size:.84rem;color:var(--texto-2);min-width:0}
+label.campo>span{font-weight:500;letter-spacing:-.005em;font-size:.8rem;color:var(--texto-2)}
+input,select,textarea{font:400 .92rem var(--cuerpo);color:var(--texto);background:var(--sup);
+  border:1px solid var(--borde);border-radius:var(--r-s);padding:9px 11px;width:100%;
+  caret-color:var(--acento);transition:border-color .15s,box-shadow .15s}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--acento);
+  box-shadow:0 0 0 3.5px var(--acento-suave)}
+input::placeholder{color:var(--texto-3)}
+.rejilla{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;padding:16px}
+.pie-form{padding:0 16px 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.error{color:var(--rojo);font-size:.82rem;font-weight:500}
+.ok{color:var(--verde);font-size:.82rem;font-weight:600}
+details.detalle{border-top:1px solid var(--sup-2)}
+details.detalle>summary{cursor:pointer;padding:9px 12px;font-size:.8rem;color:var(--acento);
+  font-weight:600;list-style:none}
+details.detalle>summary::-webkit-details-marker{display:none}
+details.detalle>summary::before{content:"▸ ";display:inline-block;transition:transform .15s}
+details.detalle[open]>summary::before{content:"▾ "}
+
+/* ---------- selección de varias filas ---------- */
+th.sel,td.sel{width:38px;padding-left:14px;padding-right:0}
+th.sel input,td.sel input{width:16px;height:16px;accent-color:var(--btn);cursor:pointer;
+  margin:0;padding:0}
+tr.marcada{background:var(--acento-suave)}
+tr.marcada:hover{background:var(--acento-suave)}
+
+/* Panel flotante, no una franja pegada al borde: se despega del contenido y
+   deja ver que hay tabla debajo. */
+.barra-sel{position:fixed;left:var(--lateral);right:0;z-index:30;
+  bottom:calc(14px + env(safe-area-inset-bottom,0px));
+  padding:0 clamp(10px,3vw,26px);pointer-events:none}
+.barra-sel__fila,.barra-sel .omitidos{pointer-events:auto}
+.barra-sel__fila{max-width:1100px;margin-inline:auto;
+  background:var(--cromo);border:1px solid var(--cromo-borde);border-radius:16px;
+  -webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);
+  box-shadow:var(--sombra-alta);padding:11px 14px;
+  display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.barra-sel__n{font-size:1.25rem;font-weight:600;line-height:1.05;white-space:nowrap;
+  letter-spacing:-.02em}
+.barra-sel__n span{display:block;font-size:.72rem;font-weight:500;letter-spacing:-.005em;
+  text-transform:none;color:var(--texto-3);margin-top:2px}
+.barra-sel select,.barra-sel input{width:auto;min-width:0;padding:7px 10px;font-size:.86rem}
+.barra-sel .bt--mal{background:var(--rojo);border-color:transparent;color:#fff}
+.barra-sel .bt--mal:hover{filter:brightness(1.1)}
+.barra-sel .mensaje{font-size:.84rem;color:var(--texto-2)}
+.barra-sel .bt[disabled]{opacity:.42}
+.omitidos{max-width:1100px;margin:8px auto 0;padding:10px 14px 10px 30px;border-radius:12px;
+  background:var(--rojo-suave);border:1px solid var(--cromo-borde);
+  font-size:.82rem;line-height:1.55;color:var(--rojo);
+  max-height:132px;overflow-y:auto}
+/* Lo que no se hizo va en rojo; lo que sí se hizo pero hay que saber, en ámbar. */
+.omitidos--ojo{background:var(--ambar-suave);color:var(--ambar)}
+
+/* ---------- calendario ---------- */
+.mes{display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap}
+.mes .bt{padding:7px 12px}
+.salto{display:flex;gap:6px;align-items:center}
+.salto select{width:auto;font-size:1.05rem;font-weight:600;letter-spacing:-.02em;
+  padding:7px 10px;border-radius:var(--r-s);background:var(--sup);text-transform:capitalize}
+.cal{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:1px;
+  background:var(--borde-suave);border:1px solid var(--borde-suave);
+  border-radius:var(--r);overflow:hidden;box-shadow:var(--sombra)}
+.cal__dia-sem{background:var(--sup-2);padding:9px 10px;font-size:.72rem;font-weight:600;
+  letter-spacing:-.005em;color:var(--texto-3)}
+.cal__dia{background:var(--sup);min-height:104px;padding:7px 8px;
+  display:flex;flex-direction:column;gap:3px}
+.cal__dia--fuera{background:var(--sup-2);opacity:.5}
+.cal__dia--hoy{box-shadow:inset 0 0 0 2px var(--btn)}
+.cal__n{font-size:.95rem;font-weight:500;line-height:1.1;color:var(--texto-2)}
+.cal__dia--hoy .cal__n{color:var(--btn);font-weight:700}
+.chip{display:block;width:100%;text-align:left;border:0;border-radius:var(--r-xs);cursor:pointer;
+  padding:3px 6px;font:600 .7rem/1.3 var(--cuerpo);overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.chip--inicio{background:var(--gris-suave);color:var(--gris)}
+.chip--cierre{background:var(--ambar-suave);color:var(--ambar)}
+.chip--extra{background:var(--cian-suave);color:var(--cian)}
+.chip--extra.suelto{background:var(--rojo-suave);color:var(--rojo)}
+.chip--factura{background:var(--verde-suave);color:var(--verde)}
+.chip--mas{background:var(--sup-2);color:var(--texto-2)}
+.cal__chips{display:flex;flex-direction:column;gap:3px;min-width:0}
+.leyenda{display:flex;gap:14px;flex-wrap:wrap;margin:12px 0 0;font-size:.76rem;color:var(--texto-2)}
+.leyenda span{display:flex;align-items:center;gap:5px}
+.leyenda i{width:10px;height:10px;border-radius:50%;display:inline-block}
+/* En teléfono el texto del chip no alcanza a leerse: queda un "$5…" que no
+   dice nada. Mejor un punto de color, y el detalle al tocar el día. */
+@media (max-width:620px){
+  .cal__dia{min-height:58px;padding:5px 6px;gap:5px}
+  .cal__chips{flex-direction:row;flex-wrap:wrap;gap:4px}
+  /* currentColor es el color fuerte del chip: así el punto calza con la
+     leyenda en vez de quedar en el tono pálido del fondo. */
+  /* Con .chip a secas, la regla de dos clases .chip--extra.suelto le gana y el
+     punto queda rosa pálido en vez de rojo. */
+  .cal__chips .chip{width:9px;height:9px;padding:0;border-radius:50%;flex:none;
+    background:currentColor}
+  .chip span{display:none}
+  .chip--mas{box-shadow:inset 0 0 0 1px var(--borde)}
+  .salto select{font-size:.95rem;padding:6px 8px}
+}
+.barra-sel label.campo{gap:2px}
+.barra-sel label.campo>span{color:var(--texto-3);font-size:.7rem}
+.recado{position:fixed;left:calc(50% + var(--lateral) / 2);transform:translateX(-50%);
+  bottom:24px;z-index:50;
+  background:var(--cromo);color:var(--texto);border:1px solid var(--cromo-borde);
+  -webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);
+  padding:12px 18px;border-radius:980px;font-size:.88rem;font-weight:500;
+  box-shadow:var(--sombra-alta);display:flex;align-items:center;gap:9px;max-width:92vw}
+.recado::before{content:"";width:8px;height:8px;border-radius:50%;flex:none;
+  background:var(--verde)}
+.recado--mal::before{background:var(--ambar)}
+body.hay-seleccion .recado{bottom:104px}
