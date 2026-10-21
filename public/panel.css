@@ -191,6 +191,16 @@ main{padding:clamp(16px,2.5vw,28px);max-width:1500px;margin-inline:auto;width:10
 .aviso--bien{background:var(--verde-suave);color:var(--verde)}
 .aviso svg{width:20px;height:20px;flex:none;margin-top:1px}
 
+/* Lo que falta para poder generar un documento, agrupado por dónde se
+   arregla. Va pegado al aviso ámbar de más arriba —sin su margen de abajo— y
+   con el mismo sangrado del texto del aviso, para que se lea como su
+   continuación y no como otra cosa. */
+.faltantes{margin:-18px 0 18px;padding:0 16px 14px 48px;background:var(--ambar-suave);
+  border-radius:0 0 4px 4px;font-size:.88rem;line-height:1.5}
+.faltantes>div{display:flex;flex-wrap:wrap;gap:4px 10px;padding:3px 0}
+.faltantes b{color:var(--ambar);font-weight:600;flex:none}
+.faltantes span{color:var(--texto-2)}
+
 /* ---------- tarjetas de resumen ---------- */
 .resumen{display:grid;grid-template-columns:repeat(auto-fit,minmax(196px,1fr));gap:12px;margin-bottom:20px}
 .ficha{background:var(--sup);border:1px solid var(--borde-suave);border-radius:var(--r);

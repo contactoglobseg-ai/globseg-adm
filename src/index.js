@@ -844,10 +844,28 @@ async function api(request, env, url, usuario) {
         // Las laborales se muestran igual, apagadas y con el motivo: esconder
         // una pantalla hace que la gente crea que el sistema no la tiene.
         puede_laboral: puedeLaboral,
+        // Quién puede corregir los datos de la empresa. Hoy es la misma cuenta
+        // que puede lo laboral, pero se manda aparte porque es otra pregunta:
+        // si mañana cambia una, la pantalla no tiene que adivinar cuál.
+        puede_empresa: puedeLaboral,
         personas: puedeLaboral
           ? await buscar(env, 'v_personal?select=id,nombre,rut,cargo&activo=is.true&order=nombre.asc')
           : [],
       });
+    }
+
+    // Los datos de la empresa: la razón social con que se firma, el
+    // representante, el domicilio. Entran en todos los contratos, así que los
+    // corrige Recursos Humanos y no cualquiera que pueda generar un documento:
+    // operaciones genera el arriendo de camioneta y no tiene por qué cambiar
+    // con qué razón social se firman los contratos de trabajo.
+    if (sub === '/empresa' && metodo === 'POST') {
+      if (!puedeLaboral) {
+        return error('Los datos de la empresa los corrige Recursos Humanos', 403);
+      }
+      const r = await docs.guardarEmpresa(env, usuario.usuario, cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
     }
 
     if (sub === '/' && metodo === 'GET') {

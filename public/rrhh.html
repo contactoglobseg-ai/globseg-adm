@@ -2369,7 +2369,8 @@ async function pintarDocumentos() {
         <span class="nota">Se arma con los datos de la ficha y del contrato</span></div>
       ${c.empresa_por_confirmar.length ? aviso("ojo",
         "Hay datos de la empresa sin confirmar. ",
-        c.empresa_por_confirmar.map(e => e.glosa || e.codigo).join(" ")) : ""}
+        c.empresa_por_confirmar.map(e => e.glosa || e.codigo).join(" ")
+        + (c.puede_empresa ? " Se corrigen más abajo, en «Datos de la empresa»." : "")) : ""}
       <div class="rejilla">
         <label class="campo" style="grid-column:span 2"><span>Plantilla</span>
           <select id="d-plantilla">
@@ -2408,6 +2409,8 @@ async function pintarDocumentos() {
     </section>
 
     <div id="d-previa"></div>
+
+    ${seccionEmpresa(c)}
 
     <section class="caja">
       <div class="caja__tit"><h2>Documentos generados</h2>
@@ -2449,6 +2452,14 @@ async function pintarDocumentos() {
     if (el) el.oninput = ev => { DOCS.campos[f.k] = ev.target.value; };
   }
   $("#d-ver").onclick = () => verPrevia().catch(e => decir($("#m-docs"), e.message, "error"));
+  if ($("#e-guardar")) {
+    $("#e-guardar").onclick = () => guardarDatosEmpresa()
+      .catch(e => decir($("#m-empresa"), e.message, "error"));
+  }
+  if ($("#e-confirmar")) {
+    $("#e-confirmar").onclick = () => guardarDatosEmpresa({ confirmar: true })
+      .catch(e => decir($("#m-empresa"), e.message, "error"));
+  }
   for (const b of document.querySelectorAll("[data-abrir]")) {
     b.onclick = () => abrirDocumento(Number(b.dataset.abrir))
       .catch(e => decir($("#m-docs"), e.message, "error"));
@@ -2463,6 +2474,123 @@ const selloDoc = d => d.estado === "firmado"
   : d.estado === "anulado"
     ? '<span class="sello e-rechazada">Anulado</span>'
     : '<span class="sello e-solicitar_oc">Por firmar</span>';
+
+/* ------------------------------------------------- los datos de la empresa
+
+   La razón social con que se firma, el representante, el domicilio. Entran en
+   todos los contratos y el sistema se niega a generar uno al que le falte
+   alguno, así que hasta hoy un dato mal puesto se arreglaba con un update a
+   mano en la base: la pantalla los mostraba en ámbar como «hay que confirmar»
+   y no había dónde confirmarlos.
+
+   Guardar es confirmar: la glosa es la pregunta y guardar es la respuesta. Por
+   eso hay dos botones y no uno. «Guardar los cambios» manda solo lo que se
+   editó; «Confirmar tal como están» es para el caso de que el valor ya sea el
+   correcto y lo único que falte sea que alguien lo diga. */
+
+function seccionEmpresa(c) {
+  if (!c.puede_empresa) return "";
+  const faltan = c.empresa.filter(e => e.por_confirmar).length;
+  return `
+    <section class="caja" id="d-empresa">
+      <div class="caja__tit"><h2>Datos de la empresa</h2>
+        <span class="nota">Van en todos los contratos</span></div>
+      <div class="rejilla">
+        ${c.empresa.map(e => {
+          // `rotulo` y `nota` los manda el servidor, sacados de la glosa: así el
+          // nombre de cada dato se escribe en un solo lado.
+          const { rotulo, nota } = e;
+          return `<label class="campo" style="grid-column:span 2">
+            <span>${esc(rotulo)}${e.por_confirmar
+              ? ' <span class="sello e-solicitar_oc">Por confirmar</span>' : ""}</span>
+            <input data-empresa="${esc(e.codigo)}" value="${esc(e.valor)}" maxlength="300">
+            ${nota ? `<div class="sub">${esc(nota)}</div>` : ""}
+          </label>`;
+        }).join("")}
+      </div>
+      <div class="pie-form">
+        <button class="bt" type="button" id="e-guardar">Guardar los cambios</button>
+        ${faltan ? `<button class="bt bt--fino" type="button" id="e-confirmar">
+          Confirmar ${faltan === 1 ? "el dato" : `los ${faltan} datos`} tal como ${
+          faltan === 1 ? "está" : "están"}</button>` : ""}
+        <span class="mensaje" id="m-empresa"></span>
+      </div>
+    </section>`;
+}
+
+/**
+ * Guarda los datos de la empresa que cambiaron, o confirma los que están en
+ * ámbar sin tocarles el valor.
+ *
+ * Va de a uno y no falla entero: si uno se cae, los demás igual quedan y se
+ * dice cuál no pudo, como hace `POST /lote` con las tablas.
+ */
+async function guardarDatosEmpresa({ confirmar = false } = {}) {
+  const msj = $("#m-empresa");
+  const previos = Object.fromEntries((DOCS.catalogos?.empresa || []).map(e => [e.codigo, e]));
+  const aMandar = [...document.querySelectorAll("[data-empresa]")]
+    .map(el => ({ codigo: el.dataset.empresa, valor: el.value.trim() }))
+    .filter(x => {
+      const p = previos[x.codigo];
+      if (!p) return false;
+      return confirmar ? p.por_confirmar : x.valor !== p.valor;
+    });
+
+  if (!aMandar.length) {
+    return decir(msj, confirmar ? "No queda nada por confirmar." : "No cambió ningún dato.");
+  }
+
+  decir(msj, confirmar ? "Confirmando…" : "Guardando…");
+  const malos = [];
+  for (const x of aMandar) {
+    try {
+      await pedir("/documentos/empresa", {
+        method: "POST", body: JSON.stringify({ codigo: x.codigo, valor: x.valor }),
+      });
+    } catch (e) {
+      // El mensaje del servidor ya nombra el dato: anteponerle el rótulo lo
+      // dejaba diciendo «RUT de la empresa: RUT de la empresa no puede…».
+      malos.push(e.message);
+    }
+  }
+
+  // El catálogo se vuelve a pedir, y la vista previa se tira: se armó con los
+  // datos viejos y con el aviso de «por confirmar» adentro.
+  DOCS.catalogos = null;
+  DOCS.previa = null;
+  await pintarDocumentos();
+
+  const hechos = aMandar.length - malos.length;
+  decir($("#m-empresa"),
+    malos.length
+      ? `${hechos ? `Se guardaron ${hechos}. ` : ""}No se pudo con ${malos.join(" · ")}`
+      : `Listo: ${hechos === 1 ? "un dato" : `${hechos} datos`} ${
+         confirmar ? (hechos === 1 ? "confirmado" : "confirmados") : "al día"}.`,
+    malos.length ? "error" : "ok");
+}
+
+/* Dónde se arregla cada cosa que falta. El servidor manda el campo, su rótulo
+   y de qué grupo es; acá se traduce a la pantalla donde se corrige, que es lo
+   que la persona necesita saber para no ir a buscarlo a tres lados. */
+const DONDE_FALTA = {
+  empresa:     "Datos de la empresa, acá abajo",
+  ficha:       "Ficha de la persona",
+  contrato:    "Contrato vigente — «Corregir», en la ficha",
+  instalacion: "La instalación, en Operaciones",
+  documento:   "Este mismo formulario, acá arriba",
+  bloque:      "Funciones del cargo",
+};
+
+function listaFaltantes(campos) {
+  const grupos = new Map();
+  for (const c of campos) {
+    if (!grupos.has(c.donde)) grupos.set(c.donde, []);
+    grupos.get(c.donde).push(c.rotulo);
+  }
+  return `<div class="faltantes">${[...grupos].map(([donde, rotulos]) =>
+    `<div><b>${esc(DONDE_FALTA[donde] || donde)}</b>
+     <span>${rotulos.map(esc).join(" · ")}</span></div>`).join("")}</div>`;
+}
 
 /** Lo que se manda al servidor para armar el documento. */
 function cuerpoDocumento() {
@@ -2496,9 +2624,15 @@ function pintarPrevia() {
       <div class="caja__tit"><h2>Así va a quedar</h2>
         <span class="nota">Todavía no se guarda nada</span></div>
       ${v.por_confirmar ? aviso("ojo", "Por confirmar antes de firmar. ", v.por_confirmar) : ""}
-      ${v.faltan ? aviso("ojo", "Faltan datos. ",
-        `El documento tiene ${v.faltan} ${v.faltan === 1 ? "campo" : "campos"} sin completar, `
-        + "marcados con una línea. Complete la ficha o el contrato y vuelva a verlo.") : ""}
+      ${v.faltan ? (v.faltan_campos?.length
+        ? aviso("ojo",
+            `Faltan ${v.faltan_campos.length === 1 ? "un dato" : `${v.faltan_campos.length} datos`}. `,
+            "En el texto salen como una línea de guiones. Complete esto y vuelva a ver cómo "
+            + "queda; el documento no se puede generar con huecos adentro.")
+          + listaFaltantes(v.faltan_campos)
+        : aviso("ojo", "Faltan datos. ",
+            `El documento tiene ${v.faltan} ${v.faltan === 1 ? "campo" : "campos"} sin completar, `
+            + "marcados con una línea. Complete la ficha o el contrato y vuelva a verlo.")) : ""}
       <h3 style="margin:0 16px 10px;font-size:1rem">${esc(v.titulo)}</h3>
       <div class="documento">${esc(v.cuerpo)}</div>
       <div class="pie-form">

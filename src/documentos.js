@@ -25,7 +25,8 @@
 
 import { buscar, primero, insertar, actualizar, anotar } from './datos.js';
 import { hoyISO, esFecha } from './fechas.js';
-import { armar, faltantes, hash, datosLaborales, datosArriendo } from './plantillas.js';
+import { armar, faltantes, explicarFaltantes, hash,
+         datosLaborales, datosArriendo } from './plantillas.js';
 import { ipDe, huellaDe } from './limite.js';
 import { formatearRut } from './rut.js';
 
@@ -78,9 +79,79 @@ export async function catalogos(env) {
     // que se muestra es siempre el documento ya armado.
     plantillas: plantillas.map(({ cuerpo, ...resto }) => resto),
     bloques,
-    empresa,
+    empresa: empresa.map((e) => ({ ...e, ...rotuloEmpresa(e) })),
     empresa_por_confirmar: empresa.filter((e) => e.por_confirmar),
   };
+}
+
+/**
+ * El rótulo corto de un dato de la empresa y, aparte, la explicación.
+ *
+ * Sale de la glosa, que ya vive en la base: hasta el primer punto o la primera
+ * coma es el nombre del dato y el resto es qué estaba en duda. Así el nombre no
+ * se escribe por segunda vez en la pantalla, y el servidor puede nombrarlo
+ * igual cuando algo se rechaza. «Domicilio de la empresa, el que va en el
+ * encabezado del contrato» da un rótulo que no cabe en la columna.
+ */
+export function rotuloEmpresa(e) {
+  const glosa = String(e.glosa || e.codigo).trim();
+  const corte = glosa.search(/[.,] /);
+  if (corte < 0) return { rotulo: glosa.replace(/[.,]$/, ''), nota: '' };
+  return { rotulo: glosa.slice(0, corte), nota: glosa.slice(corte + 2) };
+}
+
+/**
+ * Corrige un dato de la empresa desde la pantalla.
+ *
+ * Antes esto vivía solo en la semilla de la migración: la razón social con que
+ * se firman los contratos y el correo del representante salían en ámbar como
+ * «hay que confirmar» y no había dónde confirmarlos, así que la única salida
+ * era un update a mano en la base. Son los datos que entran en **todos** los
+ * contratos, y el sistema se niega a generar uno al que le falte alguno.
+ *
+ * Tres reglas:
+ *  - Solo códigos que ya existen. La pantalla corrige los ocho datos que la
+ *    migración sembró; no inventa llaves nuevas, que después nadie sabría qué
+ *    plantilla las usa.
+ *  - No se puede dejar vacío. Un dato en blanco no es «sin confirmar»: es un
+ *    hueco que aparece como una línea de guiones adentro de un contrato.
+ *  - **Guardar es confirmar.** La glosa es la pregunta y guardar es la
+ *    respuesta: alguien la leyó y decidió. Por eso baja `por_confirmar`
+ *    aunque el valor no cambie, y por eso queda en la bitácora con lo que
+ *    decía antes: lo que se firmó el mes pasado se firmó con el valor viejo.
+ */
+export async function guardarEmpresa(env, quien, cuerpo) {
+  const codigo = String(cuerpo?.codigo || '').trim();
+  if (!/^[a-z_]{2,40}$/.test(codigo)) return { error: 'Falta el código del dato', status: 400 };
+
+  const actual = await primero(env, `datos_empresa?select=*&codigo=eq.${codigo}`);
+  if (!actual) {
+    return { error: `«${codigo}» no es un dato de la empresa que el sistema use`, status: 404 };
+  }
+
+  const valor = limpio(cuerpo.valor, 300);
+  if (!valor) {
+    return { error: `${rotuloEmpresa(actual).rotulo} no puede quedar vacío: saldría como una `
+                    + 'línea de guiones adentro del contrato', status: 400 };
+  }
+
+  const cambio = valor !== actual.valor;
+  const confirma = actual.por_confirmar;
+  if (!cambio && !confirma) return { dato: actual, sin_cambios: true };
+
+  const [guardado] = await actualizar(env, `datos_empresa?codigo=eq.${codigo}`, {
+    valor,
+    por_confirmar: false,
+    actualizado_por: quien,
+    actualizado_en: new Date().toISOString(),
+  });
+
+  await anotar(env, quien, 'dato_empresa', null,
+    cambio ? 'corrigió un dato de la empresa' : 'confirmó un dato de la empresa',
+    cambio ? `${actual.glosa || codigo}: «${actual.valor}» → «${valor}»`
+           : `${actual.glosa || codigo}: «${valor}»`);
+
+  return { dato: guardado || { ...actual, valor, por_confirmar: false }, cambio, confirma };
 }
 
 const empresaPorCodigo = async (env) => {
@@ -166,7 +237,10 @@ export async function generar(env, quien, cuerpo,
     if (campos.patente) titulo = `${p.titulo} — ${String(campos.patente).toUpperCase()}`;
   }
 
-  const texto = armar(p.cuerpo, datos, bloque);
+  // `sinLlenar` recoge el nombre de cada campo que quedó en blanco mientras se
+  // arma; del texto terminado solo se podría contar cuántos huecos hay.
+  const sinLlenar = new Set();
+  const texto = armar(p.cuerpo, datos, bloque, sinLlenar);
   const faltan = faltantes(texto);
 
   // Lo que nadie confirmó: lo de la plantilla más lo de los datos de la
@@ -187,6 +261,9 @@ export async function generar(env, quien, cuerpo,
     cuerpo: texto,
     datos,
     faltan,
+    // Qué falta y dónde se arregla cada cosa. «Faltan 11 campos» obliga a
+    // buscarlos a ojo entre la ficha, el contrato y las instalaciones.
+    faltan_campos: explicarFaltantes(sinLlenar),
     por_confirmar: porConfirmar || null,
   };
   if (!guardar) return { vista_previa: armado };

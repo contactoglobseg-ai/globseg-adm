@@ -122,7 +122,16 @@ const FALTA = '_______________';
  *  contrato no lleva una línea que diga «Asignación de Colación: $ 0». */
 const vacio = (v) => v === null || v === undefined || v === '' || v === 0 || v === '0';
 
-export function armar(cuerpo, datos, bloque = '') {
+/**
+ * Arma el texto. `faltan`, si se le pasa un Set, se llena con el nombre de cada
+ * campo que quedó sin valor.
+ *
+ * Se recoge acá y no se deduce después del texto porque del texto solo se puede
+ * contar cuántos huecos hay, no de qué son: `faltantes()` cuenta líneas de
+ * guiones y con eso la pantalla solo sabía decir «faltan 11 campos», que deja a
+ * RRHH buscándolos a ojo entre tres pantallas distintas.
+ */
+export function armar(cuerpo, datos, bloque = '', faltan = null) {
   let t = String(cuerpo || '');
 
   // Los condicionales primero: si se reemplazaran los campos antes, un bloque
@@ -134,9 +143,16 @@ export function armar(cuerpo, datos, bloque = '') {
       (_, campo, dentro) => (vacio(datos[campo]) ? '' : dentro));
   }
 
-  t = t.replace(/\{\{=([a-z_0-9]+)\}\}/g, () => bloque || FALTA);
-  t = t.replace(/\{\{([a-z_0-9]+)\}\}/g,
-    (_, campo) => (vacio(datos[campo]) ? FALTA : String(datos[campo])));
+  t = t.replace(/\{\{=([a-z_0-9]+)\}\}/g, (_, campo) => {
+    if (bloque) return bloque;
+    if (faltan) faltan.add(campo);
+    return FALTA;
+  });
+  t = t.replace(/\{\{([a-z_0-9]+)\}\}/g, (_, campo) => {
+    if (!vacio(datos[campo])) return String(datos[campo]);
+    if (faltan) faltan.add(campo);
+    return FALTA;
+  });
 
   // Un condicional que se fue deja su línea en blanco. Tres saltos seguidos o
   // más se dejan en dos: separan párrafos, no abren huecos en la hoja.
@@ -146,6 +162,124 @@ export function armar(cuerpo, datos, bloque = '') {
 /** Los campos que quedaron sin completar. La pantalla los muestra antes de
  *  generar: un contrato con «_______» adentro no se manda a firmar. */
 export const faltantes = (texto) => (texto.match(/_{5,}/g) || []).length;
+
+/**
+ * De dónde sale cada campo, para poder decir no solo qué falta sino **dónde se
+ * arregla**. Decirle a RRHH «faltan 11 campos» la deja buscándolos a ojo entre
+ * la ficha, el contrato y el catálogo de instalaciones.
+ *
+ * Los `_palabras` llevan el mismo rótulo que su monto a propósito: salen de la
+ * misma cifra y nombrarlos aparte sería decir dos veces que falta el sueldo.
+ * Lo mismo `ciudad` y `ciudad_jurisdiccion`, que salen las dos de la ciudad
+ * donde se firma.
+ *
+ * Un campo que no esté acá se muestra con su propio nombre: una plantilla
+ * nueva que alguien olvide agregar tiene que salir fea, no desaparecer.
+ */
+export const DONDE = {
+  empresa:     'Datos de la empresa',
+  ficha:       'Ficha de la persona',
+  contrato:    'Contrato vigente',
+  instalacion: 'Instalación, en Operaciones',
+  documento:   'Este mismo formulario',
+  bloque:      'Funciones del cargo',
+};
+
+export const CAMPOS = {
+  // La empresa — se editan en Documentos, en «Datos de la empresa».
+  razon_social:         ['empresa', 'Razón social'],
+  empresa_rut:          ['empresa', 'RUT de la empresa'],
+  empresa_domicilio:    ['empresa', 'Domicilio de la empresa'],
+  representante:        ['empresa', 'Representante legal'],
+  representante_rut:    ['empresa', 'Cédula del representante'],
+  representante_correo: ['empresa', 'Correo del representante'],
+  ciudad:               ['empresa', 'Ciudad donde se firma'],
+  ciudad_jurisdiccion:  ['empresa', 'Ciudad donde se firma'],
+
+  // La persona — se editan en Fichas.
+  trabajador:      ['ficha', 'Nombre'],
+  rut:             ['ficha', 'RUT'],
+  correo:          ['ficha', 'Correo'],
+  nacimiento:      ['ficha', 'Fecha de nacimiento'],
+  nacionalidad:    ['ficha', 'Nacionalidad'],
+  domicilio:       ['ficha', 'Dirección'],
+  comuna:          ['ficha', 'Comuna'],
+  ciudad_trabajador: ['ficha', 'Región'],
+  banco:           ['ficha', 'Banco'],
+  cuenta_tipo:     ['ficha', 'Tipo de cuenta'],
+  cuenta_numero:   ['ficha', 'Número de cuenta'],
+  fecha_ingreso:   ['ficha', 'Fecha de ingreso'],
+
+  // El contrato — se editan con «Corregir» en el contrato vigente de la ficha.
+  cargo:            ['contrato', 'Cargo'],
+  desde_funcion:    ['contrato', 'Fecha de inicio'],
+  desde_sueldo:     ['contrato', 'Fecha de inicio'],
+  turno_glosa:      ['contrato', 'Turno'],
+  vigencia_texto:   ['contrato', 'Tipo de contrato y fecha de término'],
+  resolucion_dt:    ['contrato', 'Resolución de la Dirección del Trabajo'],
+  resolucion_vence: ['contrato', 'Vencimiento de la resolución'],
+  sueldo:           ['contrato', 'Sueldo base'],
+  sueldo_palabras:  ['contrato', 'Sueldo base'],
+  movilizacion:     ['contrato', 'Movilización'],
+  movilizacion_palabras: ['contrato', 'Movilización'],
+  colacion:         ['contrato', 'Colación'],
+  colacion_palabras: ['contrato', 'Colación'],
+  asignacion_glosa: ['contrato', 'Glosa de la asignación'],
+  asignacion_monto: ['contrato', 'Monto de la asignación'],
+  asignacion_palabras: ['contrato', 'Monto de la asignación'],
+  bono_imponible_glosa: ['contrato', 'Glosa del bono imponible'],
+  bono_imponible_monto: ['contrato', 'Monto del bono imponible'],
+  bono_imponible_palabras: ['contrato', 'Monto del bono imponible'],
+  gratificacion_glosa: ['contrato', 'Gratificación'],
+
+  // La instalación — su dirección de calle la mantiene operaciones.
+  lugar_trabajo: ['instalacion', 'Dirección del lugar de trabajo'],
+
+  // El arriendo: nada de esto vive en una tabla, lo escribe quien lo genera.
+  arrendador:           ['documento', 'Arrendador'],
+  arrendador_rut:       ['documento', 'RUT del arrendador'],
+  arrendador_domicilio: ['documento', 'Domicilio del arrendador'],
+  patente:    ['documento', 'Patente'],
+  marca:      ['documento', 'Marca'],
+  modelo:     ['documento', 'Modelo'],
+  anio:       ['documento', 'Año'],
+  color:      ['documento', 'Color'],
+  motor:      ['documento', 'N° de motor'],
+  chasis:     ['documento', 'N° de chasis'],
+  kilometraje: ['documento', 'Kilometraje'],
+  combustible: ['documento', 'Combustible'],
+  desde:      ['documento', 'Desde'],
+  hasta:      ['documento', 'Hasta'],
+  renta:      ['documento', 'Renta mensual'],
+  renta_palabras: ['documento', 'Renta mensual'],
+  dia_pago:   ['documento', 'Día de pago'],
+  aviso_dias: ['documento', 'Días de aviso'],
+
+  bloque:     ['bloque', 'Funciones del cargo'],
+  funciones:  ['bloque', 'Funciones del cargo'],
+};
+
+/**
+ * Los campos que faltan, con su rótulo y dónde se arreglan, sin repetir.
+ * Se ordena por `donde` para poder agruparlos en la pantalla.
+ */
+export function explicarFaltantes(faltan) {
+  const vistos = new Set();
+  const orden = Object.keys(DONDE);
+  return [...faltan]
+    .map((campo) => {
+      const [donde, rotulo] = CAMPOS[campo] || ['documento', campo];
+      return { campo, donde, rotulo };
+    })
+    .filter((x) => {
+      const llave = `${x.donde}|${x.rotulo}`;
+      if (vistos.has(llave)) return false;
+      vistos.add(llave);
+      return true;
+    })
+    .sort((a, b) => orden.indexOf(a.donde) - orden.indexOf(b.donde)
+                    || a.rotulo.localeCompare(b.rotulo));
+}
 
 /** SHA-256 en hexadecimal. Es lo que amarra una firma a un texto: si alguna vez
  *  no calza con el del documento, es que el texto cambió después de firmado. */
