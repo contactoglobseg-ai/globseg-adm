@@ -967,6 +967,9 @@ async function pintarInstalaciones() {
   $("#app").innerHTML = `<p class="cargando">Cargando…</p>`;
   const { instalaciones } = await pedir("/instalaciones");
   const activas = instalaciones.filter(i => i.activa).length;
+  // Las que están en las listas y no tienen calle. Se avisa arriba porque es
+  // lo que frena un contrato, y de baja ya no se le asigna gente a nadie.
+  const sinCalle = instalaciones.filter(i => i.activa && !i.direccion);
 
   $("#app").innerHTML = `
     <div style="display:flex;align-items:center;gap:14px;margin-bottom:18px;flex-wrap:wrap">
@@ -977,6 +980,11 @@ async function pintarInstalaciones() {
       <button class="bt" id="nueva-inst" style="margin-left:auto">
         ${abrirFormInst ? "Ocultar formulario" : "Nueva instalación"}</button>
     </div>
+    ${sinCalle.length ? aviso("ojo",
+      `${sinCalle.length === 1 ? "Una instalación no tiene" : `${sinCalle.length} instalaciones no tienen`} dirección de calle. `,
+      "Es la que va en la cláusula PRIMERO del contrato de trabajo, y sin ella el sistema se "
+      + "niega a generar el contrato de quien trabaje ahí, antes que emitir uno con un hueco "
+      + "adentro: " + sinCalle.map(i => i.nombre).join(", ") + ".") : ""}
     ${aviso("ojo", "Esta es la lista que sale en los desplegables",
       "Se agregan acá, o se crean solas al escribir el nombre al cargar un servicio o un extra. En esta pantalla además se corrigen, se sacan de las listas o se borran las que quedaron por error.")}
     <datalist id="lista-clientes">
@@ -993,6 +1001,10 @@ async function pintarInstalaciones() {
           <label class="campo"><span>Cliente</span>
             <input name="cliente" list="lista-clientes" autocomplete="off"
                    placeholder="A quién se le factura"></label>
+          <label class="campo" style="grid-column:1/-1"><span>Dirección: calle y número</span>
+            <input name="direccion" maxlength="200"
+                   placeholder="Ej: Camino Lo Pinto s/n, parcela 14">
+            <div class="sub">La que va en el contrato de trabajo de quien trabaje acá.</div></label>
           <label class="campo"><span>Comuna</span>
             <input name="comuna" placeholder="Dónde queda"></label>
           <label class="campo"><span>Región</span>
@@ -1017,7 +1029,10 @@ async function pintarInstalaciones() {
           ${celdaSel("instalaciones", i.id)}
           <td><b>${esc(i.nombre)}</b></td>
           <td>${esc(i.cliente)}</td>
-          <td>${esc(i.comuna || "—")}${i.region ? `<span class="sub">${esc(i.region)}</span>` : ""}</td>
+          <td>${i.direccion
+            ? esc(i.direccion)
+            : '<span class="sello e-solicitar_oc">Falta la calle</span>'}
+            <span class="sub">${esc([i.comuna, i.region].filter(Boolean).join(" · ") || "—")}</span></td>
           <td class="num">${i.servicios || "—"}</td>
           <td class="num">${i.extras || "—"}</td>
           <td><span class="sello ${i.activa ? "e-cerrado" : "e-en_curso"}">${
@@ -1092,6 +1107,11 @@ function formInstalacion(i) {
         <input name="nombre" required value="${esc(i.nombre)}"></label>
       <label class="campo"><span>Cliente</span>
         <input name="cliente" list="lista-clientes" autocomplete="off" value="${esc(i.cliente)}"></label>
+      <label class="campo" style="grid-column:1/-1"><span>Dirección: calle y número</span>
+        <input name="direccion" value="${esc(i.direccion || "")}" maxlength="200"
+               placeholder="Ej: Camino Lo Pinto s/n, parcela 14">
+        <div class="sub">Es la que va en la cláusula PRIMERO del contrato de trabajo. Sin
+          ella el sistema no genera el contrato de quien trabaje acá.</div></label>
       <label class="campo"><span>Comuna</span>
         <input name="comuna" value="${esc(i.comuna || "")}" placeholder="Dónde queda"></label>
       <label class="campo"><span>Región</span>

@@ -222,6 +222,10 @@ async function resolverInstalacion(env, usuario, cuerpo) {
   const [nueva] = await insertar(env, 'instalaciones', {
     cliente_id: cliente.id,
     nombre,
+    // La calle la escribe quien da de alta la instalación desde su pantalla;
+    // cuando la instalación se crea sola al escribir un nombre en un servicio
+    // o en un extra, no viene y queda para después.
+    direccion: (cuerpo.direccion || '').trim().slice(0, 200) || null,
     comuna: (cuerpo.comuna || '').trim() || null,
     region: (cuerpo.region || '').trim() || null,
   });
@@ -951,11 +955,24 @@ async function api(request, env, url, usuario) {
   // Instalaciones: el catálogo que alimenta los desplegables de toda la app.
   // Se edita acá para no tener que entrar a la base a corregir un nombre.
   if (ruta === '/instalaciones' && metodo === 'GET') {
-    const [inst, servicios, extras] = await Promise.all([
-      buscar(env, 'v_instalaciones?select=*&order=nombre.asc'),
+    // Se lee la tabla y no `v_instalaciones`: esa vista nombra sus columnas una
+    // por una y no trae `direccion`, así que con la vista la calle no se podría
+    // mostrar ni corregir aunque la columna exista. Rehacer la vista pedía una
+    // migración, y en este proyecto una migración no se aplica sola: la
+    // pantalla quedaría muerta esperando que alguien pegue SQL.
+    //
+    // El nombre del cliente se pega con una segunda consulta en vez de con un
+    // `embed` de PostgREST, igual que hace `panel()` con los extras sueltos:
+    // son cuatro clientes, la consulta no se nota, y así no hay una sintaxis
+    // que solo se pueda probar contra la base de verdad.
+    const [inst, clientes, servicios, extras] = await Promise.all([
+      buscar(env, 'instalaciones?select=*&order=nombre.asc'),
+      buscar(env, 'clientes?select=id,nombre'),
       buscar(env, 'servicios?select=instalacion_id,activo'),
       buscar(env, 'extras?select=instalacion_id'),
     ]);
+    const nombreCliente = new Map(clientes.map((c) => [c.id, c.nombre]));
+    for (const i of inst) i.cliente = nombreCliente.get(i.cliente_id) || 'Sin cliente asignado';
     const cuenta = (filas, campo) => {
       const m = new Map();
       for (const f of filas) m.set(f[campo], (m.get(f[campo]) || 0) + 1);
@@ -995,8 +1012,11 @@ async function api(request, env, url, usuario) {
       if (n.length > 160) return error('El nombre de la instalación es demasiado largo');
       campos.nombre = n;
     }
-    for (const k of ['comuna', 'region']) {
-      if (k in cuerpo) campos[k] = (cuerpo[k] || '').trim() || null;
+    // `direccion` es la calle y el número, y es la que va en la cláusula
+    // PRIMERO del contrato de trabajo. Sin ella el sistema se niega a generar
+    // el contrato, así que tiene que poder escribirse desde la pantalla.
+    for (const k of ['direccion', 'comuna', 'region']) {
+      if (k in cuerpo) campos[k] = (cuerpo[k] || '').trim().slice(0, 200) || null;
     }
     if ('activa' in cuerpo) campos.activa = !!cuerpo.activa;
 
