@@ -9,3 +9,7 @@ node_modules
 
 # Salida de herramientas de análisis que corren sobre la carpeta
 graphify-out
+
+# Lo que genera supabase/restablecer-clave.mjs: lleva el hash de una clave
+# temporal de una cuenta real. Se pega en Supabase y se borra, no se sube.
+supabase/restablecer-*.sql
