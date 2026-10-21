@@ -894,7 +894,8 @@ async function pintarFicha(id) {
   $("#app").innerHTML = `<p class="cargando">Cargando la ficha…</p>`;
   const [datos] = await Promise.all([pedir(`/rrhh/personal/${id}`), catalogosRrhh()]);
   RRHH.ficha = datos;
-  const { ficha: t, contratos, contrato_vigente: cv, documentos, ausencias, feriado } = datos;
+  const { ficha: t, contratos, contrato_vigente: cv, documentos, ausencias, cargas,
+          feriado } = datos;
   const c = RRHH.catalogos;
 
   const vencidos = documentos.filter(d => d.estado === "vencido");
@@ -937,6 +938,7 @@ async function pintarFicha(id) {
     ${seccionContratos(contratos, cv, c)}
     ${seccionDocumentos(documentos, c, contratos)}
     ${seccionAusencias(ausencias, feriado, t)}
+    ${seccionCargas(cargas)}
     ${seccionDatos(t, c)}`;
 
   $("#volver").onclick = () => {
@@ -1214,6 +1216,113 @@ function seccionAusencias(ausencias, feriado, t) {
           <button class="bt" type="submit">Registrar</button>
           <span class="sub" id="calculo-dias" style="margin:0">Los días hábiles se cuentan de lunes a
             viernes, descontando feriados (art. 69: el sábado es inhábil).</span>
+          <span class="mensaje"></span>
+        </div>
+      </form>
+    </details>
+  </section>`;
+}
+
+const ROTULO_PARENTESCO = { hijo: "Hijo o hija", conyuge: "Cónyuge o conviviente civil",
+  madre: "Madre", nieto: "Nieto o nieta", hermano: "Hermano o hermana", otro: "Otro" };
+
+/**
+ * Cargas familiares: los causantes de asignación familiar.
+ *
+ * La asignación la paga la empresa y se la reintegran, y es un haber no
+ * imponible, así que de esta lista sale plata en la liquidación. Dos cosas se
+ * dicen en pantalla porque deciden si se paga o no:
+ *  - **Acreditada**: mientras el IPS o la caja no la reconozcan, no se paga.
+ *    Se ve igual, en ámbar, para que no se pierda el trámite pendiente.
+ *  - **Hasta**: un hijo deja de ser carga a los 18 —o a los 24 si estudia—. Se
+ *    escribe la fecha y la liquidación deja de contarlo sola. No se borra la
+ *    fila: borrarla perdería que esa carga existió.
+ */
+function seccionCargas(cargas) {
+  // `null` es que la migración no se aplicó. La ficha se abre igual y el resto
+  // funciona; acá se dice con el nombre del archivo, como las otras pantallas.
+  if (cargas === null || cargas === undefined) {
+    return `<section class="caja">
+      <div class="caja__tit"><h2>Cargas familiares</h2></div>
+      ${aviso("ojo", "Todavía no se pueden cargar. ",
+        "Falta aplicar la migración 20261021120000_cargas_familiares.sql en Supabase. "
+        + "El resto de la ficha funciona igual.")}
+    </section>`;
+  }
+
+  const hoy = hoyISO();
+  const vigente = c => c.desde <= hoy && (!c.hasta || c.hasta >= hoy);
+  const pagando = cargas.filter(c => c.acreditada && vigente(c));
+  const unidades = pagando.reduce((n, c) => n + (c.invalidez ? 2 : 1), 0);
+
+  return `<section class="caja">
+    <div class="caja__tit"><h2>Cargas familiares</h2>
+      <span class="nota">${pagando.length
+        ? `${pagando.length} acreditada${pagando.length === 1 ? "" : "s"} y vigente${pagando.length === 1 ? "" : "s"}${
+            unidades !== pagando.length ? ` · ${unidades} para el cálculo` : ""}`
+        : `${cargas.length} registrada${cargas.length === 1 ? "" : "s"}`}</span></div>
+
+    <div style="padding:12px 16px 0;font-size:.86rem;color:var(--texto-2)">
+      En la liquidación entran solo las <b style="color:var(--texto)">acreditadas y vigentes</b>:
+      la asignación familiar la paga la empresa y se la reintegran, y el monto por carga sale
+      del tramo de renta (Ley 18.020), que se carga en Sueldos → Parámetros.
+    </div>
+
+    ${cargas.length ? `<div class="desliza"><table class="cargas">
+      <thead><tr><th>Nombre</th><th>Parentesco</th><th>RUT</th><th>Desde</th><th>Hasta</th>
+        <th>Situación</th><th></th></tr></thead><tbody>
+      ${cargas.map(x => {
+        const termino = x.hasta && x.hasta < hoy;
+        return `<tr${termino ? ' class="fila--cerrado"' : ""}>
+          <td><b>${esc(x.nombre)}</b>${x.fecha_nacimiento
+            ? `<span class="sub">nació el ${fecha(x.fecha_nacimiento)}</span>` : ""}</td>
+          <td>${esc(ROTULO_PARENTESCO[x.parentesco] || x.parentesco)}${x.invalidez
+            ? '<span class="sub">Invalidez: cuenta doble</span>' : ""}</td>
+          <td class="nowrap">${x.rut ? esc(rutLindoSeguro(x.rut)) : "—"}</td>
+          <td class="nowrap">${fecha(x.desde)}</td>
+          <td class="nowrap">${x.hasta ? fecha(x.hasta) : "—"}</td>
+          <td>${termino
+            ? '<span class="sello e-borrador">Terminada</span>'
+            : x.acreditada
+              ? '<span class="sello e-cerrado">Acreditada</span>'
+              : '<span class="sello e-solicitar_oc">Sin acreditar</span>'}</td>
+          <td class="nowrap">${termino ? "" : `
+            ${x.acreditada ? "" : `<button class="bt bt--fino bt--chico"
+              data-acreditar="${x.id}">Acreditar</button>`}
+            <button class="bt bt--fino bt--chico" data-terminar-carga="${x.id}">Terminar</button>`}</td>
+        </tr>`;
+      }).join("")}
+    </tbody></table></div>` : `<p class="vacio">Sin cargas registradas.</p>`}
+
+    <details class="agregar"><summary>Agregar una carga</summary>
+      <form id="f-carga">
+        <div class="rejilla">
+          <label class="campo" style="grid-column:span 2"><span>Nombre *</span>
+            <input name="nombre" required autocomplete="off"></label>
+          <label class="campo"><span>Parentesco</span><select name="parentesco">
+            ${Object.entries(ROTULO_PARENTESCO).map(([k, v]) =>
+              `<option value="${k}">${v}</option>`).join("")}</select></label>
+          <label class="campo"><span>RUT</span>
+            <input name="rut" autocomplete="off" placeholder="Si ya lo tiene"></label>
+          <label class="campo"><span>Fecha de nacimiento</span>
+            <input type="date" name="fecha_nacimiento"></label>
+          <label class="campo"><span>Desde *</span>
+            <input type="date" name="desde" required value="${hoy}"></label>
+          <label class="campo"><span>Hasta</span>
+            <input type="date" name="hasta"></label>
+          <label class="campo"><span>¿Ya está acreditada?</span><select name="acreditada">
+            <option value="no">No: el trámite está pendiente</option>
+            <option value="si">Sí, reconocida por el IPS o la caja</option></select></label>
+          <label class="campo"><span>¿Tiene invalidez?</span><select name="invalidez">
+            <option value="no">No</option>
+            <option value="si">Sí: cuenta doble (art. 2 Ley 18.020)</option></select></label>
+          <label class="campo" style="grid-column:span 2"><span>Notas</span>
+            <input name="notas" autocomplete="off"></label>
+        </div>
+        <div class="pie-form">
+          <button class="bt" type="submit">Agregar</button>
+          <span class="sub" style="margin:0">Mientras no esté acreditada se guarda igual, pero
+            no entra en la liquidación.</span>
           <span class="mensaje"></span>
         </div>
       </form>
@@ -1519,6 +1628,33 @@ function conectarFicha(datos) {
       } catch (e) { alert(e.message); }
     };
   });
+
+  // ------------------------------------------------------ cargas familiares
+  enviar("#f-carga", "/rrhh/cargas", { trabajador_id: id });
+
+  document.querySelectorAll("[data-acreditar]").forEach(b => {
+    b.onclick = async () => {
+      try {
+        await pedir(`/rrhh/cargas/${b.dataset.acreditar}`, { method: "PATCH",
+          body: JSON.stringify({ acreditada: "si" }) });
+        recado("Carga acreditada: desde ahora entra en la liquidación");
+        recargar();
+      } catch (e) { alert(e.message); }
+    };
+  });
+  // Terminar no borra: deja la fecha de hoy en el hasta y la liquidación deja
+  // de contarla. Borrarla perdería que esa carga existió y se pagó.
+  document.querySelectorAll("[data-terminar-carga]").forEach(b => {
+    b.onclick = async () => {
+      if (!confirm("¿Terminar esta carga hoy? Deja de contar en la liquidación, "
+                   + "pero queda registrada.")) return;
+      try {
+        await pedir(`/rrhh/cargas/${b.dataset.terminarCarga}`, { method: "PATCH",
+          body: JSON.stringify({ hasta: hoyISO() }) });
+        recargar();
+      } catch (e) { alert(e.message); }
+    };
+  });
 }
 
 /**
@@ -1696,6 +1832,10 @@ function htmlLiquidacion(r) {
         ${h.colacion ? fila("Colación", h.colacion, "No imponible, no tributable") : ""}
         ${h.movilizacion ? fila("Movilización", h.movilizacion, "No imponible, no tributable") : ""}
         ${h.asignacion ? fila("Otras asignaciones", h.asignacion) : ""}
+        ${h.asignacion_familiar ? fila("Asignación familiar", h.asignacion_familiar,
+          `Tramo ${h.asignacion_familiar_detalle.tramo} · `
+          + `${h.asignacion_familiar_detalle.unidades} por ${clp(h.asignacion_familiar_detalle.por_carga)} `
+          + "cada una · no imponible, la reintegra el Estado") : ""}
         ${fila("<b>Total haberes</b>", h.total_haberes, "", "fila--cerrado")}
       </table>
     </section>

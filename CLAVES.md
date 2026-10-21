@@ -135,32 +135,36 @@ pública en GitHub.
 
 ## 9. Salida de emergencia: cuando nadie puede entrar
 
-Para una cuenta de **oficina** sin forma de entrar (olvidada, o bloqueada y sin
-quien la desbloquee), o para un guardia cuando tampoco se puede entrar al panel:
+Para una cuenta de **oficina** sin forma de entrar, porque se olvidó la clave o
+porque se bloqueó y no hay nadie adentro que la desbloquee:
 
 ```
 cd "ADMINISTRACION"
-node herramientas/clave.mjs jgarridoh
+node supabase/restablecer-clave.mjs vtorres
 ```
 
-Inventa una clave temporal, la muestra en la consola y escribe el SQL para
-pegar en el **SQL Editor de Supabase**. Desbloquea la cuenta y la deja
-**obligada a cambiarla al entrar**, así que esa clave no es la que queda
-guardada: es para entrar una vez.
+Inventa una clave temporal, **la muestra una sola vez en la consola** y deja un
+archivo `.sql` listo para pegar en el
+[SQL Editor de Supabase](https://supabase.com/dashboard/project/hjoljdjjsobweqbvlijr/sql/new).
+Ese SQL desbloquea la cuenta y la deja **obligada a cambiar la clave al entrar**,
+así que la temporal sirve para un solo ingreso.
 
-La inventa él y no se la pide a nadie a propósito. Una clave tecleada en un
-chat o mandada por correo queda ahí para siempre; esta no tiene por qué salir
-de la pantalla de quien la va a entregar.
+La clave la inventa él y no se la pide a nadie a propósito: una clave tecleada
+en un chat o mandada por correo queda ahí para siempre. El archivo `.sql` lleva
+solo la derivación, de la que no se vuelve, y está en el `.gitignore` para que
+no se suba al repositorio. Péguelo y bórrelo.
 
-Para un guardia es lo mismo con `--guardia`:
-
-```
-node herramientas/clave.mjs --guardia jperezg
-```
+El script **deriva la clave con el código del propio Worker** (`src/sesion.js`),
+no con una copia: si mañana cambia la forma de guardar las contraseñas, esto
+cambia con ella. Y comprueba el hash antes de escribir nada, porque uno que la
+plataforma no sepa leer dejaría esa cuenta sin poder entrar nunca.
 
 No se puede hacer con un `update` a mano: la columna `clave` no guarda texto,
-guarda la derivación, y un texto suelto deja la cuenta sin poder entrar nunca.
-El script arma esa derivación con el mismo algoritmo del Worker.
+guarda la derivación, y un texto suelto deja la cuenta sin poder entrar.
+
+**Para un guardia no hace falta esto**: su clave la vuelve al RUT Joaquín desde
+el panel, en Trabajadores. Esta salida es para cuando no se puede entrar ni
+siquiera al panel.
 
 **Para ver cómo está cada cuenta** sin tocar nada —quién sigue con la clave
 inicial, quién está bloqueado, quién no ha entrado nunca— se pega

@@ -606,6 +606,19 @@ async function api(request, env, url, usuario) {
       return json(r);
     }
 
+    // ------------------------------------------------------ cargas familiares
+    if (sub === '/cargas' && metodo === 'POST') {
+      const r = await rrhh.crearCarga(env, usuario.usuario, cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r, 201);
+    }
+    m = sub.match(/^\/cargas\/(\d+)$/);
+    if (m && metodo === 'PATCH') {
+      const r = await rrhh.editarCarga(env, usuario.usuario, Number(m[1]), cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+
     // ------------------------------------------------------------ parámetros
     if (sub === '/parametros' && metodo === 'GET') {
       const todos = await buscar(env, 'parametros_rrhh?select=*&order=codigo.asc,vigente_desde.desc');
@@ -631,10 +644,15 @@ async function api(request, env, url, usuario) {
 
       const mes = /^\d{4}-\d{2}$/.test(cuerpo.mes || '') ? cuerpo.mes : hoyISO().slice(0, 7);
       const p = await rrhh.parametros(env, `${mes}-28`);
-      const [afp, tramos] = await Promise.all([
+      const [afp, tramos, cargasTodas] = await Promise.all([
         t.afp ? primero(env, `afps?select=*&nombre=eq.${encodeURIComponent(t.afp)}`) : null,
         buscar(env, 'tramos_impuesto?select=*&order=tramo.asc'),
+        // Si la migración de cargas no se aplicó, la liquidación sale igual y
+        // sin asignación familiar, en vez de no salir.
+        buscar(env, `cargas_familiares?select=*&trabajador_id=eq.${t.id}`).catch(() => []),
       ]);
+      // Las que corresponde pagar ese mes: acreditadas y vigentes al cierre.
+      const cargas = rrhh.cargasQueCorresponden(cargasTodas, `${mes}-28`);
       // La UF y la UTM se pueden mandar en la llamada (para probar un mes
       // distinto) o salen de los parámetros, donde RRHH las carga cada mes.
       const uf = Number(cuerpo.uf) || rrhh.valor(p, 'uf', 0) || null;
@@ -646,7 +664,7 @@ async function api(request, env, url, usuario) {
                       salud_sistema: t.salud_sistema },
         contrato: { id: contrato.id, tipo: contrato.tipo, cargo: contrato.cargo },
         liquidacion: rrhh.liquidar({
-          contrato, trabajador: t, p, afp, uf, utm,
+          contrato, trabajador: t, p, afp, uf, utm, cargas,
           extra: { ...cuerpo.extra, tramos },
         }),
       });
@@ -1583,7 +1601,7 @@ async function revisarTablas(env) {
                    'contratos', 'documentos_trabajador', 'ausencias',
                    'tipos_documento', 'parametros_rrhh', 'afps', 'tramos_impuesto',
                    'plantillas_documento', 'bloques_plantilla', 'documentos_generados',
-                   'firmas_documento', 'datos_empresa']) {
+                   'firmas_documento', 'datos_empresa', 'cargas_familiares']) {
     try {
       await buscar(env, `${t}?select=count&limit=1`);
       r[t] = true;

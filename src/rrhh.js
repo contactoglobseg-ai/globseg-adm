@@ -705,7 +705,72 @@ export async function editarAusencia(env, quien, id, cuerpo) {
  * antemano cuánto va a costar un turno, cuánto le va a llegar a la persona y
  * dónde se fue la diferencia. Cada línea dice de qué parámetro salió.
  */
-export function liquidar({ contrato, trabajador, p, afp, uf, utm, extra = {} }) {
+/**
+ * Asignación familiar: cuánto corresponde por las cargas de esta persona.
+ *
+ * La paga el empleador y se la reintegran, así que es un haber **no
+ * imponible**: no se le descuenta AFP ni salud ni impuesto. El monto por carga
+ * sale del tramo de renta (Ley 18.020), y tanto los montos como los topes de
+ * cada tramo los fija la ley todos los años: viven en `parametros_rrhh` y los
+ * escribe RRHH, no están en el código.
+ *
+ * Reglas que se aplican:
+ *  - Solo entran las cargas **acreditadas** ante el IPS o la caja, y vigentes
+ *    al mes que se calcula. Una carga cargada pero no acreditada se ve en la
+ *    ficha y no se paga, porque así es como funciona.
+ *  - Una carga con invalidez cuenta **doble** (art. 2 Ley 18.020).
+ *    **PENDIENTE VALIDAR** con quien lleva las remuneraciones antes de usar
+ *    este número para pagar.
+ *  - Sobre el tope del tramo C es tramo D: no corresponde asignación.
+ *
+ * `renta` es la renta mensual con que se mira el tramo. La ley habla del
+ * promedio de los ingresos del semestre; acá se usa el imponible del mes, que
+ * es lo que el sistema tiene, y la nota lo dice.
+ */
+export function asignacionFamiliar({ p, renta, cargas = [] }) {
+  const notas = [];
+  const unidades = cargas.reduce((n, c) => n + (c.invalidez ? 2 : 1), 0);
+  if (!unidades) return { tramo: null, por_carga: 0, unidades: 0, monto: 0, notas };
+
+  const tramos = [
+    ['A', valor(p, 'asig_familiar_tope_a', 0), valor(p, 'asig_familiar_a', 0)],
+    ['B', valor(p, 'asig_familiar_tope_b', 0), valor(p, 'asig_familiar_b', 0)],
+    ['C', valor(p, 'asig_familiar_tope_c', 0), valor(p, 'asig_familiar_c', 0)],
+  ];
+
+  // Sin los topes cargados no hay forma de saber en qué tramo cae: se dice y
+  // no se inventa un monto. Mismo criterio que con la UTM y el impuesto único.
+  if (!tramos.some(([, tope]) => tope > 0)) {
+    notas.push(`Esta persona tiene ${unidades === 1 ? 'una carga acreditada' : `${unidades} cargas acreditadas`}, `
+      + 'pero los tramos de la asignación familiar están en cero: no se calculó. '
+      + 'Cárguelos en Parámetros.');
+    return { tramo: null, por_carga: 0, unidades, monto: 0, notas, sin_parametros: true };
+  }
+
+  const encontrado = tramos.find(([, tope]) => tope > 0 && renta <= tope);
+  if (!encontrado) {
+    notas.push('Por su renta, esta persona está en el tramo D: no corresponde asignación '
+      + 'familiar aunque tenga cargas acreditadas.');
+    return { tramo: 'D', por_carga: 0, unidades, monto: 0, notas };
+  }
+
+  const [tramo, , porCarga] = encontrado;
+  if (!porCarga) {
+    notas.push(`Cae en el tramo ${tramo}, pero el monto por carga de ese tramo está en cero. `
+      + 'Cárguelo en Parámetros.');
+  }
+  if (cargas.some((c) => c.invalidez)) {
+    notas.push('Hay cargas con invalidez contadas al doble (art. 2 Ley 18.020). '
+      + 'Confírmelo con quien lleva las remuneraciones antes de pagar con este número.');
+  }
+  return { tramo, por_carga: porCarga, unidades, monto: Math.round(porCarga * unidades), notas };
+}
+
+/** Las cargas que corresponde pagar en ese mes: acreditadas y vigentes. */
+export const cargasQueCorresponden = (cargas, hasta) => (cargas || []).filter((c) =>
+  c.acreditada && c.desde <= hasta && (!c.hasta || c.hasta >= hasta));
+
+export function liquidar({ contrato, trabajador, p, afp, uf, utm, extra = {}, cargas = [] }) {
   const notas = [];
   const base = peso(contrato.sueldo_base);
   const bono = peso(contrato.bono_imponible_monto) + peso(extra.bono_imponible);
@@ -783,8 +848,13 @@ export function liquidar({ contrato, trabajador, p, afp, uf, utm, extra = {} }) 
       + 'Cárguelo en Parámetros.');
   }
 
+  // La asignación familiar se mira con el imponible del mes, que es la renta
+  // que el sistema conoce. No se le descuenta nada: es no imponible.
+  const asigFamiliar = asignacionFamiliar({ p, renta: imponible, cargas });
+  notas.push(...asigFamiliar.notas);
+
   const noImponible = peso(contrato.colacion) + peso(contrato.movilizacion)
-    + peso(contrato.asignacion_monto) + peso(extra.no_imponible);
+    + peso(contrato.asignacion_monto) + peso(extra.no_imponible) + asigFamiliar.monto;
   const apv = peso(trabajador.apv_monto);
   const otrosDescuentos = peso(extra.otros_descuentos);
 
@@ -815,6 +885,8 @@ export function liquidar({ contrato, trabajador, p, afp, uf, utm, extra = {} }) 
       colacion: peso(contrato.colacion),
       movilizacion: peso(contrato.movilizacion),
       asignacion: peso(contrato.asignacion_monto) + peso(extra.no_imponible),
+      asignacion_familiar: asigFamiliar.monto,
+      asignacion_familiar_detalle: asigFamiliar,
       total_no_imponible: noImponible,
       total_haberes: imponible + noImponible,
     },
@@ -1059,10 +1131,14 @@ export async function fichaCompleta(env, id) {
   const t = await primero(env, `trabajadores?select=*,instalaciones(nombre)&id=eq.${id}`);
   if (!t) return null;
 
-  const [contratos, documentos, ausencias] = await Promise.all([
+  const [contratos, documentos, ausencias, cargas] = await Promise.all([
     buscar(env, `contratos?select=*,instalaciones(nombre)&trabajador_id=eq.${id}&order=fecha_inicio.desc`),
     buscar(env, `v_documentos?select=*&trabajador_id=eq.${id}&order=fecha_vencimiento.asc.nullslast,creado_en.desc`),
     buscar(env, `ausencias?select=*&trabajador_id=eq.${id}&order=desde.desc`),
+    // Si la migración de cargas no se aplicó, la ficha se abre igual y la
+    // sección avisa: nadie aplica las migraciones solo desde el 14-10-2026.
+    buscar(env, `cargas_familiares?select=*&trabajador_id=eq.${id}&order=desde.desc`)
+      .catch(() => null),
   ]);
 
   // La clave derivada no sale nunca, ni siquiera hacia la pantalla de RRHH.
@@ -1075,8 +1151,84 @@ export async function fichaCompleta(env, id) {
     contrato_vigente: contratos.find((c) => c.estado === 'vigente') || null,
     documentos,
     ausencias,
+    cargas,
     feriado: saldoFeriado(t, ausencias),
   };
+}
+
+// ----------------------------------------------------------- cargas familiares
+const PARENTESCOS = ['hijo', 'conyuge', 'madre', 'nieto', 'hermano', 'otro'];
+
+export async function crearCarga(env, quien, cuerpo) {
+  const t = await primero(env, `trabajadores?select=id,nombre&id=eq.${entero(cuerpo.trabajador_id)}`);
+  if (!t) return { error: 'Esa persona no está en el registro', status: 404 };
+
+  const nombre = limpio(cuerpo.nombre, 120);
+  if (!nombre) return { error: 'Falta el nombre de la carga', status: 400 };
+
+  const desde = fechaO(cuerpo.desde);
+  if (!desde) return { error: 'Falta desde cuándo corresponde', status: 400 };
+  const hasta = fechaO(cuerpo.hasta);
+  if (hasta && hasta < desde) return { error: 'El hasta es anterior al desde', status: 400 };
+
+  const fila = {
+    trabajador_id: t.id,
+    nombre,
+    rut: limpio(cuerpo.rut, 15) || null,
+    parentesco: PARENTESCOS.includes(cuerpo.parentesco) ? cuerpo.parentesco : 'hijo',
+    fecha_nacimiento: fechaO(cuerpo.fecha_nacimiento),
+    desde,
+    hasta,
+    acreditada: siNo(cuerpo.acreditada),
+    invalidez: siNo(cuerpo.invalidez),
+    notas: limpio(cuerpo.notas, 300) || null,
+    creado_por: quien,
+  };
+
+  const [creada] = await insertar(env, 'cargas_familiares', fila);
+  await anotar(env, quien, 'carga_familiar', creada.id, 'cargó una carga familiar',
+    `${t.nombre} · ${nombre}${fila.acreditada ? '' : ' (sin acreditar, no se paga todavía)'}`);
+  return { carga: creada };
+}
+
+export async function editarCarga(env, quien, id, cuerpo) {
+  const c = await primero(env,
+    `cargas_familiares?select=*,trabajadores(nombre)&id=eq.${id}`);
+  if (!c) return { error: 'Esa carga no existe', status: 404 };
+
+  const campos = {};
+  if ('nombre' in cuerpo) {
+    const n = limpio(cuerpo.nombre, 120);
+    if (!n) return { error: 'Falta el nombre de la carga', status: 400 };
+    campos.nombre = n;
+  }
+  if ('rut' in cuerpo) campos.rut = limpio(cuerpo.rut, 15) || null;
+  if ('parentesco' in cuerpo && PARENTESCOS.includes(cuerpo.parentesco)) {
+    campos.parentesco = cuerpo.parentesco;
+  }
+  if ('fecha_nacimiento' in cuerpo) campos.fecha_nacimiento = fechaO(cuerpo.fecha_nacimiento);
+  if ('desde' in cuerpo) {
+    const d = fechaO(cuerpo.desde);
+    if (!d) return { error: 'Falta desde cuándo corresponde', status: 400 };
+    campos.desde = d;
+  }
+  // El hasta es lo que más se usa: un hijo que cumple 18 deja de ser carga ese
+  // día, se escribe acá y la liquidación deja de contarlo sola.
+  if ('hasta' in cuerpo) campos.hasta = fechaO(cuerpo.hasta);
+  if ('acreditada' in cuerpo) campos.acreditada = siNo(cuerpo.acreditada);
+  if ('invalidez' in cuerpo) campos.invalidez = siNo(cuerpo.invalidez);
+  if ('notas' in cuerpo) campos.notas = limpio(cuerpo.notas, 300) || null;
+
+  if (!Object.keys(campos).length) return { error: 'No hay nada que cambiar', status: 400 };
+
+  const desde = campos.desde ?? c.desde;
+  const hasta = 'hasta' in campos ? campos.hasta : c.hasta;
+  if (hasta && hasta < desde) return { error: 'El hasta es anterior al desde', status: 400 };
+
+  await actualizar(env, `cargas_familiares?id=eq.${c.id}`, campos);
+  await anotar(env, quien, 'carga_familiar', c.id, 'editó una carga familiar',
+    `${c.trabajadores?.nombre || ''} · ${campos.nombre || c.nombre}`);
+  return { ok: true };
 }
 
 export { limpio, entero, decimal, fechaO, siNo, valor, sinConfirmar };

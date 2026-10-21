@@ -41,8 +41,18 @@ try {
     <div class="quien" id="quien"></div>
     <!-- Personas vive en su propio dominio desde el 21-10-2026. El enlace va
          acá y no como una sección más de la lateral porque no es una pantalla
-         de esta página: es otra página, con la misma base y la misma gente. -->
-    <a class="bt bt--fino bt--chico" href="https://rrhh.seggarridos.com/">Ir a Personas</a>
+         de esta página: es otra página, con la misma base y la misma gente.
+
+         Va a la ruta y no al subdominio a propósito. El Worker entrega Personas
+         en las dos partes, así que /rrhh anda en el dominio que se esté usando
+         —y también en localhost, donde el enlace absoluto sacaba a quien
+         probaba fuera del servidor de pruebas—. El 21-10-2026 se vio para qué
+         sirve de verdad: rrhh.seggarridos.com no estaba apuntado al Worker y
+         servía otra cosa, con su propio formulario de clave, así que este
+         enlace mandaba a la oficina a teclear su contraseña en una página
+         ajena. Mientras ese subdominio no se arregle, la ruta es el camino
+         seguro; cuando se arregle, sigue siendo correcta. -->
+    <a class="bt bt--fino bt--chico" href="/rrhh">Ir a Personas</a>
     <div class="ajustes">
       <div class="segmento" role="group" aria-label="Apariencia" id="seg-tema">
         <button type="button" data-tema="claro">Claro</button>
