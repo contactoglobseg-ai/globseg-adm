@@ -364,7 +364,12 @@ async function api(request, env, url, usuario) {
     if (!puede(usuario, 'cotizaciones')) return error('Sin acceso a este módulo', 403);
 
     if (ruta === '/cotizaciones' && metodo === 'GET') {
-      return json({ cotizaciones: await cotiz.listar(env) });
+      // La UF va acá y no en /catalogos: la pide la pantalla que cotiza, y
+      // /catalogos lo llaman todas las cuentas al arrancar.
+      const [cotizaciones, uf, con_uf] = await Promise.all([
+        cotiz.listar(env), cotiz.ufVigente(env), cotiz.soportaUF(env),
+      ]);
+      return json({ cotizaciones, uf, con_uf });
     }
     if (ruta === '/cotizaciones' && metodo === 'POST') {
       const r = await cotiz.crear(env, usuario, cuerpo);
@@ -1732,6 +1737,14 @@ async function revisarTablas(env) {
     r.marcas_con_correccion = true;
   } catch {
     r.marcas_con_correccion = false;
+  }
+  // Sin estas dos columnas la cotización sigue andando en pesos; lo que no
+  // existe es cotizar en UF, y la pantalla lo dice en vez de fallar al guardar.
+  try {
+    await buscar(env, 'cotizaciones?select=moneda,uf_valor&limit=1');
+    r.cotizaciones_en_uf = true;
+  } catch {
+    r.cotizaciones_en_uf = false;
   }
   try {
     await buscar(env, 'trabajadores?select=debe_cambiar_clave&limit=1');

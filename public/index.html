@@ -1486,10 +1486,35 @@ const CONDICIONES_POR_DEFECTO =
 
 let borrador = null;
 
+/** Las mismas dos monedas que MONEDAS en src/cotizaciones.js. Lo que cambia
+ *  son los decimales: un peso no se parte, una UF se cotiza con dos. */
+const MONEDAS = {
+  clp: { rotulo: "Pesos (CLP)", decimales: 0, paso: 1 },
+  uf:  { rotulo: "UF",          decimales: 2, paso: 0.01 },
+};
+
+const ufTexto = n => (Number(n) || 0)
+  .toLocaleString("es-CL", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " UF";
+
+/** Un monto en la moneda de su cotización. Nunca se imprime un número pelado:
+ *  "1.234" sin decir en qué está es la mitad de un precio. */
+const montoDe = (n, moneda) => moneda === "uf" ? ufTexto(n) : clp(n);
+
+/** El valor de la UF va con sus dos decimales: clp() los redondea, y escribir
+ *  "$39.500" donde dice 39.500,25 es decir otro número. */
+const clpExacto = n => "$" + (Number(n) || 0)
+  .toLocaleString("es-CL", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+const redondearM = (v, moneda) => {
+  const f = 10 ** MONEDAS[moneda].decimales;
+  return Math.round((Number(v) || 0) * f) / f;
+};
+
 function cotizacionNueva() {
   return {
     cliente_nombre: "", cliente_rut: "", cliente_contacto: "", cliente_email: "",
-    instalacion: "", validez_dias: 30,
+    instalacion: "", validez_dias: 30, moneda: "clp",
+    uf_valor: estado.uf ? estado.uf.valor : null,
     condiciones: CONDICIONES_POR_DEFECTO, observaciones: "",
     items: [{ descripcion: "", unidad: "", cantidad: 1, precio_unitario: 0 }],
   };
@@ -1498,18 +1523,20 @@ function cotizacionNueva() {
 /** La misma cuenta que hace el servidor en revisarItems(). Estaba escrita tres
  *  veces en esta vista —la celda, el refresco al teclear y la suma—, que es
  *  pedir que algún día las tres dejen de decir lo mismo. */
-const subtotalDe = i =>
-  Math.round((Number(i.precio_unitario) || 0) * (Number(i.cantidad) || 0));
+const subtotalDe = (i, moneda = "clp") =>
+  redondearM((Number(i.precio_unitario) || 0) * (Number(i.cantidad) || 0), moneda);
 
-const sumasDe = items => {
-  const neto = items.reduce((t, i) => t + subtotalDe(i), 0);
-  const iva = Math.round(neto * 0.19);
-  return { neto, iva, total: neto + iva };
+const sumasDe = (items, moneda = "clp") => {
+  const neto = items.reduce((t, i) => redondearM(t + subtotalDe(i, moneda), moneda), 0);
+  const iva = redondearM(neto * 0.19, moneda);
+  return { neto, iva, total: redondearM(neto + iva, moneda) };
 };
 
 async function pintarCotizaciones() {
   $("#app").innerHTML = `<p class="cargando">Cargando…</p>`;
-  const { cotizaciones } = await pedir("/cotizaciones");
+  const { cotizaciones, uf, con_uf } = await pedir("/cotizaciones");
+  estado.uf = uf || null;
+  estado.conUF = con_uf !== false;
   $("#app").innerHTML = `
     <div style="display:flex;align-items:center;gap:14px;margin-bottom:18px;flex-wrap:wrap">
       <h2 style="font-size:1.5rem">Cotizaciones</h2>
@@ -1529,8 +1556,11 @@ async function pintarCotizaciones() {
           <td>${esc(c.cliente_nombre)}<span class="sub">${c.n_items} línea${c.n_items === 1 ? "" : "s"}</span></td>
           <td>${esc(c.instalacion || "—")}</td>
           <td><span class="sello e-${c.estado}">${esc(c.estado)}</span></td>
-          <td class="num">${clp(c.neto)}</td>
-          <td class="num"><b>${clp(c.total)}</b><span class="sub">IVA ${clp(c.iva)}</span></td>
+          <td class="num">${montoDe(c.neto, c.moneda)}</td>
+          <td class="num"><b>${montoDe(c.total, c.moneda)}</b>
+            <span class="sub">IVA ${montoDe(c.iva, c.moneda)}</span>
+            ${c.moneda === "uf" && c.uf_valor
+              ? `<span class="sub">≈ ${clp(c.total * c.uf_valor)}</span>` : ""}</td>
           <td class="nowrap"><button class="bt bt--fino bt--chico" data-abrir="${c.id}">Abrir</button></td>
         </tr>`).join("")}
       </tbody></table></div>`
@@ -1550,6 +1580,7 @@ async function pintarCotizaciones() {
 function pintarEditor() {
   const c = borrador;
   const nueva = !c.id;
+  const moneda = c.moneda || "clp";
   const tarifas = estado.catalogos.tarifas;
   const grupos = [...new Set(tarifas.map(t => t.grupo))];
 
@@ -1582,15 +1613,39 @@ function pintarEditor() {
         </datalist>
         <label class="campo"><span>Validez (días)</span>
           <input id="c-validez" type="number" min="1" max="365" value="${c.validez_dias || 30}"></label>
+        <label class="campo"><span>Moneda</span>
+          <select id="c-moneda"${estado.conUF === false ? " disabled" : ""}>
+            ${Object.entries(MONEDAS).map(([k, m]) =>
+              `<option value="${k}"${k === moneda ? " selected" : ""}>${m.rotulo}</option>`).join("")}
+          </select></label>
+        ${moneda === "uf" ? `<label class="campo"><span>Valor de la UF</span>
+          <input id="c-uf" type="number" min="0" step="0.01" value="${c.uf_valor || ""}"
+                 placeholder="Sin valor cargado"></label>` : ""}
       </div>
+      ${estado.conUF === false
+        ? aviso("ojo", "Por ahora solo se cotiza en pesos.",
+                "Falta aplicar la migración 20261022160000_cotizacion_uf.sql en Supabase.")
+        : moneda === "uf" ? `<p style="padding:0 18px 16px;margin:-6px 0 0;
+            font-size:.86rem;line-height:1.5;color:var(--texto-3);max-width:68ch">
+            Los precios se escriben en UF. El equivalente en pesos es referencial:
+            el servicio se factura con el valor de la UF del día de la factura.
+            ${c.uf_valor
+              ? `Valor usado: ${clpExacto(c.uf_valor)} por UF.`
+              : `<b style="color:var(--ambar)">No hay valor de la UF cargado</b>, así que la
+                 cotización sale en UF y sin equivalencia en pesos. Se escribe acá arriba, o
+                 en Sueldos → Parámetros para que quede para todas.`}
+          </p>` : ""}
     </section>
 
     <section class="caja">
       <div class="caja__tit"><h2>Detalle</h2>
-        <span class="nota">Elija del tarifario o escriba una línea propia</span></div>
+        <span class="nota">${moneda === "uf"
+          ? "Precios en UF. El tarifario está en pesos y se convierte al agregar."
+          : "Elija del tarifario o escriba una línea propia"}</span></div>
       <div class="desliza"><table class="lineas"><thead><tr>
         <th class="col-desc">Descripción</th><th class="col-cant num">Cantidad</th>
-        <th class="col-uni">Unidad</th><th class="col-precio num">Precio unitario</th>
+        <th class="col-uni">Unidad</th>
+        <th class="col-precio num">Precio unitario${moneda === "uf" ? " (UF)" : ""}</th>
         <th class="col-sub num">Subtotal</th><th class="col-x"></th>
       </tr></thead><tbody id="lineas"></tbody></table></div>
       <div style="padding:14px 16px;display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start">
@@ -1607,7 +1662,9 @@ function pintarEditor() {
     </section>
 
     <section class="caja">
-      <div class="caja__tit"><h2>Condiciones</h2></div>
+      <div class="caja__tit"><h2>Condiciones</h2>
+        ${moneda === "uf" ? `<span class="nota">El PDF agrega solo que los valores
+          son en UF y se facturan con la UF del día de la factura.</span>` : ""}</div>
       <div class="cot__cab" style="grid-template-columns:1fr">
         <label class="campo"><span>Condiciones comerciales</span>
           <textarea id="c-cond" rows="3">${esc(c.condiciones || "")}</textarea></label>
@@ -1629,23 +1686,89 @@ function pintarEditor() {
   $("#agregar").onclick = () => { c.items.push({ descripcion: "", unidad: "", cantidad: 1, precio_unitario: 0 }); pintarLineas(); };
   $("#del-tarifario").onchange = ev => {
     const t = estado.catalogos.tarifas.find(x => String(x.id) === ev.target.value);
+    ev.target.value = "";
     if (!t) return;
-    c.items.push({ descripcion: t.nombre, unidad: t.unidad, cantidad: 1, precio_unitario: t.precio });
-    ev.target.value = ""; pintarLineas();
+    // El tarifario está en pesos. En UF se convierte con el valor de la
+    // cotización; sin ese valor la línea entra en cero y se dice, en vez de
+    // meter el precio en pesos adentro de una cotización en UF.
+    let precio = t.precio;
+    if (moneda === "uf") {
+      precio = c.uf_valor ? redondearM(t.precio / c.uf_valor, "uf") : 0;
+    }
+    c.items.push({ descripcion: t.nombre, unidad: t.unidad, cantidad: 1, precio_unitario: precio });
+    pintarLineas();
+    if (moneda === "uf" && !c.uf_valor) {
+      decir($(".pie-form .mensaje"),
+            "Sin valor de la UF no se pudo convertir el precio del tarifario: escríbalo en UF.",
+            "error");
+    }
+  };
+
+  $("#c-moneda").onchange = ev => {
+    const nuevaM = ev.target.value;
+    if (nuevaM === moneda) return;
+    // Viniendo de pesos todavía no hay campo ni valor en la cotización: el que
+    // sirve para convertir es el que RRHH tiene cargado hoy.
+    const valor = Number($("#c-uf") ? $("#c-uf").value : 0)
+      || c.uf_valor || (estado.uf ? estado.uf.valor : 0) || 0;
+    // Cambiar de moneda no convierte nada solo: "450.000" leído en UF es un
+    // disparate y "1,8" leído en pesos también. Se ofrece convertir con el
+    // valor de la UF, y si no hay valor, los precios quedan como están y se
+    // avisa, porque convertirlos con un número inventado sería peor.
+    const hayPrecios = c.items.some(i => Number(i.precio_unitario) > 0);
+    let enCero = false;
+    if (hayPrecios && valor > 0) {
+      const aUF = nuevaM === "uf";
+      const pregunta = aUF
+        ? `¿Convertir los precios a UF con ${clpExacto(valor)} por UF?\n\n` +
+          "Aceptar convierte. Cancelar deja los números como están."
+        : `¿Convertir los precios a pesos con ${clpExacto(valor)} por UF?\n\n` +
+          "Aceptar convierte. Cancelar deja los números como están.";
+      if (confirm(pregunta)) {
+        for (const i of c.items) {
+          const p = Number(i.precio_unitario) || 0;
+          i.precio_unitario = redondearM(aUF ? p / valor : p * valor, nuevaM);
+          // Un precio que valía algo y quedó en cero es, casi siempre, una
+          // conversión de vuelta sobre precios que ya estaban convertidos.
+          if (p > 0 && i.precio_unitario === 0) enCero = true;
+        }
+      }
+    }
+    c.moneda = nuevaM;
+    if (nuevaM === "uf") {
+      if (!c.uf_valor) c.uf_valor = estado.uf ? estado.uf.valor : null;
+    } else {
+      c.uf_valor = null;
+    }
+    pintarEditor();
+    if (hayPrecios && !(valor > 0)) {
+      decir($(".pie-form .mensaje"),
+            "Sin valor de la UF los precios quedaron tal cual: revíselos antes de guardar.",
+            "error");
+    } else if (enCero) {
+      decir($(".pie-form .mensaje"),
+            "Algún precio quedó en cero al convertir: revíselos antes de guardar.", "error");
+    }
   };
   $("#guardar").onclick = guardarCotizacion;
   if ($("#pdf")) $("#pdf").onclick = () => generarPDF(c);
+  if ($("#c-uf")) $("#c-uf").oninput = ev => {
+    c.uf_valor = Number(ev.target.value) || null;
+    pintarSumas();
+  };
   pintarLineas();
 }
 
 function pintarLineas() {
   const c = borrador;
+  const moneda = c.moneda || "clp";
+  const paso = MONEDAS[moneda].paso;
   $("#lineas").innerHTML = c.items.map((i, n) => `<tr>
     <td class="col-desc" data-rotulo="Descripción"><input data-i="${n}" data-campo="descripcion" value="${esc(i.descripcion)}" placeholder="Qué se cotiza"></td>
     <td class="col-cant num" data-rotulo="Cantidad"><input data-i="${n}" data-campo="cantidad" type="number" min="0.5" step="0.5" value="${i.cantidad}"></td>
     <td class="col-uni" data-rotulo="Unidad"><input data-i="${n}" data-campo="unidad" value="${esc(i.unidad || "")}" placeholder="turno"></td>
-    <td class="col-precio num" data-rotulo="Precio unitario"><input data-i="${n}" data-campo="precio_unitario" type="number" min="0" step="1" value="${i.precio_unitario}"></td>
-    <td class="col-sub num" data-rotulo="Subtotal"><b>${clp(subtotalDe(i))}</b></td>
+    <td class="col-precio num" data-rotulo="Precio unitario${moneda === "uf" ? " (UF)" : ""}"><input data-i="${n}" data-campo="precio_unitario" type="number" min="0" step="${paso}" value="${i.precio_unitario}"></td>
+    <td class="col-sub num" data-rotulo="Subtotal"><b>${montoDe(subtotalDe(i, moneda), moneda)}</b></td>
     <td class="col-x"><button class="quitar" data-quitar="${n}" title="Quitar línea">×</button></td>
   </tr>`).join("");
 
@@ -1656,7 +1779,8 @@ function pintarLineas() {
       ? el.value : Number(el.value);
     c.items[el.dataset.i][el.dataset.campo] = v;
     const fila = el.closest("tr");
-    fila.querySelector(".col-sub b").textContent = clp(subtotalDe(c.items[el.dataset.i]));
+    fila.querySelector(".col-sub b").textContent =
+      montoDe(subtotalDe(c.items[el.dataset.i], moneda), moneda);
     pintarSumas();
   };
   document.querySelectorAll("[data-quitar]").forEach(b => {
@@ -1670,11 +1794,16 @@ function pintarLineas() {
 }
 
 function pintarSumas() {
-  const s = sumasDe(borrador.items);
+  const c = borrador, moneda = c.moneda || "clp";
+  const s = sumasDe(c.items, moneda);
   $("#sumas").innerHTML = `
-    <div><span>Neto</span><b class="num">${clp(s.neto)}</b></div>
-    <div><span>IVA 19%</span><b class="num">${clp(s.iva)}</b></div>
-    <div class="total"><span>Total</span><b class="num">${clp(s.total)}</b></div>`;
+    <div><span>Neto</span><b class="num">${montoDe(s.neto, moneda)}</b></div>
+    <div><span>IVA 19%</span><b class="num">${montoDe(s.iva, moneda)}</b></div>
+    <div class="total"><span>Total</span><b class="num">${montoDe(s.total, moneda)}</b></div>
+    ${moneda === "uf" && c.uf_valor
+      ? `<div style="font-size:.82rem;color:var(--texto-3)">
+           <span>Referencial en pesos</span>
+           <b class="num" style="font-weight:600">${clp(s.total * c.uf_valor)}</b></div>` : ""}`;
 }
 
 async function guardarCotizacion() {
@@ -1685,6 +1814,9 @@ async function guardarCotizacion() {
   c.cliente_email = $("#c-email").value.trim();
   c.instalacion = $("#c-inst").value.trim();
   c.validez_dias = Number($("#c-validez").value);
+  if ($("#c-moneda")) c.moneda = $("#c-moneda").value;
+  c.uf_valor = c.moneda === "uf" && $("#c-uf")
+    ? (Number($("#c-uf").value) || null) : null;
   c.condiciones = $("#c-cond").value.trim();
   c.observaciones = $("#c-obs").value.trim();
   if ($("#c-estado")) c.estado = $("#c-estado").value;
@@ -1721,7 +1853,11 @@ async function generarPDF(c) {
   // documento que se le manda al cliente y tiene que decir lo mismo que la
   // cotización. Si todavía no se guarda, los montos no calzan y se avisa en
   // vez de emitir un PDF con otras cifras.
-  if (sumasDe(c.items).total !== c.total) {
+  // En UF los montos llevan decimales, así que la comparación va con holgura
+  // de medio centésimo: dos sumas iguales en coma flotante pueden diferir en
+  // el último bit y eso no es un cambio sin guardar.
+  const moneda = c.moneda || "clp";
+  if (Math.abs(sumasDe(c.items, moneda).total - Number(c.total)) > 0.005) {
     return decir(msj, "Hay cambios sin guardar: guarde antes de descargar el PDF.", "error");
   }
 
@@ -1774,8 +1910,8 @@ async function generarPDF(c) {
     doc.setFont("helvetica", "bold").setFontSize(8).setTextColor(...tinta);
     doc.text("DETALLE", M + 2, y + 5.5);
     doc.text("CANT.", der - 76, y + 5.5, { align: "right" });
-    doc.text("P. UNITARIO", der - 40, y + 5.5, { align: "right" });
-    doc.text("SUBTOTAL", der - 2, y + 5.5, { align: "right" });
+    doc.text(moneda === "uf" ? "P. UNITARIO UF" : "P. UNITARIO", der - 40, y + 5.5, { align: "right" });
+    doc.text(moneda === "uf" ? "SUBTOTAL UF" : "SUBTOTAL", der - 2, y + 5.5, { align: "right" });
     y += 12;
 
     doc.setFont("helvetica", "normal").setFontSize(9).setTextColor(30, 25, 60);
@@ -1785,9 +1921,9 @@ async function generarPDF(c) {
       doc.text(lineas, M + 2, y);
       const cant = i.cantidad + (i.unidad ? " " + i.unidad : "");
       doc.text(String(cant), der - 76, y, { align: "right" });
-      doc.text(clp(i.precio_unitario), der - 40, y, { align: "right" });
+      doc.text(montoDe(i.precio_unitario, moneda), der - 40, y, { align: "right" });
       doc.setFont("helvetica", "bold");
-      doc.text(clp(i.subtotal), der - 2, y, { align: "right" });
+      doc.text(montoDe(i.subtotal, moneda), der - 2, y, { align: "right" });
       doc.setFont("helvetica", "normal");
       y += lineas.length * 4.6 + 3;
       doc.setDrawColor(207, 214, 201).setLineWidth(0.15).line(M, y - 1.5, der, y - 1.5);
@@ -1798,19 +1934,37 @@ async function generarPDF(c) {
     const x1 = der - 62, x2 = der - 2;
     doc.setFontSize(9.5).setTextColor(...gris);
     doc.text("Neto", x1, y);
-    doc.setTextColor(30, 25, 60).text(clp(c.neto), x2, y, { align: "right" });
+    doc.setTextColor(30, 25, 60).text(montoDe(c.neto, moneda), x2, y, { align: "right" });
     y += 5.5;
     doc.setTextColor(...gris).text("IVA 19%", x1, y);
-    doc.setTextColor(30, 25, 60).text(clp(c.iva), x2, y, { align: "right" });
+    doc.setTextColor(30, 25, 60).text(montoDe(c.iva, moneda), x2, y, { align: "right" });
     y += 3;
     doc.setDrawColor(...tinta).setLineWidth(0.4).line(x1, y, x2, y);
     y += 6.5;
     doc.setFont("helvetica", "bold").setFontSize(12.5).setTextColor(...tinta);
     doc.text("TOTAL", x1, y);
-    doc.text(clp(c.total), x2, y, { align: "right" });
+    doc.text(montoDe(c.total, moneda), x2, y, { align: "right" });
+
+    // Lo que se pactó son UF; los pesos de abajo son del día en que se cotizó
+    // y van dichos como referencia, no como el precio. Sin valor de UF no se
+    // imprime ninguna cifra en pesos: una inventada adentro de un documento
+    // que recibe el cliente es peor que no ponerla.
+    if (moneda === "uf") {
+      y += 5.5;
+      doc.setFont("helvetica", "normal").setFontSize(8).setTextColor(...gris);
+      doc.text(c.uf_valor
+        ? `Referencia: ${clp(c.total * c.uf_valor)} con la UF a ${clpExacto(c.uf_valor)} del ${fecha(c.fecha)}`
+        : "Valores en UF. La equivalencia en pesos no se incluye.",
+        x2, y, { align: "right" });
+    }
 
     y += 12;
-    for (const [rotulo, texto] of [["CONDICIONES", c.condiciones], ["OBSERVACIONES", c.observaciones]]) {
+    const condiciones = moneda === "uf"
+      ? [c.condiciones, "Los valores están expresados en Unidades de Fomento. " +
+         "Se facturan en pesos según el valor de la UF del día de emisión de la factura."]
+          .filter(Boolean).join(" ")
+      : c.condiciones;
+    for (const [rotulo, texto] of [["CONDICIONES", condiciones], ["OBSERVACIONES", c.observaciones]]) {
       if (!texto) continue;
       const lineas = doc.splitTextToSize(texto, der - M);
       if (y + lineas.length * 4.2 > 272) { doc.addPage(); y = 22; }
