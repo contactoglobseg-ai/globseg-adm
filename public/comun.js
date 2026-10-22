@@ -484,10 +484,18 @@ function pintarIngreso(mensaje) {
   };
 }
 
-function pintarCambioClave(usuario) {
+/**
+ * `obligatorio` es la primera entrada, con la contraseña inicial sin cambiar:
+ * de ahí no se sale sin cambiarla, y el servidor tampoco deja usar ninguna otra
+ * ruta. Sin él, es alguien que vino a cambiarla porque quiso —porque la tecleó
+ * donde no debía, por ejemplo— y entonces tiene que poder volverse atrás: un
+ * formulario sin salida se contesta cerrando la pestaña, y quien la tecleó en
+ * otra parte se queda con la misma contraseña.
+ */
+function pintarCambioClave(usuario, obligatorio = true) {
   document.body.innerHTML = `<div class="puerta"><div class="puerta__caja">
     <div class="puerta__tit"><img src="logo.png" alt="">
-      <span><b>Cambie su contraseña</b><span>${esc(usuario.nombre)}</span></span></div>
+      <span><b>${obligatorio ? "Cambie su contraseña" : "Cambiar mi contraseña"}</b><span>${esc(usuario.nombre)}</span></span></div>
     <form id="f-clave">
       <label class="campo"><span>Contraseña actual</span>
         <input name="actual" type="password" autocomplete="current-password" required autofocus></label>
@@ -495,8 +503,9 @@ function pintarCambioClave(usuario) {
         <input name="nueva" type="password" autocomplete="new-password" required></label>
       <label class="campo"><span>Repita la nueva</span>
         <input name="repetir" type="password" autocomplete="new-password" required></label>
-      <button class="bt" type="submit">Guardar y entrar</button>
+      <button class="bt" type="submit">${obligatorio ? "Guardar y entrar" : "Guardar"}</button>
       <span class="mensaje"></span>
+      ${obligatorio ? "" : `<button class="bt bt--fino" type="button" id="volver">Volver sin cambiar</button>`}
     </form>
     <div class="puerta__aviso" style="background:var(--ambar-suave);color:#7A4A00">
       Al menos 8 caracteres, mezclando letras y números. Es suya: nadie más,
@@ -504,9 +513,11 @@ function pintarCambioClave(usuario) {
     </div>
   </div></div>`;
   const f = document.getElementById("f-clave");
+  const volver = document.getElementById("volver");
+  if (volver) volver.onclick = () => location.reload();
   f.onsubmit = async ev => {
     ev.preventDefault();
-    const m = f.querySelector(".mensaje"), bt = f.querySelector("button");
+    const m = f.querySelector(".mensaje"), bt = f.querySelector("button[type=submit]");
     if (f.nueva.value !== f.repetir.value) {
       decir(m, "Las dos contraseñas nuevas no coinciden", "error");
       f.repetir.focus(); return;
@@ -527,15 +538,23 @@ async function arrancar() {
   } catch (e) {
     return pintarIngreso(e.message.includes("Sin sesión") ? "" : e.message);
   }
-  if (usuario.debe_cambiar_clave) return pintarCambioClave(usuario);
+  if (usuario.debe_cambiar_clave) return pintarCambioClave(usuario, true);
 
   try {
     estado.usuario = usuario;
     estado.quienBorra = quien_borra || [];
     $("#quien").innerHTML =
       `<b>${esc(usuario.nombre)}</b>${esc(usuario.usuario)} · ${esc(usuario.rol)}`;
+    // Los dos botones se inyectan acá y no se escriben en el HTML de cada
+    // página: el panel y Personas tienen cada uno su pie, y dos copias de lo
+    // mismo terminan separándose. Cambiar la contraseña estuvo hasta el
+    // 21-10-2026 solo como pantalla obligatoria del primer ingreso, así que
+    // quien ya la había cambiado no tenía cómo volver a hacerlo: el guardia
+    // tenía su botón en el pie y la oficina no tenía ninguno.
     $("#quien").insertAdjacentHTML("afterend",
-      `<button class="bt bt--fino bt--chico" id="salir" type="button">Cerrar sesión</button>`);
+      `<button class="bt bt--fino bt--chico" id="mi-clave" type="button">Cambiar mi contraseña</button>
+       <button class="bt bt--fino bt--chico" id="salir" type="button">Cerrar sesión</button>`);
+    $("#mi-clave").onclick = () => pintarCambioClave(usuario, false);
     $("#salir").onclick = async () => {
       await pedir("/sesion", { method: "DELETE" }).catch(() => {});
       location.reload();
