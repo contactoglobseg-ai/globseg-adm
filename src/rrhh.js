@@ -1156,6 +1156,152 @@ export async function fichaCompleta(env, id) {
   };
 }
 
+// ------------------------------------------------------------------ historial
+/**
+ * La historia laboral de una persona en una sola línea de tiempo.
+ *
+ * Los datos ya estaban todos, repartidos en seis pantallas: el contrato dice
+ * el cargo y el sueldo de hoy, la bitácora dice cuánto ganaba antes, los
+ * documentos dicen qué venció y cuándo, las ausencias dicen cuándo no estuvo.
+ * Lo que faltaba era poder leerlos en orden y responder «¿desde cuándo es
+ * supervisor?» o «¿cuándo le subimos el sueldo?» sin abrir cuatro pestañas.
+ * Por eso **no hay tabla nueva ni migración**: esto se arma al vuelo.
+ *
+ * **Dos clases de fecha, y se dicen distinto.** Un contrato que empieza el 1 de
+ * marzo pasó el 1 de marzo, lo haya escrito alguien en octubre o nunca; eso es
+ * un `hecho`. Que Valeria le corrigiera el sueldo el 15 de octubre pasó el 15
+ * de octubre; eso es un `registro`. Mezclarlos en una sola columna de fechas
+ * sin decir cuál es cuál haría leer la historia al revés, y de acá se contesta
+ * desde cuándo corresponde pagar algo.
+ */
+export async function historialDe(env, id) {
+  const t = await primero(env, `trabajadores?select=*&id=eq.${id}`);
+  if (!t) return null;
+
+  // Lo que falle acá se nota: un historial al que le faltan los contratos y no
+  // lo dice es peor que uno que no carga. Solo se toleran los dos módulos cuya
+  // migración puede no estar aplicada; ahí la ausencia es esperable.
+  const opcional = (consulta) => buscar(env, consulta).catch(() => []);
+  const [contratos, documentos, ausencias, cargas, generados] = await Promise.all([
+    buscar(env, `contratos?select=*,instalaciones(nombre)&trabajador_id=eq.${id}`),
+    buscar(env, `v_documentos?select=*&trabajador_id=eq.${id}`),
+    buscar(env, `ausencias?select=*&trabajador_id=eq.${id}`),
+    opcional(`cargas_familiares?select=*&trabajador_id=eq.${id}`),
+    opcional(`v_documentos_generados?select=*&trabajador_id=eq.${id}`),
+  ]);
+
+  const hitos = [];
+  const hecho = (fecha, tipo, titulo, detalle = null, quien = null) => {
+    if (fecha) hitos.push({ fecha: String(fecha).slice(0, 10), origen: 'hecho', tipo, titulo, detalle, quien });
+  };
+  const registro = (cuando, tipo, titulo, detalle = null, quien = null) => {
+    if (cuando) {
+      hitos.push({ fecha: String(cuando).slice(0, 10), cuando, origen: 'registro',
+                   tipo, titulo, detalle, quien });
+    }
+  };
+
+  hecho(t.fecha_ingreso, 'ingreso', 'Entró a la empresa',
+    t.anios_previos ? `Con ${t.anios_previos} años previos acreditados` : null);
+
+  for (const c of contratos) {
+    const donde = c.instalaciones?.nombre;
+    hecho(c.fecha_inicio, 'contrato', `Contrato ${ROTULO_TIPO_CONTRATO[c.tipo] || c.tipo}`,
+      [c.cargo, donde && `en ${donde}`, c.sueldo_base && `sueldo ${pesosCL(c.sueldo_base)}`]
+        .filter(Boolean).join(' · '), c.creado_por);
+    if (c.estado === 'terminado') {
+      // La causal con su glosa: «159-4» no le dice nada a nadie, y es
+      // justamente el dato por el que se mira un contrato terminado.
+      hecho(c.termino_fecha || c.fecha_termino, 'contrato_fin', 'Terminó el contrato',
+        CAUSALES[c.termino_causal]?.glosa || c.termino_causal || null);
+    } else if (c.fecha_termino) {
+      hecho(c.fecha_termino, 'contrato_plazo', 'Vence el plazo del contrato',
+        'Si sigue trabajando después, pasa a indefinido (art. 159 N°4)');
+    }
+  }
+
+  for (const d of documentos) {
+    const nombre = d.tipo_nombre || d.tipo;
+    if (!d.vigente) {
+      registro(d.creado_en, 'documento', `Anulado: ${nombre}`, d.observacion, d.creado_por);
+      continue;
+    }
+    hecho(d.fecha_emision || String(d.creado_en).slice(0, 10), 'documento', nombre,
+      [d.numero && `N° ${d.numero}`, d.glosa].filter(Boolean).join(' · ') || null, d.creado_por);
+    if (d.fecha_vencimiento) {
+      hecho(d.fecha_vencimiento, 'vencimiento', `Vence: ${nombre}`,
+        d.fecha_vencimiento < hoyISO() ? 'Ya está vencido' : null);
+    }
+  }
+
+  for (const a of ausencias) {
+    if (a.estado === 'anulada' || a.estado === 'rechazada') continue;
+    hecho(a.desde, 'ausencia', ROTULO_AUSENCIA_HIST[a.tipo] || a.tipo,
+      [`hasta el ${comoDia(a.hasta)}`, a.dias_habiles && `${a.dias_habiles} días hábiles`,
+       a.folio && `folio ${a.folio}`, a.motivo].filter(Boolean).join(' · '));
+  }
+
+  for (const c of cargas) {
+    hecho(c.desde, 'carga', `Carga familiar: ${c.nombre}`,
+      c.acreditada ? 'Acreditada' : 'Sin acreditar: no se paga todavía', c.creado_por);
+    if (c.hasta) hecho(c.hasta, 'carga_fin', `Dejó de ser carga: ${c.nombre}`);
+  }
+
+  for (const g of generados) {
+    registro(g.creado_en, 'documento_generado', `${g.plantilla_nombre} ${g.numero}`,
+      g.estado === 'firmado' ? 'Firmado' : g.estado === 'anulado'
+        ? `Anulado: ${g.anulado_motivo || 'sin motivo'}` : 'Esperando firmas', g.creado_por);
+  }
+
+  // La bitácora es la única que guarda **lo que decía antes**: un contrato
+  // corregido no deja rastro del sueldo viejo en ninguna tabla, solo en el
+  // detalle que escribió `cambiosContrato()`. Sin esto, «¿cuándo le subimos el
+  // sueldo?» no se puede contestar.
+  const porEntidad = [
+    ['trabajador', [id]],
+    ['ficha_rrhh', [id]],
+    ['contrato', contratos.map((c) => c.id)],
+    ['documento_rrhh', documentos.map((d) => d.id)],
+    ['ausencia', ausencias.map((a) => a.id)],
+    ['carga_familiar', cargas.map((c) => c.id)],
+    ['documento_generado', generados.map((g) => g.id)],
+  ].filter(([, ids]) => ids.length);
+
+  const anotaciones = (await Promise.all(porEntidad.map(([entidad, ids]) =>
+    // La bitácora es rastro, no parte del trámite: si falla, el historial sale
+    // igual con los hechos y sin las correcciones. Mismo criterio que `anotar`.
+    opcional(`bitacora?select=*&entidad=eq.${entidad}&entidad_id=in.(${ids.join(',')})`)))).flat();
+
+  for (const b of anotaciones) {
+    // Lo que ya está contado como hecho no se repite como registro: el alta de
+    // un contrato sale arriba con su fecha de inicio, que es la que importa.
+    if (b.accion === 'creada' || b.accion === 'creado') continue;
+    registro(b.cuando, 'cambio', b.accion, b.detalle, b.quien);
+  }
+
+  // Más nuevo arriba. Dentro del mismo día, primero lo que tiene hora.
+  hitos.sort((a, b) => b.fecha.localeCompare(a.fecha)
+    || String(b.cuando || '').localeCompare(String(a.cuando || '')));
+
+  return { trabajador: { id: t.id, nombre: t.nombre }, hitos };
+}
+
+const ROTULO_TIPO_CONTRATO = { indefinido: 'indefinido', plazo_fijo: 'a plazo fijo',
+  por_obra: 'por obra o faena' };
+// Los mismos códigos que `TIPOS_AUSENCIA` y los mismos rótulos que usa la
+// pantalla: un tipo nuevo que nadie agregue acá sale con su código y no se
+// pierde.
+const ROTULO_AUSENCIA_HIST = {
+  feriado: 'Feriado legal', feriado_progresivo: 'Feriado progresivo',
+  licencia_medica: 'Licencia médica', accidente_trabajo: 'Accidente del trabajo',
+  permiso_legal: 'Permiso legal', permiso_con_goce: 'Permiso con goce',
+  permiso_sin_goce: 'Permiso sin goce', falta_injustificada: 'Falta injustificada',
+  suspension: 'Suspensión', otra: 'Otra',
+};
+const pesosCL = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('es-CL');
+/** Una fecha dentro de un texto se escribe como se escribe acá, no en ISO. */
+const comoDia = (iso) => (iso ? String(iso).slice(0, 10).split('-').reverse().join('-') : '');
+
 // ----------------------------------------------------------- cargas familiares
 const PARENTESCOS = ['hijo', 'conyuge', 'madre', 'nieto', 'hermano', 'otro'];
 

@@ -939,6 +939,7 @@ async function pintarFicha(id) {
     ${seccionDocumentos(documentos, c, contratos)}
     ${seccionAusencias(ausencias, feriado, t)}
     ${seccionCargas(cargas)}
+    ${seccionHistorial()}
     ${seccionDatos(t, c)}`;
 
   $("#volver").onclick = () => {
@@ -1221,6 +1222,58 @@ function seccionAusencias(ausencias, feriado, t) {
       </form>
     </details>
   </section>`;
+}
+
+/* --------------------------------------------------------------- historial
+
+   La historia laboral en una sola línea de tiempo. Los datos ya estaban todos,
+   repartidos en seis pantallas; lo que faltaba era leerlos en orden y poder
+   contestar «¿desde cuándo es supervisor?» sin abrir cuatro pestañas.
+
+   Se pide aparte de la ficha y recién al abrir la sección: son decenas de
+   hitos que solo se miran cuando alguien pregunta, y traerlos en cada apertura
+   de ficha sería pagarlos siempre. */
+
+const SELLO_HITO = {
+  ingreso: "e-cerrado", contrato: "e-cerrado", contrato_fin: "e-rechazada",
+  contrato_plazo: "e-solicitar_oc", documento: "e-en_curso",
+  vencimiento: "e-solicitar_oc", ausencia: "e-borrador", carga: "e-en_curso",
+  carga_fin: "e-borrador", documento_generado: "e-en_curso", cambio: "e-borrador",
+};
+
+function seccionHistorial() {
+  return `<section class="caja">
+    <div class="caja__tit"><h2>Historial</h2>
+      <span class="nota">Todo en orden, de lo más nuevo a lo más viejo</span></div>
+    <details class="agregar" id="d-historial">
+      <summary>Ver el historial completo</summary>
+      <div id="historial"><p class="sub" style="padding:12px 16px">Cargando…</p></div>
+    </details>
+  </section>`;
+}
+
+function pintarHistorial(h) {
+  if (!h.hitos.length) {
+    return `<p class="vacio">Todavía no hay nada registrado de esta persona.</p>`;
+  }
+  return `
+    <div style="padding:4px 16px 12px;font-size:.84rem;color:var(--texto-2)">
+      Las filas claras son <b style="color:var(--texto)">lo que pasó</b> y van con la fecha en
+      que pasó: un contrato que empieza el 1 de marzo empieza el 1 de marzo, lo haya escrito
+      alguien en octubre o no. Las grises son <b style="color:var(--texto)">lo que alguien
+      anotó</b>, con la fecha en que lo anotó — ahí salen las correcciones, que son lo único
+      que guarda cuánto ganaba antes.
+    </div>
+    <table class="historial">
+      <thead><tr><th>Cuándo</th><th>Qué</th><th>Quién</th></tr></thead><tbody>
+      ${h.hitos.map(x => `<tr${x.origen === "registro" ? ' class="fila--cerrado"' : ""}>
+        <td class="nowrap">${fecha(x.fecha)}${x.origen === "registro"
+          ? '<span class="sub">se anotó ese día</span>' : ""}</td>
+        <td><span class="sello ${SELLO_HITO[x.tipo] || "e-borrador"}">${esc(x.titulo)}</span>
+          ${x.detalle ? `<span class="sub">${esc(x.detalle)}</span>` : ""}</td>
+        <td class="nowrap">${esc(x.quien || "—")}</td>
+      </tr>`).join("")}
+    </tbody></table>`;
 }
 
 const ROTULO_PARENTESCO = { hijo: "Hijo o hija", conyuge: "Cónyuge o conviviente civil",
@@ -1628,6 +1681,23 @@ function conectarFicha(datos) {
       } catch (e) { alert(e.message); }
     };
   });
+
+  // ------------------------------------------------------------- historial
+  // Se pide al abrir la sección, una sola vez por ficha abierta.
+  const det = $("#d-historial");
+  if (det) {
+    let pedido = false;
+    det.ontoggle = async () => {
+      if (!det.open || pedido) return;
+      pedido = true;
+      try {
+        $("#historial").innerHTML = pintarHistorial(await pedir(`/rrhh/personal/${id}/historial`));
+      } catch (e) {
+        pedido = false;   // que se pueda reintentar cerrando y abriendo
+        $("#historial").innerHTML = aviso("mal", "No se pudo cargar el historial", e.message);
+      }
+    };
+  }
 
   // ------------------------------------------------------ cargas familiares
   enviar("#f-carga", "/rrhh/cargas", { trabajador_id: id });

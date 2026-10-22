@@ -474,7 +474,17 @@ async function api(request, env, url, usuario) {
       return json({ ok: true, trabajador: r.trabajador }, 201);
     }
 
-    let m = sub.match(/^\/personal\/(\d+)$/);
+    // La historia laboral de una persona, armada al vuelo con lo que ya hay.
+    // Va aparte de la ficha y no adentro: son decenas de hitos que solo se
+    // miran cuando alguien pregunta desde cuándo pasa algo, y cargarlos en
+    // cada apertura de ficha sería pagarlos siempre.
+    let m = sub.match(/^\/personal\/(\d+)\/historial$/);
+    if (m && metodo === 'GET') {
+      const h = await rrhh.historialDe(env, Number(m[1]));
+      return h ? json(h) : error('Esa persona no está en el registro', 404);
+    }
+
+    m = sub.match(/^\/personal\/(\d+)$/);
     if (m && metodo === 'GET') {
       const f = await rrhh.fichaCompleta(env, Number(m[1]));
       return f ? json(f) : error('Esa persona no está en el registro', 404);
