@@ -113,6 +113,10 @@ const VISTAS = {
      permiso. El servidor abre esta puerta con la misma regla. */
   documentos: { rotulo: "Documentos",   pintar: pintarDocumentos,
                 modulo: ["rrhh", "documentos"] },
+  /* Mismos dos permisos que Documentos, y por lo mismo: el prevencionista
+     entrega los elementos de protección y operaciones las radios. */
+  activos:    { rotulo: "Activos y EPP", pintar: pintarActivos,
+                modulo: ["rrhh", "documentos"] },
   sueldos:    { rotulo: "Sueldos",      pintar: pintarSueldos,    modulo: "rrhh" },
   carga:      { rotulo: "Carga masiva", pintar: pintarCarga,      modulo: "rrhh" },
 };
@@ -122,7 +126,8 @@ const VISTAS = {
    el mismo nombre, y el encabezado del teléfono sigue diciendo «PERSONAS /
    Fichas» en vez de solo «Fichas». */
 const GRUPOS = [
-  { rotulo: "Personas", vistas: ["rrhh", "personal", "documentos", "sueldos", "carga"] },
+  { rotulo: "Personas",
+    vistas: ["rrhh", "personal", "documentos", "activos", "sueldos", "carga"] },
 ];
 
 /** Quien entra acá sin el módulo no es alguien a quien le falte una pantalla
@@ -1222,6 +1227,247 @@ function seccionAusencias(ausencias, feriado, t) {
       </form>
     </details>
   </section>`;
+}
+
+/* --------------------------------------------------------- activos y EPP
+
+   Qué tiene la empresa y quién lo tiene puesto. El DS 594 art. 53 obliga a
+   dejar registro de la entrega de los elementos de protección; lo demás —las
+   radios, las linternas, los celulares— es plata que hoy no está anotada en
+   ninguna parte.
+
+   La lista que de verdad importa no es el stock: es «lo tiene alguien que ya
+   no trabaja acá». Esa nadie la revisa, porque hoy no existe. */
+
+const ACTIVOS = { datos: null, verCatalogo: false, filtro: "" };
+const ROTULO_CATEGORIA = { epp: "EPP", uniforme: "Uniforme", equipo: "Equipo",
+  vehiculo: "Vehículo", otro: "Otro" };
+const SELLO_ENTREGA = { vigente: "e-cerrado", por_vencer: "e-solicitar_oc",
+  vencido: "e-rechazada", devuelto: "e-borrador", perdido: "e-rechazada",
+  dado_de_baja: "e-borrador" };
+const ROTULO_SITUACION = { vigente: "Vigente", por_vencer: "Por vencer",
+  vencido: "Vencido", devuelto: "Devuelto", perdido: "Perdido",
+  dado_de_baja: "Dado de baja" };
+
+const conTalla = (x) => esc(x.articulo || x.nombre) + (x.talla ? ` · talla ${esc(x.talla)}` : "");
+
+/* El ancho de estas dos tablas va en el atributo style y no en panel.css: ese
+   archivo tenía cambios de otra sesión sin commitear cuando se escribió esto,
+   y tocarlo habría mezclado las dos cosas en un mismo commit. Son siete
+   columnas, no diez, que es para lo que está pensado el ancho por defecto de
+   las tablas dentro de .desliza. Cuando panel.css esté limpio, conviene
+   moverlo allá con las otras. */
+
+async function pintarActivos() {
+  let d;
+  try {
+    d = await pedir("/activos");
+  } catch (e) {
+    $("#app").innerHTML = `<section class="caja"><div class="caja__tit">
+      <h2>Activos y EPP</h2></div>
+      ${aviso("ojo", "Todavía no se puede usar. ", e.message)}</section>`;
+    return;
+  }
+  ACTIVOS.datos = d;
+  const p = d.panel;
+  // La lista de gente sale de Personal y no de los catálogos: acá hace falta
+  // quién puede recibir algo, no el catálogo entero.
+  const personas = (await pedir("/rrhh/personal").catch(() => ({ personal: [] }))).personal || [];
+
+  const entregas = d.entregas.filter(e => !ACTIVOS.filtro
+    || (e.trabajador + " " + e.articulo).toLowerCase().includes(ACTIVOS.filtro.toLowerCase()));
+
+  $("#app").innerHTML = `
+    ${p.en_poder_de_inactivos.length ? aviso("mal",
+      `${p.en_poder_de_inactivos.length} cosa${p.en_poder_de_inactivos.length === 1 ? "" : "s"} en poder de gente que ya no trabaja acá. `,
+      p.en_poder_de_inactivos.map(e => `${e.trabajador}: ${e.cantidad} de ${e.articulo}`).join(" · ")
+      + ". Hay que recuperarlas o darlas de baja.") : ""}
+    ${p.vencidos.length ? aviso("mal",
+      `${p.vencidos.length} entrega${p.vencidos.length === 1 ? "" : "s"} vencida${p.vencidos.length === 1 ? "" : "s"}. `,
+      "Un elemento de protección vencido deja de proteger aunque se vea igual: "
+      + p.vencidos.map(e => `${e.trabajador} · ${e.articulo}`).join(", ")) : ""}
+    ${p.bajo_minimo.length ? aviso("ojo",
+      `${p.bajo_minimo.length} artículo${p.bajo_minimo.length === 1 ? "" : "s"} bajo el mínimo. `,
+      p.bajo_minimo.map(a => `${a.nombre}: quedan ${a.stock}, mínimo ${a.stock_minimo}`).join(" · ")) : ""}
+
+    <dl class="resumen">
+      <div class="ficha"><dt>Entregado</dt><dd class="num">${p.total_entregado}</dd>
+        <small>en poder de la gente</small></div>
+      <div class="ficha ${p.por_vencer.length ? "ficha--ojo" : ""}"><dt>Por vencer</dt>
+        <dd class="num">${p.por_vencer.length}</dd><small>en los próximos 30 días</small></div>
+      <div class="ficha ${p.bajo_minimo.length ? "ficha--ojo" : ""}"><dt>Bajo el mínimo</dt>
+        <dd class="num">${p.bajo_minimo.length}</dd><small>hay que reponer</small></div>
+      <div class="ficha"><dt>En el catálogo</dt>
+        <dd class="num">${d.articulos.filter(a => a.activo).length}</dd><small>artículos activos</small></div>
+    </dl>
+
+    <section class="caja">
+      <div class="caja__tit"><h2>Entregar</h2>
+        <span class="nota">Queda el registro que pide el DS 594</span></div>
+      <form id="f-entrega">
+        <div class="rejilla">
+          <label class="campo" style="grid-column:span 2"><span>A quién *</span>
+            <select name="trabajador_id" required>
+              <option value="">Elija una persona…</option>
+              ${personas.map(x => `<option value="${x.id}">${esc(x.nombre)}</option>`).join("")}
+            </select></label>
+          <label class="campo" style="grid-column:span 2"><span>Qué *</span>
+            <select name="articulo_id" required>
+              <option value="">Elija un artículo…</option>
+              ${d.articulos.filter(a => a.activo).map(a =>
+                `<option value="${a.id}">${conTalla(a)} — quedan ${a.stock}</option>`).join("")}
+            </select></label>
+          <label class="campo"><span>Cantidad</span>
+            <input name="cantidad" type="number" min="1" value="1"></label>
+          <label class="campo"><span>Cuándo</span>
+            <input type="date" name="entregada_en" value="${hoyISO()}"></label>
+          <label class="campo"><span>Vence</span>
+            <input type="date" name="vence_en">
+            <div class="sub">Si se deja vacío se propone con la vida útil del artículo.</div></label>
+          <label class="campo" style="grid-column:span 2"><span>Observación</span>
+            <input name="observacion" autocomplete="off"></label>
+        </div>
+        <div class="pie-form"><button class="bt" type="submit">Registrar la entrega</button>
+          <span class="mensaje"></span></div>
+      </form>
+    </section>
+
+    <section class="caja">
+      <div class="caja__tit"><h2>Lo entregado</h2>
+        <span class="nota">${entregas.length} de ${d.entregas.length}</span></div>
+      <div class="rejilla"><label class="campo" style="grid-column:span 2"><span>Buscar</span>
+        <input id="f-buscar-activo" value="${esc(ACTIVOS.filtro)}"
+               placeholder="Por persona o por artículo"></label></div>
+      ${entregas.length ? `<div class="desliza"><table class="entregas" style="min-width:820px">
+        <thead><tr><th>Quién</th><th>Qué</th><th class="num">Cant.</th><th>Entregado</th>
+          <th>Vence</th><th>Situación</th><th></th></tr></thead><tbody>
+        ${entregas.map(e => `<tr${e.trabajador_activo ? "" : ' class="fila--atrasado"'}>
+          <td><b>${esc(e.trabajador)}</b>${e.trabajador_activo
+            ? "" : '<span class="sub">ya no trabaja acá</span>'}</td>
+          <td>${conTalla(e)}<span class="sub">${esc(ROTULO_CATEGORIA[e.categoria] || e.categoria)}</span></td>
+          <td class="num">${e.cantidad}</td>
+          <td class="nowrap">${fecha(e.entregada_en)}</td>
+          <td class="nowrap">${e.vence_en ? fecha(e.vence_en) : "—"}</td>
+          <td><span class="sello ${SELLO_ENTREGA[e.situacion] || "e-borrador"}">${
+            esc(ROTULO_SITUACION[e.situacion] || e.situacion)}</span></td>
+          <td class="nowrap"><button class="bt bt--fino bt--chico" data-cerrar="${e.id}">Cerrar</button></td>
+        </tr>`).join("")}
+      </tbody></table></div>` : `<p class="vacio">No hay nada entregado que calce con lo buscado.</p>`}
+    </section>
+
+    <section class="caja">
+      <div class="caja__tit"><h2>Catálogo y bodega</h2>
+        <span class="nota">El stock lo mueve el sistema; los ajustes van con motivo</span></div>
+      <div class="desliza"><table class="articulos" style="min-width:780px">
+        <thead><tr><th>Artículo</th><th>Categoría</th><th class="num">En bodega</th>
+          <th class="num">Entregados</th><th class="num">Mínimo</th><th>Vence</th><th></th></tr></thead><tbody>
+        ${d.articulos.map(a => `<tr${a.activo ? "" : ' style="opacity:.55"'}>
+          <td><b>${conTalla(a)}</b>${a.notas ? `<span class="sub">${esc(a.notas)}</span>` : ""}</td>
+          <td>${esc(ROTULO_CATEGORIA[a.categoria] || a.categoria)}</td>
+          <td class="num">${a.bajo_minimo
+            ? `<span class="sello e-solicitar_oc">${a.stock}</span>` : a.stock}</td>
+          <td class="num">${a.entregados || "—"}</td>
+          <td class="num">${a.stock_minimo}</td>
+          <td>${a.vence ? `${a.meses_vida} meses` : "—"}</td>
+          <td class="nowrap"><button class="bt bt--fino bt--chico" data-stock="${a.id}">Ajustar stock</button></td>
+        </tr>`).join("")}
+      </tbody></table></div>
+      <details class="agregar"><summary>Agregar un artículo</summary>
+        <form id="f-articulo">
+          <div class="rejilla">
+            <label class="campo" style="grid-column:span 2"><span>Nombre *</span>
+              <input name="nombre" required autocomplete="off"></label>
+            <label class="campo"><span>Categoría</span><select name="categoria">
+              ${Object.entries(ROTULO_CATEGORIA).map(([k, v]) =>
+                `<option value="${k}">${v}</option>`).join("")}</select></label>
+            <label class="campo"><span>Talla</span>
+              <input name="talla" autocomplete="off" placeholder="Si aplica"></label>
+            <label class="campo"><span>Unidad</span>
+              <input name="unidad" value="unidad"></label>
+            <label class="campo"><span>Stock inicial</span>
+              <input name="stock" type="number" min="0" value="0"></label>
+            <label class="campo"><span>Mínimo</span>
+              <input name="stock_minimo" type="number" min="0" value="0"></label>
+            <label class="campo"><span>¿Vence?</span><select name="vence">
+              <option value="no">No</option><option value="si">Sí</option></select></label>
+            <label class="campo"><span>Vida útil en meses</span>
+              <input name="meses_vida" type="number" min="1" placeholder="Solo si vence"></label>
+          </div>
+          <div class="pie-form"><button class="bt" type="submit">Agregar</button>
+            <span class="mensaje"></span></div>
+        </form>
+      </details>
+    </section>`;
+
+  const buscar = $("#f-buscar-activo");
+  buscar.oninput = () => { ACTIVOS.filtro = buscar.value; };
+  // Se repinta al soltar la tecla y no en cada letra: repintar dos tablas por
+  // carácter hace que el cursor salte.
+  buscar.onchange = () => pintarActivos();
+
+  $("#f-entrega").onsubmit = ev => mandar(ev, "/activos/entregas");
+  $("#f-articulo").onsubmit = ev => mandar(ev, "/activos/articulos");
+
+  for (const b of document.querySelectorAll("[data-cerrar]")) {
+    b.onclick = () => cerrarEntrega(Number(b.dataset.cerrar));
+  }
+  for (const b of document.querySelectorAll("[data-stock]")) {
+    b.onclick = () => ajustarStock(Number(b.dataset.stock));
+  }
+}
+
+/** Manda un formulario de activos y repinta, mostrando los avisos que vuelvan:
+ *  lo que el servidor advierte —stock descuadrado, persona de baja— es lo que
+ *  hay que leer, y un «guardado» a secas se lo come. */
+async function mandar(ev, ruta) {
+  ev.preventDefault();
+  const f = ev.target, m = f.querySelector(".mensaje"), bt = f.querySelector("button[type=submit]");
+  decir(m, "Guardando…"); bt.disabled = true;
+  try {
+    const r = await pedir(ruta, { method: "POST",
+      body: JSON.stringify(Object.fromEntries(new FormData(f))) });
+    if (r.avisos?.length) alert("Registrado.\n\nTenga presente:\n\n· " + r.avisos.join("\n· "));
+    else recado("Registrado");
+    await pintarActivos();
+  } catch (e) { decir(m, e.message, "error"); bt.disabled = false; }
+}
+
+/* Cerrar una entrega: devuelta, perdida o dada de baja. Se pregunta en dos
+   pasos con `prompt` y no con un formulario propio porque son dos datos y
+   sucede de a una; lo que no se puede es que cerrar sea un botón solo, porque
+   «devuelto en buen estado» repone bodega y «perdido» no. */
+async function cerrarEntrega(id) {
+  const que = prompt("¿Qué pasó con esto?\n\nEscriba: devuelto, perdido o baja");
+  if (!que) return;
+  const estado = { devuelto: "devuelto", perdido: "perdido", baja: "dado_de_baja" }[que.trim().toLowerCase()];
+  if (!estado) return alert("No entendí «" + que + "». Escriba devuelto, perdido o baja.");
+
+  const cuerpo = { estado };
+  if (estado === "devuelto") {
+    const como = prompt("¿En qué estado volvió?\n\nEscriba: bueno, dañado o inservible");
+    if (!como) return;
+    cuerpo.devolucion_estado = como.trim().toLowerCase();
+  }
+  try {
+    const r = await pedir(`/activos/entregas/${id}`, { method: "PATCH", body: JSON.stringify(cuerpo) });
+    if (r.avisos?.length) alert(r.avisos.join("\n\n"));
+    await pintarActivos();
+  } catch (e) { alert(e.message); }
+}
+
+async function ajustarStock(id) {
+  const a = ACTIVOS.datos.articulos.find(x => x.id === id);
+  const cuanto = prompt(`¿Cuántos hay en bodega de ${a.nombre}?\n\n`
+    + `El sistema dice ${a.stock}. Escriba el total que contó.`);
+  if (cuanto === null) return;
+  const motivo = prompt("¿Por qué cambia? (compra, conteo de bodega, pérdida…)");
+  if (!motivo) return;
+  try {
+    await pedir(`/activos/articulos/${id}/stock`, { method: "POST",
+      body: JSON.stringify({ stock: cuanto, motivo }) });
+    recado("Stock ajustado");
+    await pintarActivos();
+  } catch (e) { alert(e.message); }
 }
 
 /* --------------------------------------------------------------- historial

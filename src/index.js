@@ -23,6 +23,7 @@ import * as carga from './carga.js';
 import * as arch from './archivos.js';
 import * as ing from './ingreso.js';
 import * as docs from './documentos.js';
+import * as activos from './activos.js';
 import { redireccionHttps, cabecerasSeguridad, conCabeceras, soloHttps }
   from './seguridad.js';
 import { ipDe, huellaDe, revisarLimite, limpiarHuellas, MENSAJES as MENSAJES_LIMITE,
@@ -874,6 +875,67 @@ async function api(request, env, url, usuario) {
   // sueldo y la cuenta bancaria escritos en el cuerpo, así que **exige `rrhh`**
   // aunque la cuenta haya entrado con `documentos`. Sin eso, operaciones vería
   // los sueldos al generar un contrato.
+  // Activos y EPP. Misma puerta que documentos: lo usan dos áreas, el
+  // prevencionista que entrega los elementos de protección y RRHH, y
+  // operaciones que entrega radios y linternas.
+  if (ruta === '/activos' || ruta.startsWith('/activos/')) {
+    if (!puede(usuario, 'documentos') && !puede(usuario, 'rrhh')) {
+      return error('Sin acceso a este módulo', 403);
+    }
+    const sub = ruta.replace(/^\/activos/, '') || '/';
+
+    if (!(await activos.tablasListas(env))) {
+      return json({ sin_migracion: true, aviso: activos.avisoMigracion(),
+                    migracion: activos.MIGRACION }, 503);
+    }
+
+    if (sub === '/' && metodo === 'GET') {
+      const p = url.searchParams;
+      return json({
+        articulos: await activos.catalogo(env),
+        entregas: await activos.listarEntregas(env, {
+          trabajador: p.get('trabajador'), estado: p.get('estado') || 'entregado',
+        }),
+        panel: await activos.panelActivos(env),
+      });
+    }
+
+    if (sub === '/articulos' && metodo === 'POST') {
+      const r = await activos.crearArticulo(env, usuario.usuario, cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r, 201);
+    }
+
+    let mA = sub.match(/^\/articulos\/(\d+)$/);
+    if (mA && metodo === 'PATCH') {
+      const r = await activos.editarArticulo(env, usuario.usuario, Number(mA[1]), cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+
+    mA = sub.match(/^\/articulos\/(\d+)\/stock$/);
+    if (mA && metodo === 'POST') {
+      const r = await activos.ajustarStock(env, usuario.usuario, Number(mA[1]), cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+
+    if (sub === '/entregas' && metodo === 'POST') {
+      const r = await activos.entregar(env, usuario.usuario, cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r, 201);
+    }
+
+    mA = sub.match(/^\/entregas\/(\d+)$/);
+    if (mA && metodo === 'PATCH') {
+      const r = await activos.cerrarEntrega(env, usuario.usuario, Number(mA[1]), cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+
+    return error('Ruta no encontrada', 404);
+  }
+
   if (ruta === '/documentos' || ruta.startsWith('/documentos/')) {
     if (!puede(usuario, 'documentos') && !puede(usuario, 'rrhh')) {
       return error('Sin acceso a este módulo', 403);
@@ -1631,7 +1693,8 @@ async function revisarTablas(env) {
                    'contratos', 'documentos_trabajador', 'ausencias',
                    'tipos_documento', 'parametros_rrhh', 'afps', 'tramos_impuesto',
                    'plantillas_documento', 'bloques_plantilla', 'documentos_generados',
-                   'firmas_documento', 'datos_empresa', 'cargas_familiares']) {
+                   'firmas_documento', 'datos_empresa', 'cargas_familiares',
+                   'articulos', 'entregas', 'v_entregas']) {
     try {
       await buscar(env, `${t}?select=count&limit=1`);
       r[t] = true;
