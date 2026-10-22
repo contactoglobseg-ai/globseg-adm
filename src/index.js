@@ -31,11 +31,29 @@ import { ipDe, huellaDe, revisarLimite, limpiarHuellas, MENSAJES as MENSAJES_LIM
 
 const IVA = 0.19;
 
+/**
+ * Los módulos que abre cada rol.
+ *
+ * 22-10-2026, decisión del gerente: **el módulo de RRHH lo tienen todas las
+ * cuentas de oficina**, no solo gerencia y RRHH. La administración son cuatro
+ * personas que se cubren entre ellas, y tener que pedirle a una de ellas que
+ * mirara un contrato o un vencimiento de OS-10 era justamente el trámite que
+ * hacía que nadie lo mirara.
+ *
+ * Lo que eso abre, dicho sin adornos, porque no es una pestaña más: sueldos,
+ * liquidaciones, finiquitos, RUT, previsión de salud y cuenta bancaria de cada
+ * trabajador, y además la puerta laboral de Documentos —un contrato lleva el
+ * sueldo y la cuenta escritos en el cuerpo—. Si mañana alguno de esos datos no
+ * debe verlos un rol, el cambio es sacarle `rrhh` de esta lista y nada más.
+ *
+ * Los guardias siguen afuera: no tienen cuenta en `usuarios`, y su sesión del
+ * libro de asistencia ni siquiera consulta esta tabla.
+ */
 const PERMISOS = {
   gerencia:    ['facturacion', 'cotizaciones', 'personal', 'documentos', 'rrhh'],
-  operaciones: ['facturacion', 'personal', 'documentos'],
+  operaciones: ['facturacion', 'personal', 'documentos', 'rrhh'],
   rrhh:        ['rrhh'],
-  prevencion:  ['documentos'],
+  prevencion:  ['documentos', 'rrhh'],
 };
 
 /**
@@ -418,8 +436,10 @@ async function api(request, env, url, usuario) {
   //
   // Todo el módulo cuelga de `/rrhh` y de un solo permiso. Es el módulo con los
   // datos más sensibles del sistema —sueldos, salud, cuentas bancarias, RUT— y
-  // por eso no comparte puerta con nada: quien tiene `facturacion` no entra acá,
-  // y quien tiene `rrhh` no ve los cobros.
+  // por eso sigue teniendo puerta propia aunque desde el 22-10-2026 la tengan
+  // todos los roles de oficina: quien entra acá lo hace por `rrhh` y no de
+  // arrastre por `facturacion`, así que cerrarle el módulo a un rol es sacarle
+  // una palabra de PERMISOS, no desarmar una ruta.
   if (ruta === '/rrhh' || ruta.startsWith('/rrhh/')) {
     if (!puede(usuario, 'rrhh')) return error('Sin acceso a este módulo', 403);
     const sub = ruta.replace(/^\/rrhh/, '') || '/';
