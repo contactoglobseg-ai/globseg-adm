@@ -105,6 +105,183 @@ try {
  * desde dónde se mira.
  */
 
+// ======================================================= transferencias masivas
+/**
+ * La nómina con que se pagan las remuneraciones.
+ *
+ * El formato es el del archivo que entregó la empresa —«Formato Excel
+ * Transferencias Masivas»—: trece columnas con sus encabezados exactos, que se
+ * sube tal cual al banco. **Los encabezados los manda el servidor**
+ * (`COLUMNAS_NOMINA` en src/pagos.js) y no están escritos acá: si el banco
+ * cambia el formato, se cambia en un solo lugar y no en dos que se separan.
+ *
+ * Qué no hace, a propósito: no transfiere nada. Arma el archivo y lo deja
+ * descargado; quien lo sube al banco y lo autoriza es una persona.
+ */
+/* El mes que se paga es el que terminó, no el que corre: las remuneraciones de
+   septiembre se pagan en octubre. Arranca en el mes pasado, igual que Estados
+   de pago en el panel. */
+const mesPasado = () => {
+  const h = new Date();
+  const d = new Date(h.getFullYear(), h.getMonth() - 1, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+};
+const TRANSF = { mes: mesPasado(), instalacion: "", borrador: false, datos: null,
+                 verBancos: false };
+
+const MES_NOMBRE_T = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
+                      "septiembre", "octubre", "noviembre", "diciembre"];
+const mesLindoT = m => m ? `${MES_NOMBRE_T[Number(m.slice(5, 7)) - 1]} de ${m.slice(0, 4)}` : "";
+
+async function pintarTransferencias() {
+  $("#app").innerHTML = `<p class="cargando">Cargando…</p>`;
+  const cat = await catalogosRrhh().catch(() => ({ instalaciones: [] }));
+  const insts = cat.instalaciones || [];
+
+  const q = new URLSearchParams({ mes: TRANSF.mes });
+  if (TRANSF.instalacion) q.set("instalacion", TRANSF.instalacion);
+  if (TRANSF.borrador) q.set("borrador", "si");
+
+  let d = null, fallo = null;
+  try { d = await pedir("/pagos/nomina?" + q.toString()); }
+  catch (e) { fallo = e.message; }
+  TRANSF.datos = d;
+
+  $("#app").innerHTML = `
+    ${fallo ? aviso("ojo", "No se pudo armar la nómina", fallo) : ""}
+    ${d?.avisos?.length ? aviso("ojo",
+      d.avisos.length === 1 ? "Revise esto antes de subirla"
+                            : `Revise estas ${d.avisos.length} cosas antes de subirla`,
+      d.avisos.join(" · ")) : ""}
+
+    <section class="caja">
+      <div class="caja__tit"><h2>Transferencias masivas</h2>
+        <span class="nota">${d ? `${d.filas.length} ${d.filas.length === 1 ? "pago" : "pagos"} ·
+          ${clp(d.total)}` : ""}</span>
+        <button class="bt bt--fino bt--chico" type="button" id="tr-excel"
+          ${d?.filas?.length ? "" : "disabled"}>Descargar la nómina</button></div>
+      <div class="rejilla">
+        <label class="campo"><span>Mes</span>
+          <input type="month" id="tr-mes" value="${esc(TRANSF.mes)}"></label>
+        <label class="campo"><span>Instalación</span>
+          <select id="tr-inst"><option value="">Todas</option>
+            ${insts.map(i => `<option value="${i.id}"${
+              String(i.id) === String(TRANSF.instalacion) ? " selected" : ""
+              }>${esc(i.nombre)}</option>`).join("")}</select></label>
+        <label class="campo"><span>Qué incluir</span>
+          <select id="tr-borrador">
+            <option value="no"${TRANSF.borrador ? "" : " selected"}>Solo meses cerrados</option>
+            <option value="si"${TRANSF.borrador ? " selected" : ""}>También los borradores</option>
+          </select></label>
+      </div>
+      <p class="sub" style="padding:0 16px 12px">Se paga desde la cuenta
+        ${d?.cuenta_origen ? `<b>${esc(d.cuenta_origen)}</b>` : "«que todavía no está escrita»"}
+        ${d?.banco_origen ? `de ${esc(d.banco_origen)}` : ""}. Se cambia en
+        Documentos → Datos de la empresa. El monto de cada persona es el líquido de su
+        liquidación del mes: para corregirlo hay que corregir la liquidación, en el panel,
+        en Estados de pago.</p>
+
+      ${d?.filas?.length ? `<div class="desliza"><table style="min-width:900px"><thead><tr>
+        <th>Persona</th><th>RUT</th><th>Banco</th><th class="num">Código</th>
+        <th class="num">Cuenta</th><th class="num">Monto</th></tr></thead><tbody>
+        ${d.filas.map(f => `<tr>
+          <td><b>${esc(f.nombre)}</b></td>
+          <td class="nowrap num">${esc(f._rut || f.rut)}</td>
+          <td>${esc(f._banco || "—")}${f._cuenta_tipo
+            ? `<span class="sub">${esc(f._cuenta_tipo)}</span>` : ""}</td>
+          <td class="num">${f.banco_destino
+            ? esc(f.banco_destino)
+            : `<span class="sello e-rechazada">sin código</span>`}</td>
+          <td class="nowrap num">${esc(f.cuenta_destino)}</td>
+          <td class="num"><b>${clp(f.monto)}</b></td></tr>`).join("")}
+        </tbody><tfoot><tr><td colspan="5"><b>Total</b></td>
+          <td class="num"><b>${clp(d.total)}</b></td></tr></tfoot></table></div>`
+        : (d ? `<p class="vacio">No hay nada que pagar en ${esc(mesLindoT(TRANSF.mes))}.
+            ${TRANSF.borrador ? "" : "Si el mes está calculado pero sin cerrar, cámbielo en «Qué incluir»."}
+          </p>` : "")}
+
+      ${d?.omitidos?.length ? aviso("ojo",
+        `${d.omitidos.length} ${d.omitidos.length === 1 ? "persona queda" : "personas quedan"} fuera de la nómina`,
+        d.omitidos.map(o => `${o.quien}: ${o.motivo}`).join(" · ")) : ""}
+    </section>
+
+    <details class="detalle"${TRANSF.verBancos ? " open" : ""}><summary>Los códigos de banco</summary>
+      <div id="tr-bancos"><p class="cargando">Cargando…</p></div>
+    </details>`;
+
+  $("#tr-mes").onchange = e => { TRANSF.mes = e.target.value || mesPasado(); pintarTransferencias(); };
+  $("#tr-inst").onchange = e => { TRANSF.instalacion = e.target.value; pintarTransferencias(); };
+  $("#tr-borrador").onchange = e => { TRANSF.borrador = e.target.value === "si"; pintarTransferencias(); };
+  if (d?.filas?.length) $("#tr-excel").onclick = () => bajarNomina(d);
+  const cajon = $("#app").querySelector("details.detalle");
+  cajon.ontoggle = ev => {
+    TRANSF.verBancos = ev.target.open;
+    if (ev.target.open) pintarBancos();
+  };
+  if (TRANSF.verBancos) pintarBancos();
+}
+
+/** El archivo que se sube al banco: una hoja, los trece encabezados tal como
+ *  vienen del servidor y una fila por pago. Nada más: una hoja de resumen al
+ *  lado haría que el banco leyera la que no es. */
+async function bajarNomina(d) {
+  await cargarScript(SHEETJS, "el generador de Excel");
+  const XLSX = window.XLSX;
+  if (!XLSX) return recado("No se pudo cargar el generador de Excel", "mal");
+  const filas = d.filas.map(f => [
+    f.cuenta_origen, f.moneda_origen, f.cuenta_destino, f.moneda_destino,
+    f.banco_destino, f.rut, f.nombre, f.monto, f.glosa, f.correo, f.mensaje,
+    f.glosa_originador, f.glosa_beneficiario,
+  ]);
+  const libro = XLSX.utils.book_new();
+  const hoja = XLSX.utils.aoa_to_sheet([d.columnas, ...filas]);
+  XLSX.utils.book_append_sheet(libro, hoja, "Hoja1");
+  XLSX.writeFile(libro, `transferencias ${d.mes}.xlsx`);
+  recado(`Nómina de ${filas.length} ${filas.length === 1 ? "pago" : "pagos"} descargada`);
+}
+
+/** La lista de bancos con su código. Guardar es confirmar, como en los datos
+ *  de la empresa: la glosa es la pregunta y guardar es la respuesta. */
+async function pintarBancos() {
+  const caja = $("#tr-bancos");
+  let bancos;
+  try { ({ bancos } = await pedir("/pagos/bancos")); }
+  catch (e) { caja.innerHTML = aviso("ojo", "No se pudo leer la lista de bancos", e.message); return; }
+  const faltan = bancos.filter(b => b.por_confirmar).length;
+  caja.innerHTML = `
+    <p class="sub" style="padding:0 16px 12px">Es la columna «Código banco destino» de la
+      nómina. El listado de la plaza es público, pero el que vale es el de la nómina del
+      banco con que se paga: una transferencia con el código errado se rechaza. Por eso
+      entran todos sin confirmar${faltan ? ` —hoy son ${faltan}—` : ""} y se confirman acá,
+      de a uno, después de comprobarlos.</p>
+    <div class="desliza"><table style="min-width:560px"><thead><tr>
+      <th class="num">Código</th><th>Banco</th><th>Estado</th><th></th>
+      </tr></thead><tbody>
+      ${bancos.map(b => `<tr>
+        <td class="num">${esc(b.codigo)}</td>
+        <td>${esc(b.nombre)}</td>
+        <td>${b.por_confirmar
+          ? `<span class="sello e-solicitar_oc">por confirmar</span>`
+          : `<span class="sello e-aceptada">confirmado</span>`}</td>
+        <td>${b.por_confirmar
+          ? `<button class="bt bt--chico bt--fino" data-banco="${esc(b.codigo)}">Confirmar</button>`
+          : ""}</td></tr>`).join("")}
+      </tbody></table></div>`;
+  caja.querySelectorAll("[data-banco]").forEach(btn => {
+    btn.onclick = async () => {
+      try {
+        await pedir(`/pagos/bancos/${btn.dataset.banco}`, {
+          method: "PATCH", body: JSON.stringify({ por_confirmar: false }),
+        });
+        // Se repinta la vista entera y no solo esta lista: el aviso de arriba
+        // nombra los códigos sin confirmar, y dejarlo con el de recién haría
+        // creer que no se guardó.
+        await pintarTransferencias();
+      } catch (e) { recado(e.message, "mal"); }
+    };
+  });
+}
+
 const VISTAS = {
   rrhh:       { rotulo: "RRHH",         pintar: pintarRrhh,       modulo: "rrhh" },
   personal:   { rotulo: "Fichas",       pintar: pintarPersonal,   modulo: "rrhh" },
@@ -119,6 +296,9 @@ const VISTAS = {
                 modulo: ["rrhh", "documentos"] },
   sueldos:    { rotulo: "Sueldos",      pintar: pintarSueldos,    modulo: "rrhh" },
   carga:      { rotulo: "Carga masiva", pintar: pintarCarga,      modulo: "rrhh" },
+  /* El formato de transferencias masivas con que se pagan las remuneraciones.
+     Pide `rrhh` y nada más: el monto de cada fila es el líquido de alguien. */
+  transferencias: { rotulo: "Transferencias", pintar: pintarTransferencias, modulo: "rrhh" },
 };
 
 /* Un solo grupo, el mismo que tenía en el panel. Se deja el título igual que
@@ -127,7 +307,8 @@ const VISTAS = {
    Fichas» en vez de solo «Fichas». */
 const GRUPOS = [
   { rotulo: "Personas",
-    vistas: ["rrhh", "personal", "documentos", "activos", "sueldos", "carga"] },
+    vistas: ["rrhh", "personal", "documentos", "activos", "sueldos", "carga",
+             "transferencias"] },
 ];
 
 /** Quien entra acá sin el módulo no es alguien a quien le falte una pantalla

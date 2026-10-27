@@ -2468,6 +2468,613 @@ function formatearColumna(hoja, columna, z, filas) {
 }
 
 
+// --------------------------------------------------------- estados de pago
+/*
+ * La carpeta que el mandante exige por instalación y por mes: libro de
+ * asistencia, libro de remuneraciones, liquidaciones, F30 y F30-1.
+ *
+ * Lo que esta pantalla hace y antes se hacía a mano es **armar los tres
+ * primeros**: el libro de asistencia sale del libro que ya marcan los
+ * guardias, el de remuneraciones y las liquidaciones salen del mes calculado.
+ * El F30 y el F30-1 los emite un tercero (la Dirección del Trabajo), así que
+ * acá se suben; del F30-1 lo que se hace es repartir por instalación el Excel
+ * que entrega Previred, que es el trámite que se pedía.
+ */
+
+const pagosEstado = { mes: null, instalacion: null, abierto: null, detalle: null,
+                      dotacion: null, omitidos: null };
+
+const mesPorDefecto = () => {
+  // El estado de pago que se cursa es el del mes pasado: el de este mes
+  // todavía no termina.
+  const h = new Date();
+  const d = new Date(h.getFullYear(), h.getMonth() - 1, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+};
+
+const MES_NOMBRE = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
+                    "septiembre", "octubre", "noviembre", "diciembre"];
+const mesLindo = m => m ? `${MES_NOMBRE[Number(m.slice(5, 7)) - 1]} de ${m.slice(0, 4)}` : "";
+
+const ESTADOS_PAGO = {
+  armando: "Armando", enviado: "Enviado", aprobado: "Aprobado", pagado: "Pagado",
+};
+
+async function pintarEstadosPago() {
+  if (!pagosEstado.mes) pagosEstado.mes = mesPorDefecto();
+  $("#app").innerHTML = `<p class="cargando">Cargando…</p>`;
+
+  let datos;
+  try {
+    datos = await pedir(`/pagos/estados?mes=${pagosEstado.mes}`);
+  } catch (e) {
+    $("#app").innerHTML = `<section class="caja"><div class="caja__tit">
+      <h2>Estados de pago</h2></div>
+      ${aviso("ojo", "No se pudieron leer los estados de pago", e.message)}</section>`;
+    return;
+  }
+  if (datos.sin_migracion) {
+    $("#app").innerHTML = `<section class="caja"><div class="caja__tit">
+      <h2>Estados de pago</h2></div>
+      ${aviso("ojo", "Falta aplicar una migración", datos.aviso)}</section>`;
+    return;
+  }
+
+  // Las instalaciones vienen en la misma respuesta: ver el comentario de la
+  // ruta. `estado.catalogos` puede estar en null acá, porque una cuenta de solo
+  // RRHH no puede pedir ese catálogo.
+  const insts = datos.instalaciones || estado.catalogos?.instalaciones || [];
+  $("#app").innerHTML = `
+  <section class="caja">
+    <div class="caja__tit"><h2>Estados de pago</h2>
+      <span class="nota">La carpeta que se le entrega al mandante, por instalación y por mes</span></div>
+    <div class="rejilla">
+      <label class="campo"><span>Mes</span>
+        <input type="month" id="ep-mes" value="${esc(pagosEstado.mes)}"></label>
+      <label class="campo"><span>Instalación</span><select id="ep-inst">
+        <option value="">— elija una —</option>
+        ${insts.map(i => `<option value="${i.id}">${esc(i.nombre)}</option>`).join("")}
+      </select></label>
+      <button class="bt" id="ep-abrir">Abrir la carpeta del mes</button>
+    </div>
+    ${datos.estados.length ? `<div class="desliza"><table style="min-width:720px"><thead><tr>
+      <th>Instalación</th><th>Cliente</th><th>Estado</th><th class="num">Documentos</th>
+      <th>Factura</th><th></th></tr></thead><tbody>
+      ${datos.estados.map(e => `<tr><td>${esc(e.instalacion)}</td>
+        <td>${esc(e.cliente || "—")}</td>
+        <td>${esc(ESTADOS_PAGO[e.estado] || e.estado)}</td>
+        <td class="num">${e.archivos}</td>
+        <td>${esc(e.folio_factura || "—")}</td>
+        <td><button class="bt bt--chico bt--fino" data-ver="${e.id}">Ver</button></td></tr>`).join("")}
+      </tbody></table></div>`
+      : `<p class="vacio">Todavía no hay ninguna carpeta armada para ${esc(mesLindo(pagosEstado.mes))}.</p>`}
+  </section>
+  <div id="ep-detalle"></div>`;
+
+  $("#ep-mes").onchange = e => {
+    pagosEstado.mes = e.target.value || mesPorDefecto();
+    pagosEstado.abierto = null;
+    pintarEstadosPago();
+  };
+  $("#ep-inst").onchange = e => { pagosEstado.instalacion = Number(e.target.value) || null; };
+  if (pagosEstado.instalacion) $("#ep-inst").value = String(pagosEstado.instalacion);
+
+  $("#ep-abrir").onclick = async () => {
+    if (!pagosEstado.instalacion) return recado("Elija la instalación", "mal");
+    try {
+      const r = await pedir("/pagos/estados", {
+        method: "POST",
+        body: JSON.stringify({ mes: pagosEstado.mes, instalacion_id: pagosEstado.instalacion }),
+      });
+      pagosEstado.abierto = r.id;
+      await pintarEstadosPago();
+      await pintarCarpeta(r.id);
+    } catch (e) { recado(e.message, "mal"); }
+  };
+
+  $("#app").querySelectorAll("[data-ver]").forEach(b => {
+    b.onclick = () => pintarCarpeta(Number(b.dataset.ver));
+  });
+
+  if (pagosEstado.abierto) await pintarCarpeta(pagosEstado.abierto);
+}
+
+/** La carpeta de una instalación y un mes: qué papel hay, cuál falta, y los
+ *  botones que generan los tres que salen del propio sistema. */
+async function pintarCarpeta(id) {
+  pagosEstado.abierto = id;
+  const caja = $("#ep-detalle");
+  caja.innerHTML = `<p class="cargando">Cargando la carpeta…</p>`;
+  let d;
+  try { d = await pedir(`/pagos/estados/${id}`); }
+  catch (e) {
+    caja.innerHTML = aviso("ojo", "No se pudo abrir la carpeta", e.message);
+    return;
+  }
+  pagosEstado.detalle = d;
+  const e = d.estado;
+  const conSueldos = !d.sin_sueldos;
+
+  caja.innerHTML = `<section class="caja">
+    <div class="caja__tit">
+      <h2>${esc(e.instalacion)} · ${esc(mesLindo(e.mes))}</h2>
+      <span class="nota">${esc(e.cliente || "sin cliente")}</span></div>
+
+    <div class="rejilla">
+      <label class="campo"><span>Estado</span><select id="ep-est">
+        ${Object.entries(ESTADOS_PAGO).map(([k, v]) =>
+          `<option value="${k}"${k === e.estado ? " selected" : ""}>${v}</option>`).join("")}
+      </select></label>
+      <label class="campo"><span>Folio de la factura</span><input id="ep-folio" value="${esc(e.folio_factura || "")}"
+        placeholder="sin emitir"></label>
+      <button class="bt" id="ep-guardar">Guardar</button>
+    </div>
+
+    ${d.faltan.length ? aviso("ojo",
+      `Faltan ${d.faltan.length} ${d.faltan.length === 1 ? "documento" : "documentos"}`,
+      // Hasta acá iba el nombre completo, y el nombre lleva « · » adentro
+      // («F30 · Certificado de…»): separarlos con lo mismo hacía leer cinco
+      // documentos como siete. Acá va la parte corta y el nombre entero queda
+      // en la tabla de abajo.
+      d.faltan.map(f => f.nombre.split(" · ")[0]).join(" · ")) : ``}
+
+    <h3>Los papeles</h3>
+    <div class="pie-form">
+      <button class="bt" id="ep-asis">Libro de asistencia (Excel)</button>
+      <button class="bt" id="ep-remu" ${conSueldos ? "" : "disabled"}>Libro de remuneraciones (Excel)</button>
+      <button class="bt" id="ep-liq" ${conSueldos ? "" : "disabled"}>Liquidaciones (PDF)</button>
+      <label class="bt bt--fino">Subir F30 (PDF)
+        <input type="file" id="ep-f30" accept="application/pdf" hidden></label>
+      <label class="bt bt--fino">Subir otro documento
+        <input type="file" id="ep-otro" hidden></label>
+    </div>
+    ${conSueldos ? `` : `<p class="sub" style="padding:0 16px 12px">El libro de
+      remuneraciones y las liquidaciones llevan sueldos adentro y piden el módulo de
+      recursos humanos.</p>`}
+
+    <div class="ep-f301">
+      <h3>F30-1 · repartir el archivo de Previred por instalación</h3>
+      <p class="sub" style="padding:0 16px 12px">El certificado se pide en dt.cl con un archivo que genera Previred.
+        Suba acá ese Excel y el sistema arma uno por instalación, con las mismas columnas y
+        solo las filas de la gente de cada una. Quien no tenga instalación asignada en su
+        ficha queda aparte y se dice quién es.</p>
+      <label class="bt bt--fino">Subir el Excel de Previred
+        <input type="file" id="ep-previred" accept=".xlsx,.xls" hidden></label>
+      <div id="ep-previred-salida"></div>
+    </div>
+
+    ${d.archivos.length ? `<div class="desliza"><table style="min-width:720px"><thead><tr>
+      <th>Documento</th><th>Nombre</th><th>Cuándo</th><th>Quién</th><th></th></tr></thead><tbody>
+      ${d.archivos.map(a => `<tr><td>${esc(a.clase_nombre)}</td>
+        <td>${esc(a.nombre)}${a.nota ? `<span class="sub">${esc(a.nota)}</span>` : ""}</td>
+        <td class="nowrap">${esc(fecha(String(a.subido_en).slice(0, 10)))}</td>
+        <td>${esc(a.subido_por || "—")}</td>
+        <td style="white-space:nowrap">
+          ${a.archivo_ruta ? `<a class="bt bt--chico bt--fino"
+            href="/api/pagos/estados/${id}/archivo/${a.id}" target="_blank" rel="noopener">Abrir</a>` : ""}
+          <button class="bt bt--chico bt--fino" data-quitar="${a.id}">Quitar</button>
+        </td></tr>`).join("")}
+      </tbody></table></div>` : `<p class="vacio">Todavía no hay documentos cargados.</p>`}
+  </section>
+  ${conSueldos ? `<div id="ep-remuneraciones"></div>` : ``}`;
+
+  $("#ep-guardar").onclick = async () => {
+    try {
+      await pedir(`/pagos/estados/${id}`, { method: "PATCH", body: JSON.stringify({
+        estado: $("#ep-est").value, folio_factura: $("#ep-folio").value }) });
+      recado("Guardado");
+      await pintarEstadosPago();
+    } catch (err) { recado(err.message, "mal"); }
+  };
+
+  $("#ep-asis").onclick = () => conPaciencia($("#ep-asis"), () => bajarAsistenciaDeLaCarpeta(e));
+  if (conSueldos) {
+    $("#ep-remu").onclick = () => conPaciencia($("#ep-remu"), () => bajarLibroRemuneraciones(e));
+    $("#ep-liq").onclick = () => conPaciencia($("#ep-liq"), () => bajarLiquidaciones(e));
+  }
+  $("#ep-f30").onchange = ev => subirALaCarpeta(id, ev.target.files[0], "f30");
+  $("#ep-otro").onchange = ev => subirALaCarpeta(id, ev.target.files[0], "otro");
+  $("#ep-previred").onchange = ev => repartirF301(id, ev.target.files[0]);
+  caja.querySelectorAll("[data-quitar]").forEach(b => {
+    b.onclick = async () => {
+      if (!confirm("¿Quitar este documento de la carpeta?")) return;
+      try {
+        await pedir(`/pagos/estados/${id}/archivo/${b.dataset.quitar}`, { method: "DELETE" });
+        await pintarCarpeta(id);
+      } catch (err) { recado(err.message, "mal"); }
+    };
+  });
+
+  if (conSueldos) await pintarRemuneracionesDelMes(e);
+}
+
+/** Un botón que se apaga mientras trabaja: armar un PDF de treinta
+ *  liquidaciones toma unos segundos y sin esto se aprieta tres veces. */
+async function conPaciencia(boton, trabajo) {
+  const antes = boton.textContent;
+  boton.disabled = true;
+  boton.textContent = "Generando…";
+  try { await trabajo(); }
+  catch (e) { recado(e.message, "mal"); }
+  finally { boton.disabled = false; boton.textContent = antes; }
+}
+
+async function subirALaCarpeta(id, archivo, clase) {
+  if (!archivo) return;
+  try {
+    const r = await fetch(`/api/pagos/estados/${id}/archivo?clase=${clase}`, {
+      method: "POST",
+      headers: { "x-archivo-nombre": encodeURIComponent(archivo.name) },
+      body: archivo,
+    });
+    const datos = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(datos.error || `La subida falló (${r.status})`);
+    recado("Documento cargado");
+    await pintarCarpeta(id);
+  } catch (e) { recado(e.message, "mal"); }
+}
+
+/** El libro de asistencia de esa instalación y ese mes, con el mismo generador
+ *  de Excel que usa la pestaña Asistencia: una sola forma de armar el libro. */
+async function bajarAsistenciaDeLaCarpeta(e) {
+  const fin = new Date(Number(e.mes.slice(0, 4)), Number(e.mes.slice(5, 7)), 0);
+  const desde = `${e.mes}-01`;
+  const hasta = `${e.mes}-${String(fin.getDate()).padStart(2, "0")}`;
+  const libro = await pedir(
+    `/libro?desde=${desde}&hasta=${hasta}&instalacion=${e.instalacion_id}`);
+  if (!libro.jornadas?.length) throw new Error("No hay jornadas marcadas en ese mes y esa instalación.");
+  await bajarLibroExcel(libro);
+}
+
+/**
+ * El libro de remuneraciones del art. 62 del Código del Trabajo: una fila por
+ * persona, con haberes, descuentos y líquido.
+ *
+ * Sale de las liquidaciones congeladas, no de un cálculo nuevo: lo que se le
+ * entrega al mandante tiene que decir lo mismo que la liquidación que firmó la
+ * persona.
+ */
+async function bajarLibroRemuneraciones(e) {
+  const d = await pedir(`/pagos/remuneraciones?mes=${e.mes}&instalacion=${e.instalacion_id}`);
+  if (!d.remuneraciones.length) {
+    throw new Error("Ese mes todavía no está calculado. Use «Calcular el mes» más abajo.");
+  }
+  await cargarScript(SHEETJS, "el generador de Excel");
+  const XLSX = window.XLSX;
+  if (!XLSX) throw new Error("No se pudo cargar el generador de Excel.");
+
+  const filas = d.remuneraciones.map(r => {
+    const h = r.detalle?.haberes || {}, x = r.detalle?.descuentos || {};
+    return {
+      RUT: r.rut || "",
+      Nombre: r.trabajador,
+      Cargo: r.cargo || "",
+      "Días trabajados": r.dias_trabajados ?? "",
+      "Sueldo base": Number(h.sueldo_base || 0),
+      Gratificación: Number(h.gratificacion || 0),
+      "Horas extra": Number(h.horas_extra || 0),
+      "Otros imponibles": Number(h.bono_imponible || 0),
+      "Total imponible": Number(h.total_imponible || 0),
+      Colación: Number(h.colacion || 0),
+      Movilización: Number(h.movilizacion || 0),
+      "Asignación familiar": Number(h.asignacion_familiar || 0),
+      "Total haberes": Number(h.total_haberes || 0),
+      AFP: Number(x.afp || 0),
+      Salud: Number(x.salud || 0),
+      "Seguro de cesantía": Number(x.cesantia || 0),
+      "Impuesto único": Number(x.impuesto_unico || 0),
+      "Otros descuentos": Number(x.otros || 0) + Number(x.apv || 0),
+      "Total descuentos": Number(x.total_descuentos || 0),
+      "Líquido a pagar": Number(r.liquido || 0),
+      Estado: r.estado === "cerrado" ? "Cerrado" : "Borrador",
+    };
+  });
+
+  const libro = XLSX.utils.book_new();
+  const quien = estado.usuario ? `${estado.usuario.nombre} (${estado.usuario.usuario})` : "";
+  const cab = XLSX.utils.aoa_to_sheet([
+    ["Libro de remuneraciones"],
+    ["Seguridad Garridos · GLOBSEG SPA · RUT 78.095.104-4"],
+    [],
+    ["Instalación", e.instalacion],
+    ["Cliente", e.cliente || ""],
+    ["Mes", mesLindo(e.mes)],
+    ["Personas", filas.length],
+    ["Total líquido", filas.reduce((a, f) => a + f["Líquido a pagar"], 0)],
+    ["Descargado por", quien],
+    ["Descargado el", new Date()],
+    [],
+    ["Las liquidaciones en borrador todavía se pueden corregir: lo que se entrega"],
+    ["al mandante debería estar cerrado."],
+  ]);
+  cab["!cols"] = [{ wch: 18 }, { wch: 46 }];
+  XLSX.utils.book_append_sheet(libro, cab, "Resumen");
+  const hoja = XLSX.utils.json_to_sheet(filas);
+  hoja["!autofilter"] = { ref: XLSX.utils.encode_range({
+    s: { r: 0, c: 0 }, e: { r: filas.length, c: Object.keys(filas[0]).length - 1 } }) };
+  XLSX.utils.book_append_sheet(libro, hoja, "Remuneraciones");
+  XLSX.writeFile(libro, `libro de remuneraciones ${e.instalacion} ${e.mes}.xlsx`);
+}
+
+/** Las liquidaciones de la instalación en un PDF, una por página. */
+async function bajarLiquidaciones(e) {
+  const d = await pedir(`/pagos/remuneraciones?mes=${e.mes}&instalacion=${e.instalacion_id}`);
+  if (!d.remuneraciones.length) {
+    throw new Error("Ese mes todavía no está calculado. Use «Calcular el mes» más abajo.");
+  }
+  await cargarScript(JSPDF);
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const plata = n => "$" + Math.round(Number(n) || 0).toLocaleString("es-CL");
+
+  d.remuneraciones.forEach((r, i) => {
+    if (i) doc.addPage();
+    const h = r.detalle?.haberes || {}, x = r.detalle?.descuentos || {};
+    let y = 18;
+    doc.setFontSize(13).setFont(undefined, "bold");
+    doc.text("LIQUIDACIÓN DE REMUNERACIONES", 15, y); y += 6;
+    doc.setFontSize(9).setFont(undefined, "normal");
+    doc.text("GLOBSEG SPA · RUT 78.095.104-4 · Seguridad Garridos", 15, y); y += 5;
+    doc.text(`${mesLindo(e.mes)} · ${e.instalacion}`, 15, y); y += 8;
+    doc.setFont(undefined, "bold").text(r.trabajador, 15, y);
+    doc.setFont(undefined, "normal").text(`RUT ${r.rut || "—"}`, 150, y); y += 5;
+    doc.text(`Cargo: ${r.cargo || "—"}`, 15, y);
+    doc.text(`Días: ${r.dias_trabajados ?? "—"}`, 150, y); y += 8;
+
+    const linea = (rotulo, monto, negrita) => {
+      doc.setFont(undefined, negrita ? "bold" : "normal");
+      doc.text(String(rotulo), 18, y);
+      doc.text(plata(monto), 95, y, { align: "right" });
+      y += 5;
+    };
+    doc.setFont(undefined, "bold").setFontSize(10).text("HABERES", 15, y); y += 5;
+    doc.setFontSize(9);
+    linea("Sueldo base", h.sueldo_base);
+    if (h.gratificacion) linea("Gratificación", h.gratificacion);
+    if (h.horas_extra) linea("Horas extra", h.horas_extra);
+    if (h.bono_imponible) linea("Bonos imponibles", h.bono_imponible);
+    linea("Total imponible", h.total_imponible, true);
+    if (h.colacion) linea("Colación", h.colacion);
+    if (h.movilizacion) linea("Movilización", h.movilizacion);
+    if (h.asignacion) linea("Otras asignaciones", h.asignacion);
+    if (h.asignacion_familiar) linea("Asignación familiar", h.asignacion_familiar);
+    linea("TOTAL HABERES", h.total_haberes, true); y += 3;
+
+    doc.setFont(undefined, "bold").setFontSize(10).text("DESCUENTOS", 15, y); y += 5;
+    doc.setFontSize(9);
+    linea(`AFP ${x.afp_nombre || ""} (${x.afp_tasa || 0}%)`, x.afp);
+    linea("Salud", x.salud);
+    linea("Seguro de cesantía", x.cesantia);
+    if (x.impuesto_unico) linea("Impuesto único", x.impuesto_unico);
+    if (x.apv) linea("APV", x.apv);
+    if (x.otros) linea("Otros descuentos", x.otros);
+    linea("TOTAL DESCUENTOS", x.total_descuentos, true); y += 4;
+
+    doc.setFontSize(11).setFont(undefined, "bold");
+    doc.text("LÍQUIDO A PAGAR", 18, y);
+    doc.text(plata(r.liquido), 95, y, { align: "right" }); y += 10;
+
+    doc.setFontSize(8).setFont(undefined, "normal");
+    const notas = r.detalle?.notas || [];
+    notas.forEach(n => { doc.text(doc.splitTextToSize(`· ${n}`, 170), 15, y); y += 4; });
+    if (r.detalle?.por_confirmar?.length) {
+      y += 2;
+      doc.text(doc.splitTextToSize(
+        "Hay parámetros legales sin confirmar en este cálculo: "
+        + r.detalle.por_confirmar.map(c => c.glosa || c.codigo).join("; "), 170), 15, y);
+      y += 6;
+    }
+    y = Math.max(y, 250);
+    doc.text("Recibí conforme el monto indicado:", 15, y); y += 14;
+    doc.text("__________________________          __________________________", 15, y); y += 4;
+    doc.text(`${r.trabajador}                                   p. GLOBSEG SPA`, 15, y);
+    doc.setFontSize(7).text(
+      r.estado === "cerrado" ? "Liquidación cerrada." : "BORRADOR · todavía se puede corregir.",
+      15, 288);
+  });
+
+  doc.save(`liquidaciones ${e.instalacion} ${e.mes}.pdf`);
+}
+
+/**
+ * Reparte el Excel de Previred por instalación.
+ *
+ * **Se conservan las filas de encabezado tal como vienen** y se copian las
+ * celdas sin tocarlas: el archivo que la DT acepta es el que genera Previred, y
+ * lo único que acá se hace es dejar en cada copia las filas de la gente de una
+ * instalación. Si una fila no se puede asignar —RUT que no está en el registro,
+ * o persona sin instalación en su ficha— sale en una copia aparte y se dice
+ * quién es: una fila que desaparece sin aviso es una persona que el mandante va
+ * a echar de menos.
+ */
+async function repartirF301(estadoId, archivo) {
+  const salida = $("#ep-previred-salida");
+  if (!archivo) return;
+  salida.innerHTML = `<p class="cargando">Leyendo el archivo…</p>`;
+  try {
+    await cargarScript(SHEETJS, "el generador de Excel");
+    const XLSX = window.XLSX;
+    const buf = await archivo.arrayBuffer();
+    const libro = XLSX.read(buf, { cellDates: true });
+    const hoja = libro.Sheets[libro.SheetNames[0]];
+    const filas = XLSX.utils.sheet_to_json(hoja, { header: 1, defval: "", raw: true });
+    if (!filas.length) throw new Error("Ese archivo no tiene filas.");
+
+    // La fila de encabezados es la primera que nombre el RUT. Previred cambia
+    // el título de arriba según el informe, así que buscarla es más seguro que
+    // suponer que es la primera.
+    const esRut = v => /^\s*(rut|run)\b/i.test(String(v ?? ""));
+    let fCab = filas.findIndex(f => f.some(esRut));
+    if (fCab < 0) fCab = 0;
+    const cRut = filas[fCab].findIndex(esRut);
+    if (cRut < 0) throw new Error("No se encontró la columna del RUT en ese archivo.");
+
+    const { trabajadores, sin_instalacion } = pagosEstado.dotacion
+      || (pagosEstado.dotacion = await pedir("/pagos/dotacion"));
+    const insts = pagosEstado.detalle?.instalaciones
+      || (await pedir(`/pagos/estados?mes=${pagosEstado.mes}`)).instalaciones || [];
+    const cuerpoDe = v => String(v ?? "").replace(/[^0-9kK]/g, "").toUpperCase().slice(0, -1);
+    const porRut = new Map();
+    trabajadores.forEach(t => porRut.set(cuerpoDe(t.rut), t));
+
+    const encabezado = filas.slice(0, fCab + 1);
+    const grupos = new Map();   // instalacion_id | "sueltos" -> filas
+    const sueltos = [];
+    for (const fila of filas.slice(fCab + 1)) {
+      if (!String(fila[cRut] ?? "").trim()) continue;
+      const t = porRut.get(cuerpoDe(fila[cRut]));
+      if (!t || !t.instalacion_id) { sueltos.push({ fila, nombre: t?.nombre || null }); continue; }
+      if (!grupos.has(t.instalacion_id)) grupos.set(t.instalacion_id, []);
+      grupos.get(t.instalacion_id).push(fila);
+    }
+
+    const bajar = (nombre, cuerpo) => {
+      const nuevo = XLSX.utils.book_new();
+      const h = XLSX.utils.aoa_to_sheet([...encabezado, ...cuerpo]);
+      XLSX.utils.book_append_sheet(nuevo, h, (libro.SheetNames[0] || "Hoja1").slice(0, 28));
+      XLSX.writeFile(nuevo, nombre);
+    };
+
+    const hechos = [];
+    for (const [id, cuerpo] of grupos) {
+      const nombre = insts.find(i => i.id === id)?.nombre || `instalacion ${id}`;
+      bajar(`F30-1 ${nombre} ${pagosEstado.mes}.xlsx`, cuerpo);
+      hechos.push(`${nombre}: ${cuerpo.length} ${cuerpo.length === 1 ? "persona" : "personas"}`);
+    }
+    if (sueltos.length) bajar(`F30-1 sin instalacion ${pagosEstado.mes}.xlsx`,
+                              sueltos.map(s => s.fila));
+
+    salida.innerHTML = `
+      ${aviso("bien", grupos.size === 1
+        ? "Se generó un archivo"
+        : `Se generaron ${grupos.size} archivos, uno por instalación`,
+        "Quedaron descargados en el computador.")}
+      <ul>${hechos.map(t => `<li>${esc(t)}</li>`).join("")}</ul>
+      ${sueltos.length ? aviso("ojo",
+        `${sueltos.length} ${sueltos.length === 1 ? "fila quedó" : "filas quedaron"} sin instalación`,
+        `Salieron en un archivo aparte: `
+        + sueltos.map(s => s.nombre || "un RUT que no está en el registro").join(", ")
+        + ". Se arregla asignándoles la instalación en su ficha.") : ``}
+      ${sin_instalacion?.length ? `<p class="sub" style="padding:0 16px 12px">En el registro hay
+        ${sin_instalacion.length} ${sin_instalacion.length === 1 ? "persona" : "personas"}
+        sin instalación asignada: ${esc(sin_instalacion.map(t => t.nombre).join(", "))}.</p>` : ``}
+      <p class="sub" style="padding:0 16px 12px">Los archivos se descargaron al computador. Si además los quiere dejar
+        en la carpeta, súbalos con «Subir otro documento».</p>`;
+  } catch (e) {
+    salida.innerHTML = aviso("ojo", "No se pudo repartir ese archivo", e.message);
+  }
+}
+
+/** Las liquidaciones del mes, con lo que va encima del contrato editable
+ *  mientras el mes esté en borrador. */
+async function pintarRemuneracionesDelMes(e) {
+  const caja = $("#ep-remuneraciones");
+  if (!caja) return;
+  caja.innerHTML = `<p class="cargando">Cargando las remuneraciones…</p>`;
+  let d;
+  try { d = await pedir(`/pagos/remuneraciones?mes=${e.mes}&instalacion=${e.instalacion_id}`); }
+  catch (err) {
+    caja.innerHTML = aviso("ojo", "No se pudieron leer las remuneraciones", err.message);
+    return;
+  }
+
+  const t = d.totales;
+  const hayBorrador = d.remuneraciones.some(r => r.estado === "borrador");
+  const hayCerrado = d.remuneraciones.some(r => r.estado === "cerrado");
+  caja.innerHTML = `
+    ${pagosEstado.omitidos ? aviso("ojo",
+      `${pagosEstado.omitidos.length} ${pagosEstado.omitidos.length === 1
+        ? "persona quedó" : "personas quedaron"} sin liquidación`,
+      pagosEstado.omitidos.map(o => `${o.trabajador}: ${o.motivo}`).join(" · ")) : ""}
+    <section class="caja">
+    <div class="caja__tit"><h2>Remuneraciones de ${esc(mesLindo(e.mes))}</h2>
+      <span class="nota">${t.personas} ${t.personas === 1 ? "persona" : "personas"} ·
+        líquido ${clp(t.liquido)} · costo empresa ${clp(t.costo_empresa)}</span></div>
+    <div class="pie-form">
+      <button class="bt" id="rm-calc">${d.remuneraciones.length ? "Recalcular el mes" : "Calcular el mes"}</button>
+      ${hayBorrador ? `<button class="bt" id="rm-cerrar">Cerrar el mes</button>` : ``}
+      ${hayCerrado ? `<button class="bt bt--chico bt--fino" id="rm-reabrir">Reabrir</button>` : ``}
+    </div>
+    ${d.remuneraciones.length ? `<div class="desliza"><table style="min-width:940px"><thead><tr>
+      <th>Persona</th><th>Cargo</th><th class="num">Días</th><th class="num">H. extra</th>
+      <th class="num">Bonos</th><th class="num">Otros desc.</th><th class="num">Haberes</th>
+      <th class="num">Descuentos</th><th class="num">Líquido</th><th>Estado</th>
+      </tr></thead><tbody>
+      ${d.remuneraciones.map(r => {
+        const abierta = r.estado === "borrador";
+        const num = (campo, valor, plata = true) => abierta
+          ? `<input type="number" min="0" step="1" data-campo="${campo}" data-id="${r.id}"
+               value="${valor ?? ""}" style="width:4.5rem">`
+          : valor ? (plata ? clp(valor) : esc(valor)) : "—";
+        return `<tr><td>${esc(r.trabajador)}<br><span class="sub">${esc(r.rut || "")}</span></td>
+          <td>${esc(r.cargo || "—")}</td>
+          <td class="num">${num("dias_trabajados", r.dias_trabajados, false)}</td>
+          <td class="num">${num("horas_extra_monto", r.extra?.horas_extra_monto)}</td>
+          <td class="num">${num("bono_imponible", r.extra?.bono_imponible)}</td>
+          <td class="num">${num("otros_descuentos", r.extra?.otros_descuentos)}</td>
+          <td class="num">${clp(r.total_haberes)}</td>
+          <td class="num">${clp(r.total_descuentos)}</td>
+          <td class="num"><b>${clp(r.liquido)}</b></td>
+          <td class="nowrap">${abierta
+            ? `Borrador<br><button class="bt bt--chico bt--fino" data-rec="${r.id}">Guardar</button>`
+            : "Cerrado"}</td>
+        </tr>`;
+      }).join("")}
+      </tbody></table></div>
+      <p class="sub" style="padding:0 16px 12px">Los montos de esta tabla son los que van al libro de remuneraciones, a las
+        liquidaciones y a la nómina de transferencias. Mientras el mes esté en borrador se
+        recalculan; al cerrarlo quedan congelados.</p>`
+      : `<p class="vacio">Este mes todavía no está calculado.</p>`}
+  </section>`;
+
+  $("#rm-calc").onclick = () => conPaciencia($("#rm-calc"), async () => {
+    const r = await pedir("/pagos/remuneraciones/calcular", { method: "POST",
+      body: JSON.stringify({ mes: e.mes, instalacion_id: e.instalacion_id }) });
+    let texto = `${r.escritas} ${r.escritas === 1 ? "liquidación calculada" : "liquidaciones calculadas"}`;
+    if (r.cerradas) texto += ` · ${r.cerradas} ya cerradas, no se tocaron`;
+    // Quién quedó fuera NO va solo en el recado: ese se borra a los cuatro
+    // segundos y es el único lugar donde se dice que a alguien no se le calculó
+    // el sueldo. Queda arriba de la tabla hasta el próximo cálculo.
+    pagosEstado.omitidos = r.omitidos?.length ? r.omitidos : null;
+    recado(texto, r.omitidos?.length ? "mal" : "ok");
+    await pintarRemuneracionesDelMes(e);
+  });
+  if ($("#rm-cerrar")) $("#rm-cerrar").onclick = async () => {
+    if (!confirm("Cerrar el mes congela estas liquidaciones. ¿Seguir?")) return;
+    try {
+      const r = await pedir("/pagos/remuneraciones/cerrar", { method: "POST",
+        body: JSON.stringify({ mes: e.mes, instalacion_id: e.instalacion_id }) });
+      recado(`${r.cerradas} liquidaciones cerradas`);
+      await pintarRemuneracionesDelMes(e);
+    } catch (err) { recado(err.message, "mal"); }
+  };
+  if ($("#rm-reabrir")) $("#rm-reabrir").onclick = async () => {
+    const motivo = prompt("¿Por qué se reabre el mes? Queda anotado en la bitácora.");
+    if (!motivo) return;
+    try {
+      const r = await pedir("/pagos/remuneraciones/reabrir", { method: "POST",
+        body: JSON.stringify({ mes: e.mes, instalacion_id: e.instalacion_id, motivo }) });
+      recado(`${r.reabiertas} liquidaciones reabiertas`);
+      await pintarRemuneracionesDelMes(e);
+    } catch (err) { recado(err.message, "mal"); }
+  };
+  caja.querySelectorAll("[data-rec]").forEach(b => {
+    b.onclick = async () => {
+      const id = b.dataset.rec;
+      const campos = {};
+      caja.querySelectorAll(`[data-id="${id}"]`).forEach(i => {
+        campos[i.dataset.campo] = i.value === "" ? null : Number(i.value);
+      });
+      const { dias_trabajados, ...extra } = campos;
+      try {
+        await pedir(`/pagos/remuneraciones/${id}`, { method: "PATCH",
+          body: JSON.stringify({ dias_trabajados, extra }) });
+        await pintarRemuneracionesDelMes(e);
+      } catch (err) { recado(err.message, "mal"); }
+    };
+  });
+}
+
 const VISTAS = {
   panel: { rotulo: "Panel", pintar: pintarPanel, modulo: "facturacion" },
   calendario: { rotulo: "Calendario", pintar: pintarCalendario, modulo: "facturacion" },
@@ -2479,6 +3086,11 @@ const VISTAS = {
   trabajadores: { rotulo: "Trabajadores", pintar: pintarTrabajadores, modulo: "personal" },
   libro: { rotulo: "Asistencia", pintar: pintarLibro, modulo: "personal" },
   bitacora: { rotulo: "Bitácora", pintar: pintarBitacora, modulo: "facturacion" },
+  /* Estados de pago lo abren cobranza y recursos humanos: la carpeta es de
+     cobro, pero lo que lleva adentro son sueldos. Adentro hay una segunda
+     puerta, en el servidor. */
+  pagos: { rotulo: "Estados de pago", pintar: pintarEstadosPago,
+           modulo: ["facturacion", "rrhh"] },
   /* Personas —RRHH, Fichas, Documentos, Sueldos y Carga masiva— se mudó a
      rrhh.seggarridos.com y NO se dejó una copia acá: dos copias de la misma
      pantalla se separan solas, que es lo que ya pasó tres veces en este
@@ -2500,7 +3112,7 @@ const VISTAS = {
    El orden de acá manda también para qué se abre al entrar: la primera
    sección que la cuenta pueda ver. */
 const GRUPOS = [
-  { rotulo: "Cobranza",    vistas: ["panel", "calendario", "bitacora"] },
+  { rotulo: "Cobranza",    vistas: ["panel", "calendario", "pagos", "bitacora"] },
   { rotulo: "Comercial",   vistas: ["contactos", "cotizaciones"] },
   { rotulo: "Operaciones", vistas: ["servicio", "instalaciones", "extra", "libro", "trabajadores"] },
 ];

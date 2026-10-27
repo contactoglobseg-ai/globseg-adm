@@ -9,7 +9,7 @@
  * base: las tablas están cerradas y solo este Worker las abre.
  */
 
-import { buscar, primero, insertar, insertarSinDuplicar, actualizar, anotar, ErrorDatos }
+import { buscar, primero, insertar, insertarSinDuplicar, actualizar, borrar, anotar, ErrorDatos }
   from './datos.js';
 import { ingresar, cambiarClave, crearSesion, leerSesion, cookieSesion, cookieBorrada,
          duracionSesion } from './sesion.js';
@@ -24,6 +24,7 @@ import * as arch from './archivos.js';
 import * as ing from './ingreso.js';
 import * as docs from './documentos.js';
 import * as activos from './activos.js';
+import * as pagos from './pagos.js';
 import { redireccionHttps, cabecerasSeguridad, conCabeceras, soloHttps }
   from './seguridad.js';
 import { ipDe, huellaDe, revisarLimite, limpiarHuellas, MENSAJES as MENSAJES_LIMITE,
@@ -308,7 +309,8 @@ async function api(request, env, url, usuario) {
   // fallaría con ruido —el catch la deja en {}— pero sí dejaría el cuerpo
   // consumido, y más abajo el archivo llegaría vacío sin que nada lo diga.
   const esSubidaDeArchivo = metodo === 'POST'
-    && /^\/rrhh\/documentos\/\d+\/archivo$/.test(ruta);
+    && (/^\/rrhh\/documentos\/\d+\/archivo$/.test(ruta)
+        || /^\/pagos\/estados\/\d+\/archivo$/.test(ruta));
 
   const cuerpo = (metodo === 'POST' || metodo === 'PATCH') && !esSubidaDeArchivo
     ? await request.json().catch(() => ({}))
@@ -883,6 +885,233 @@ async function api(request, env, url, usuario) {
   // Activos y EPP. Misma puerta que documentos: lo usan dos áreas, el
   // prevencionista que entrega los elementos de protección y RRHH, y
   // operaciones que entrega radios y linternas.
+  // ------------------------------------------------------------ estados de pago
+  //
+  // La carpeta que el mandante exige por instalación y por mes, y la nómina de
+  // transferencias con que se pagan las remuneraciones.
+  //
+  // **Dos puertas, como en Documentos.** Armar y cursar el estado de pago es
+  // cobranza, así que entra con `facturacion` o con `rrhh`. Pero lo que lleva
+  // sueldos adentro —calcular el mes, el libro de remuneraciones, las
+  // liquidaciones y la nómina de pago— **exige `rrhh`** aunque la cuenta haya
+  // entrado por la otra puerta. Sin eso, quien arma la carpeta de cobro vería
+  // de paso el sueldo y la cuenta bancaria de cada guardia.
+  if (ruta === '/pagos' || ruta.startsWith('/pagos/')) {
+    if (!puede(usuario, 'facturacion') && !puede(usuario, 'rrhh')) {
+      return error('Sin acceso a este módulo', 403);
+    }
+    const sub = ruta.replace(/^\/pagos/, '') || '/';
+    const conSueldos = puede(usuario, 'rrhh');
+    const sinSueldos = () => error('Esta parte lleva sueldos adentro y pide el módulo de '
+      + 'recursos humanos', 403);
+
+    if (!(await pagos.tablasListas(env))) {
+      // `error` va además de `aviso` porque `pedir()` en la pantalla levanta
+      // el mensaje de ahí: sin él, el aviso diría «Error 503» y nadie sabría
+      // que lo que falta es pegar una migración.
+      return json({ sin_migracion: true, aviso: pagos.FALTA_MIGRACION,
+                    error: pagos.FALTA_MIGRACION }, 503);
+    }
+
+    // ----------------------------------------------------------- la carpeta
+    if (sub === '/estados' && metodo === 'GET') {
+      // Las instalaciones van en la misma respuesta y no en `/catalogos`: ese
+      // catálogo pide facturación, y una cuenta de solo RRHH entra a esta
+      // pantalla por la otra puerta y se quedaría sin la lista.
+      const [lista, instalaciones] = await Promise.all([
+        pagos.listarEstados(env, { mes: url.searchParams.get('mes') }),
+        buscar(env, 'v_instalaciones?select=id,nombre,cliente&activa=is.true&order=nombre.asc'),
+      ]);
+      return json({ ...lista, instalaciones });
+    }
+    if (sub === '/estados' && metodo === 'POST') {
+      const r = await pagos.crearEstado(env, usuario.usuario, cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r, r.ya_existia ? 200 : 201);
+    }
+
+    const mEstado = sub.match(/^\/estados\/(\d+)$/);
+    if (mEstado && metodo === 'GET') {
+      const r = await pagos.detalleEstado(env, Number(mEstado[1]));
+      if (r.error) return error(r.error, r.status);
+      // Las liquidaciones de la carpeta solo salen si la cuenta abre sueldos.
+      // El resto de la carpeta —qué papel hay y cuál falta— lo ve cobranza.
+      if (!conSueldos) { r.remuneraciones = []; r.totales = null; r.sin_sueldos = true; }
+      return json(r);
+    }
+    if (mEstado && metodo === 'PATCH') {
+      const r = await pagos.editarEstado(env, usuario.usuario, Number(mEstado[1]), cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+
+    // Registrar un papel sin archivo: lo generó la pantalla y se mandó, o vive
+    // en otro lado. Lo que no se puede es perder el registro de que existe.
+    const mDoc = sub.match(/^\/estados\/(\d+)\/documento$/);
+    if (mDoc && metodo === 'POST') {
+      const r = await pagos.registrarArchivo(env, usuario.usuario, Number(mDoc[1]), cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r, 201);
+    }
+
+    // ------------------------------------------------- archivo de la carpeta
+    // Mismo camino que el archivo de un documento de RRHH: bucket privado y la
+    // sesión mirada en cada pasada, nunca una URL firmada.
+    const mSubir = sub.match(/^\/estados\/(\d+)\/archivo$/);
+    if (mSubir && metodo === 'POST') {
+      const estadoId = Number(mSubir[1]);
+      const padre = await primero(env, `estados_pago?select=id&id=eq.${estadoId}`);
+      if (!padre) return error('Ese estado de pago no está en el registro', 404);
+      const clase = url.searchParams.get('clase') || 'otro';
+
+      const declarado = Number(request.headers.get('content-length') || 0);
+      if (declarado > arch.MAX_BYTES) {
+        return error(`El archivo pesa más de ${Math.round(arch.MAX_BYTES / 1048576)} MB.`, 413);
+      }
+      const bytes = new Uint8Array(await request.arrayBuffer());
+      if (!bytes.length) return error('No llegó ningún archivo', 400);
+      if (bytes.length > arch.MAX_BYTES) {
+        return error(`El archivo pesa más de ${Math.round(arch.MAX_BYTES / 1048576)} MB.`, 413);
+      }
+      const reconocido = arch.reconocer(bytes);
+      if (!reconocido) {
+        return error('Ese archivo no es un PDF, una imagen ni un Excel.', 415);
+      }
+      const nombre = arch.nombreSeguro(
+        decodeURIComponent(request.headers.get('x-archivo-nombre') || ''), reconocido.ext);
+      const ruta = `estados-pago/${estadoId}-${crypto.randomUUID()}.${reconocido.ext}`;
+      await arch.subir(env, ruta, bytes, reconocido.tipo);
+      try {
+        const r = await pagos.registrarArchivo(env, usuario.usuario, estadoId, {
+          clase, nombre, archivo_ruta: ruta, archivo_tipo: reconocido.tipo,
+          archivo_bytes: bytes.length, nota: decodeURIComponent(
+            request.headers.get('x-archivo-nota') || '') || null,
+        });
+        if (r.error) throw new Error(r.error);
+        return json(r, 201);
+      } catch (e) {
+        // Si la fila no se pudo escribir, el archivo recién subido no lo
+        // apunta nadie: se saca, en vez de dejar basura en el bucket.
+        await arch.borrar(env, ruta).catch(() => {});
+        throw e;
+      }
+    }
+
+    const mArch = sub.match(/^\/estados\/(\d+)\/archivo\/(\d+)$/);
+    if (mArch && (metodo === 'GET' || metodo === 'DELETE')) {
+      const a = await primero(env, `estado_pago_archivos?select=*&id=eq.${mArch[2]}`
+        + `&estado_pago_id=eq.${mArch[1]}`);
+      if (!a) return error('Ese documento no está en el registro', 404);
+      if (metodo === 'DELETE') {
+        if (a.archivo_ruta) await arch.borrar(env, a.archivo_ruta).catch(() => {});
+        await borrar(env, `estado_pago_archivos?id=eq.${a.id}`);
+        await anotar(env, usuario.usuario, 'estado_pago', Number(mArch[1]),
+          'quitó un documento', a.nombre);
+        return json({ ok: true });
+      }
+      if (!a.archivo_ruta) return error('Ese registro no tiene archivo cargado', 404);
+      const contenido = await arch.bajar(env, a.archivo_ruta);
+      return new Response(contenido, {
+        headers: {
+          'content-type': a.archivo_tipo || 'application/octet-stream',
+          'content-disposition': arch.comoAdjunto(a.nombre),
+          'cache-control': 'private, no-store',
+          'x-content-type-options': 'nosniff',
+          ...soloHttps(),
+        },
+      });
+    }
+
+    // ------------------------------------------------------ remuneraciones
+    if (sub === '/remuneraciones' && metodo === 'GET') {
+      if (!conSueldos) return sinSueldos();
+      const r = await pagos.listarMes(env, {
+        mes: url.searchParams.get('mes'),
+        instalacion_id: entero(url.searchParams.get('instalacion')),
+      });
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+    if (sub === '/remuneraciones/calcular' && metodo === 'POST') {
+      if (!conSueldos) return sinSueldos();
+      const r = await pagos.calcularMes(env, usuario.usuario, cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+    if (sub === '/remuneraciones/cerrar' && metodo === 'POST') {
+      if (!conSueldos) return sinSueldos();
+      const r = await pagos.cerrarMes(env, usuario.usuario, cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+    if (sub === '/remuneraciones/reabrir' && metodo === 'POST') {
+      if (!conSueldos) return sinSueldos();
+      const r = await pagos.reabrirMes(env, usuario.usuario, cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+    const mFila = sub.match(/^\/remuneraciones\/(\d+)$/);
+    if (mFila && metodo === 'PATCH') {
+      if (!conSueldos) return sinSueldos();
+      const r = await pagos.editarFila(env, usuario.usuario, Number(mFila[1]), cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+
+    // ------------------------------------------------------------- nómina
+    if (sub === '/nomina' && metodo === 'GET') {
+      if (!conSueldos) return sinSueldos();
+      const r = await pagos.nomina(env, {
+        mes: url.searchParams.get('mes'),
+        instalacion_id: entero(url.searchParams.get('instalacion')),
+        incluir_borrador: url.searchParams.get('borrador') === 'si',
+      });
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+
+    // La lista de bancos con su código. Se confirma desde la pantalla, igual
+    // que los datos de la empresa: un código errado es una transferencia
+    // rechazada, y nadie fuera del banco puede afirmarlo por nosotros.
+    if (sub === '/bancos' && metodo === 'GET') {
+      return json({ bancos: await buscar(env, 'bancos?select=*&order=orden.asc') });
+    }
+    const mBanco = sub.match(/^\/bancos\/(\d{1,4})$/);
+    if (mBanco && metodo === 'PATCH') {
+      if (!conSueldos) return sinSueldos();
+      const campos = {};
+      if (cuerpo.codigo_nuevo !== undefined) {
+        return error('El código es la llave del banco: para corregirlo hay que agregar otro', 400);
+      }
+      if (cuerpo.nombre !== undefined) campos.nombre = String(cuerpo.nombre).trim();
+      if (cuerpo.activo !== undefined) campos.activo = cuerpo.activo === true;
+      // Guardar es confirmar, como en los datos de la empresa.
+      campos.por_confirmar = cuerpo.por_confirmar === true;
+      const fila = await actualizar(env, `bancos?codigo=eq.${mBanco[1]}`, campos);
+      if (!fila?.length) return error('Ese banco no está en la lista', 404);
+      await anotar(env, usuario.usuario, 'banco', null, 'editó un banco',
+        `${mBanco[1]} · ${fila[0].nombre}`);
+      return json({ ok: true, banco: fila[0] });
+    }
+
+    // La dotación de la instalación, para repartir el F30-1 y para ver a quién
+    // le falta instalación asignada.
+    if (sub === '/dotacion' && metodo === 'GET') {
+      const d = await pagos.dotacion(env, {
+        mes: url.searchParams.get('mes'),
+        instalacion_id: entero(url.searchParams.get('instalacion')),
+      });
+      return json({
+        trabajadores: d.trabajadores.map((t) => ({
+          id: t.id, nombre: t.nombre, rut: t.rut, instalacion_id: t.instalacion_id,
+        })),
+        sin_instalacion: d.sin_instalacion.map((t) => ({ id: t.id, nombre: t.nombre })),
+      });
+    }
+
+    return error('Ruta no encontrada', 404);
+  }
+
   if (ruta === '/activos' || ruta.startsWith('/activos/')) {
     if (!puede(usuario, 'documentos') && !puede(usuario, 'rrhh')) {
       return error('Sin acceso a este módulo', 403);
@@ -1699,7 +1928,9 @@ async function revisarTablas(env) {
                    'tipos_documento', 'parametros_rrhh', 'afps', 'tramos_impuesto',
                    'plantillas_documento', 'bloques_plantilla', 'documentos_generados',
                    'firmas_documento', 'datos_empresa', 'cargas_familiares',
-                   'articulos', 'entregas', 'v_entregas']) {
+                   'articulos', 'entregas', 'v_entregas',
+                   'remuneraciones_mes', 'estados_pago', 'estado_pago_archivos',
+                   'bancos']) {
     try {
       await buscar(env, `${t}?select=count&limit=1`);
       r[t] = true;
@@ -1799,7 +2030,8 @@ async function revisarTablas(env) {
   }
   // Las vistas pueden faltar aunque las tablas estén: se crean al final de la
   // migración y son de las que la pantalla de RRHH consulta primero.
-  for (const v of ['v_personal', 'v_documentos', 'v_documentos_generados']) {
+  for (const v of ['v_personal', 'v_documentos', 'v_documentos_generados',
+                   'v_estados_pago']) {
     try {
       await buscar(env, `${v}?select=id&limit=1`);
       r[v] = true;

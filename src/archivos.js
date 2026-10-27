@@ -40,6 +40,15 @@ const TIPOS = [
   { tipo: 'image/heic', ext: 'heic',
     firma: (b) => coincide(b, [0x66, 0x74, 0x79, 0x70], 4)
                   && ['heic', 'heix', 'hevc', 'mif1', 'msf1'].includes(texto(b, 8, 4)) },
+  // Excel (27-10-2026). Entró por los estados de pago: el F30-1 se pide en la
+  // DT con un archivo que genera Previred, y lo que se guarda y se reparte por
+  // instalación es ese Excel. Un .xlsx es un zip, así que estos bytes mágicos
+  // prueban que es un zip y nada más; va al final para que un PDF o una imagen
+  // se reconozcan primero, y **nunca se abre en el navegador**: se devuelve
+  // como adjunto con `nosniff`, así que lo peor que puede pasar es que alguien
+  // se baje un zip que él mismo subió.
+  { tipo: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', ext: 'xlsx',
+    firma: (b) => coincide(b, [0x50, 0x4B, 0x03, 0x04]) || coincide(b, [0x50, 0x4B, 0x05, 0x06]) },
 ];
 
 export const TIPOS_ACEPTADOS = TIPOS.map((t) => t.tipo);
