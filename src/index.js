@@ -25,6 +25,7 @@ import * as ing from './ingreso.js';
 import * as docs from './documentos.js';
 import * as activos from './activos.js';
 import * as pagos from './pagos.js';
+import * as usr from './usuarios.js';
 import { redireccionHttps, cabecerasSeguridad, conCabeceras, soloHttps }
   from './seguridad.js';
 import { ipDe, huellaDe, revisarLimite, limpiarHuellas, MENSAJES as MENSAJES_LIMITE,
@@ -50,26 +51,14 @@ const IVA = 0.19;
  *
  * Los guardias siguen afuera: no tienen cuenta en `usuarios`, y su sesión del
  * libro de asistencia ni siquiera consulta esta tabla.
- */
-const PERMISOS = {
-  gerencia:    ['facturacion', 'cotizaciones', 'personal', 'documentos', 'rrhh'],
-  operaciones: ['facturacion', 'personal', 'documentos', 'rrhh'],
-  rrhh:        ['rrhh'],
-  prevencion:  ['documentos', 'rrhh'],
-};
-
-/**
- * Módulos dados a una persona en particular, además de los de su rol.
  *
- * Va por persona y no agregado al rol a propósito: si mañana entra otro
- * encargado de operaciones, no debería heredar el acceso a cotizaciones sin
- * que alguien lo decida.
- *
- * 14-10-2026: Joaquín cotiza, aunque su rol sea operaciones.
+ * 29-10-2026: **esta lista se mudó a la base** —a la tabla `roles_permisos` y
+ * a la columna `usuarios.permisos_extra`— y se edita desde Sistema → Usuarios.
+ * Lo que decía acá vive ahora en `src/usuarios.js` como respaldo, y se usa tal
+ * cual mientras la migración no esté aplicada: en este proyecto una migración
+ * no se aplica sola, y dejar a la oficina sin permisos esperando que alguien
+ * pegue SQL habría sido cambiar un problema por otro peor.
  */
-const PERMISOS_PERSONA = {
-  jgarridob: ['cotizaciones'],
-};
 
 // ---------------------------------------------------------------- utilidades
 const json = (datos, status = 200) =>
@@ -93,11 +82,7 @@ async function identificar(request, env) {
   const u = await primero(env,
     `usuarios?select=*&activo=is.true&usuario=eq.${encodeURIComponent(nombre)}`);
   if (!u) return null;   // cuenta borrada o desactivada con la sesión abierta
-  const permisos = [...new Set([
-    ...(PERMISOS[u.rol] || []),
-    ...(PERMISOS_PERSONA[u.usuario] || []),
-  ])];
-  return { ...u, permisos };
+  return { ...u, permisos: await usr.permisosDe(env, u) };
 }
 
 const sinClave = (u) => ({
@@ -359,6 +344,45 @@ async function api(request, env, url, usuario) {
     const r = await lote.aplicar(env, usuario, puede, cuerpo);
     if (r.error) return error(r.error, r.status);
     return json(r);
+  }
+
+  // ---------------------------------------------------------- usuarios
+  // Quién entra al sistema y qué abre. Lo tiene solo gerencia: es la pantalla
+  // desde la que se reparten los demás permisos, incluido el de ver sueldos,
+  // así que no se gana entrando por otra puerta.
+  //
+  // Las cuentas de los guardias se leen acá para verlas junto a las de la
+  // oficina, pero quien las toca sigue siendo `/trabajadores/:id`, que pide
+  // `personal`: Joaquín no perdió ningún botón de los que ya usaba.
+  if (ruta === '/usuarios' || ruta.startsWith('/usuarios/')) {
+    if (!puede(usuario, 'usuarios')) return error('Sin acceso a este módulo', 403);
+
+    if (ruta === '/usuarios' && metodo === 'GET') {
+      const [datos, guardias] = await Promise.all([
+        usr.listar(env), usr.listarGuardias(env),
+      ]);
+      return json({ ...datos, guardias, yo: usuario.usuario });
+    }
+    if (ruta === '/usuarios' && metodo === 'POST') {
+      const r = await usr.crear(env, usuario.usuario, cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r, 201);
+    }
+
+    const mCuenta = ruta.match(/^\/usuarios\/cuenta\/([a-z0-9]+)$/);
+    if (mCuenta && metodo === 'PATCH') {
+      const r = await usr.editar(env, usuario.usuario, mCuenta[1], cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+
+    const mRol = ruta.match(/^\/usuarios\/rol\/([a-z]+)$/);
+    if (mRol && metodo === 'PATCH') {
+      const r = await usr.editarRol(env, usuario.usuario, mRol[1], cuerpo.permisos);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+    return error('Ruta no encontrada', 404);
   }
 
   // ---------------------------------------------------------- cotizaciones
@@ -1930,7 +1954,7 @@ async function revisarTablas(env) {
                    'firmas_documento', 'datos_empresa', 'cargas_familiares',
                    'articulos', 'entregas', 'v_entregas',
                    'remuneraciones_mes', 'estados_pago', 'estado_pago_archivos',
-                   'bancos']) {
+                   'bancos', 'roles_permisos', 'v_cuentas']) {
     try {
       await buscar(env, `${t}?select=count&limit=1`);
       r[t] = true;
@@ -1982,6 +2006,15 @@ async function revisarTablas(env) {
     r.trabajador_cambia_clave = true;
   } catch {
     r.trabajador_cambia_clave = false;
+  }
+  // La tabla `roles_permisos` puede existir y la columna no: van juntas en la
+  // misma migración, pero son dos caminos distintos y puede entrar una sola.
+  // Mientras esto sea false, los permisos salen de lo escrito en el código.
+  try {
+    await buscar(env, 'usuarios?select=permisos_extra&limit=1');
+    r.usuarios_con_permisos_extra = true;
+  } catch {
+    r.usuarios_con_permisos_extra = false;
   }
   // Sin esta columna el formulario público sigue recibiendo, pero sin tope.
   try {

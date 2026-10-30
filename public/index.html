@@ -3075,6 +3075,510 @@ async function pintarRemuneracionesDelMes(e) {
   });
 }
 
+/* ---------------------------------------------------------------- usuarios
+   Quién entra al sistema y qué abre. Hasta el 29-10-2026 esto no existía:
+   los permisos estaban escritos en el código y de las contraseñas solo se
+   podían arreglar las de los guardias. Una cuenta de oficina olvidada o
+   bloqueada no tenía más salida que pegar SQL a mano en Supabase.
+
+   Tres cosas de esta pantalla, por si mañana alguien la toca:
+
+   - **La contraseña temporal se muestra una sola vez y no se guarda.** No
+     está en la base en claro, no va en la bitácora y no vuelve si se recarga
+     la página. Por eso el recuadro es grande y dice que hay que anotarla
+     ahora: si se pierde, se restablece otra vez y sale otra distinta.
+   - **Los botones de los guardias llaman a `/trabajadores/:id`**, que es la
+     misma ruta que usa la pestaña Trabajadores. No hay una segunda forma de
+     desbloquear a un guardia, porque dos formas se separan solas.
+   - **Lo que el rol ya da no se ofrece como módulo propio.** Si se pudiera
+     marcar, el día que ese módulo saliera del rol la persona lo conservaría
+     sin que nadie lo hubiera decidido.
+
+   Dos cosas de la forma, para no repetirlas:
+
+   - La tabla de cuentas tiene **seis columnas y va a 860px**, no a los 1080
+     del .desliza por omisión, que son para las de diez. El correo va bajo el
+     nombre y no en columna propia: con una para él, «Qué abre» quedaba tan
+     angosta que los seis módulos se apilaban uno por línea y cada fila crecía
+     al alto de un párrafo.
+   - Y por eso MODULOS tiene un rótulo corto aparte del largo.
+
+   Ojo con los comentarios: todo este dibujo vive dentro de una plantilla de
+   texto, así que **un comentario HTML con un acento grave adentro cierra la
+   cadena** y deja la página en blanco con «Unexpected identifier». Los
+   comentarios van acá afuera, en JavaScript. */
+
+let USR = null;
+let abrirCuentaNueva = false;
+let buscarGuardia = "";
+// { usuario, nombre, clave, nueva } — vive en memoria y se borra al salir.
+let claveMostrada = null;
+
+const ROL_ROTULO = {
+  gerencia: "Gerencia", operaciones: "Operaciones",
+  rrhh: "Recursos humanos", prevencion: "Prevención de riesgos",
+};
+
+/* Una casilla de verdad tiene que medirse a mano en este panel.
+   `input,select,textarea{…width:100%;padding:9px 11px;border:…}` de panel.css
+   le pega también a las casillas, y las únicas que lo anulan son las de
+   seleccionar filas (`th.sel input,td.sel input`). Sin esto, cada casilla sale
+   de 85px de ancho con borde y relleno, y el rótulo queda flotando lejos. Es
+   primo del `appearance:none` que rompía las casillas en control de acceso: una
+   regla escrita para los campos de texto alcanzando a lo que no lo es.
+   Va en rem para que crezca con el tamaño de letra que elija cada uno. */
+const ESTILO_CASILLA = "width:1.05rem;height:1.05rem;flex:none;margin:.2rem 0 0;"
+  + "padding:0;accent-color:var(--btn);cursor:pointer";
+
+/** El sello de situación de una cuenta: lo primero que se mira. */
+function selloCuenta(c) {
+  if (!c.activo) return '<span class="sello e-en_curso">De baja</span>';
+  if (c.bloqueada) return '<span class="sello e-rechazada">Bloqueada</span>';
+  if (c.debe_cambiar_clave) return '<span class="sello e-solicitar_oc">Clave sin cambiar</span>';
+  if (c.nunca_entro) return '<span class="sello e-pendiente_facturacion">Nunca ha entrado</span>';
+  return '<span class="sello e-cerrado">Al día</span>';
+}
+
+const cuandoEntro = v => {
+  if (!v) return "—";
+  const d = new Date(v);
+  return `${String(d.getDate()).padStart(2, "0")}-${String(d.getMonth() + 1).padStart(2, "0")}-${d.getFullYear()}`
+    + ` ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+};
+
+/** El recuadro de la contraseña recién puesta. Sale una vez y no vuelve. */
+function cajaClave() {
+  if (!claveMostrada) return "";
+  const { nombre, usuario, clave, nueva } = claveMostrada;
+  /* `--sup-2: transparent` es para que la franja del título tome el verde de
+     la caja: `.caja__tit` se pinta con ese token, así que sin esto el título
+     queda gris sobre un cuerpo verde. */
+  return `<section class="caja" id="caja-clave"
+      style="border-color:var(--verde);background:var(--verde-suave);--sup-2:transparent">
+    <div class="caja__tit"><h2>${nueva ? "Cuenta creada" : "Contraseña restablecida"}</h2>
+      <span class="nota">Anótela ahora: no se vuelve a mostrar</span></div>
+    <div style="padding:16px">
+      <p style="margin:0 0 14px">Déle estos dos datos a <b>${esc(nombre)}</b>. Al entrar, el
+        sistema le va a pedir que elija una contraseña propia, así que esta sirve una sola vez.</p>
+      <div style="display:flex;gap:28px;flex-wrap:wrap;align-items:flex-end">
+        <div><div class="sub">Usuario</div>
+          <div style="font-size:1.3rem;font-weight:600">${esc(usuario)}</div></div>
+        <div><div class="sub">Contraseña temporal</div>
+          <div id="la-clave" style="font-size:1.6rem;font-weight:600;letter-spacing:.06em;
+               font-family:ui-monospace,SFMono-Regular,Menlo,monospace">${esc(clave)}</div></div>
+        <button class="bt bt--fino" id="copiar-clave" type="button">Copiar</button>
+        <button class="bt bt--fino" id="cerrar-clave" type="button">Listo, ya la anoté</button>
+      </div>
+      <p class="sub" style="margin:14px 0 0">No la mande por WhatsApp si puede evitarlo: ahí
+        queda escrita para siempre. Dictarla por teléfono es mejor, y por eso no lleva letras
+        ni números que se confundan al oírlos.</p>
+    </div>
+  </section>`;
+}
+
+/** Las casillas de módulos de un rol o de una persona. */
+function casillasModulos(modulos, marcados, prefijo, bloqueados = []) {
+  return `<div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
+    ${modulos.map(m => {
+      const fijo = bloqueados.includes(m.codigo);
+      return `<label style="display:flex;gap:9px;align-items:flex-start;padding:10px 12px;
+          border:1px solid var(--borde);border-radius:12px;${fijo ? "opacity:.55" : "cursor:pointer"}">
+        <input type="checkbox" name="${prefijo}" value="${m.codigo}"
+               ${marcados.includes(m.codigo) ? "checked" : ""} ${fijo ? "disabled" : ""}
+               style="${ESTILO_CASILLA}">
+        <span><b style="font-size:.9rem">${esc(m.rotulo)}</b>
+          <span class="sub" style="display:block;margin-top:2px">${esc(m.abre)}</span>
+          ${fijo ? '<span class="sub" style="display:block;color:var(--ambar)">Ya se lo da su rol</span>' : ""}
+        </span></label>`;
+    }).join("")}
+  </div>`;
+}
+
+/** El formulario que se abre bajo la fila de una cuenta de oficina. */
+function formCuenta(c, modulos, roles) {
+  const delRol = roles.find(r => r.codigo === c.rol)?.permisos || [];
+  const esYo = c.usuario === USR.yo;
+  return `<form class="f-cuenta" data-usuario="${esc(c.usuario)}" style="padding:16px 18px">
+    <div class="rejilla">
+      <label class="campo"><span>Rol</span>
+        <select name="rol" ${esYo ? "disabled" : ""}>
+          ${Object.entries(ROL_ROTULO).map(([k, v]) =>
+            `<option value="${k}"${c.rol === k ? " selected" : ""}>${esc(v)}</option>`).join("")}
+        </select>
+        <div class="sub">${esYo
+          ? "No puede cambiarse el rol a usted mismo: se quedaría fuera de esta pantalla sin querer."
+          : "El rol decide la mayoría de los accesos. Lo que abre cada uno se edita más abajo."}</div></label>
+      <label class="campo"><span>Situación de la cuenta</span>
+        <select name="activo" ${esYo ? "disabled" : ""}>
+          <option value="true"${c.activo ? " selected" : ""}>Activa</option>
+          <option value="false"${c.activo ? "" : " selected"}>De baja</option>
+        </select>
+        <div class="sub">${esYo
+          ? "Tampoco puede darse de baja usted mismo."
+          : "De baja no entra, y si tiene la sesión abierta se le corta en la siguiente pantalla."}</div></label>
+    </div>
+
+    <div style="margin:16px 0 8px"><b style="font-size:.92rem">Módulos propios de esta persona</b>
+      <div class="sub">Además de los que le da su rol. Lo normal es no marcar ninguno.</div></div>
+    ${casillasModulos(modulos, c.permisos_extra, `extra-${c.usuario}`, delRol)}
+
+    <label style="display:flex;gap:9px;align-items:flex-start;margin:16px 0 0;
+        padding:10px 12px;border:1px solid var(--borde);border-radius:12px;cursor:pointer">
+      <input type="checkbox" name="puede_borrar" ${c.puede_borrar ? "checked" : ""}
+             style="${ESTILO_CASILLA}">
+      <span><b style="font-size:.9rem">Puede eliminar registros</b>
+        <span class="sub" style="display:block;margin-top:2px">Borrar es lo único que no se
+          puede deshacer mirando la bitácora. Va por persona y no por rol a propósito.</span></span></label>
+
+    <div class="pie-form" style="gap:10px;flex-wrap:wrap">
+      <button class="bt" type="submit">Guardar</button>
+      ${c.bloqueada ? `<button class="bt bt--fino" type="button" data-desbloquear="${esc(c.usuario)}">
+        Desbloquear ahora</button>` : ""}
+      <button class="bt bt--fino" type="button" data-restablecer="${esc(c.usuario)}">
+        Restablecer la contraseña</button>
+      <span class="mensaje"></span>
+    </div>
+    <p class="sub" style="margin:10px 0 0">Nadie puede ver la contraseña que tiene puesta,
+      tampoco gerencia: lo guardado es una derivación y no el texto. Restablecer le pone una
+      temporal que se muestra una sola vez acá.</p>
+  </form>`;
+}
+
+async function pintarUsuarios() {
+  $("#app").innerHTML = `<p class="cargando">Cargando…</p>`;
+  USR = await pedir("/usuarios");
+  const { cuentas, roles, modulos, guardias, permisos_en_la_base, archivo_migracion } = USR;
+
+  const bloqueadas = [...cuentas.filter(c => c.activo && c.bloqueada),
+                      ...guardias.filter(g => g.activo && g.bloqueada)];
+  const conClaveInicial = guardias.filter(g => g.activo && g.debe_cambiar_clave);
+  const oficinaSinCambiar = cuentas.filter(c => c.activo && c.debe_cambiar_clave);
+
+  const guardiasVisibles = buscarGuardia
+    ? guardias.filter(g => `${g.nombre} ${g.usuario} ${g.rut} ${g.instalacion || ""}`
+        .toLowerCase().includes(buscarGuardia.toLowerCase()))
+    : guardias;
+
+  $("#app").innerHTML = `
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:18px;flex-wrap:wrap">
+      <h2 style="font-size:1.5rem">Usuarios</h2>
+      <span class="nota" style="color:var(--texto-2);font-size:.85rem">
+        ${cuentas.filter(c => c.activo).length} de oficina ·
+        ${guardias.filter(g => g.activo).length} guardias</span>
+      <button class="bt" id="nueva-cuenta" style="margin-left:auto">
+        ${abrirCuentaNueva ? "Ocultar formulario" : "Nueva cuenta de oficina"}</button>
+    </div>
+
+    ${permisos_en_la_base ? "" : aviso("ojo",
+      "Los permisos todavía no viven en la base. ",
+      "Mientras tanto el sistema usa los que estaban escritos en el código, que son los "
+      + "mismos de siempre: nadie perdió ni ganó acceso. Lo que no se puede todavía es "
+      + "cambiarlos desde acá. Hay que pegar " + archivo_migracion
+      + " en el SQL Editor de Supabase.")}
+
+    ${bloqueadas.length ? aviso("ojo",
+      bloqueadas.length === 1 ? "Hay una cuenta bloqueada ahora mismo. " : `Hay ${bloqueadas.length} cuentas bloqueadas ahora mismo. `,
+      "Es alguien que tecleó mal su clave cinco veces, no un ataque. Se arregla acá abajo "
+      + "con «Desbloquear», o solo esperando cinco minutos: "
+      + bloqueadas.map(c => c.nombre).join(", ") + ".") : ""}
+
+    ${cajaClave()}
+
+    <section class="caja"${abrirCuentaNueva ? "" : " hidden"} style="max-width:860px">
+      <div class="caja__tit"><h2>Nueva cuenta de oficina</h2>
+        <span class="nota">Para los guardias, use la pestaña Trabajadores</span></div>
+      <form id="f-cuenta-nueva">
+        <div class="rejilla">
+          <label class="campo"><span>Nombres</span>
+            <input name="nombres" required autocomplete="off" placeholder="Ej: María Fernanda">
+            <div class="sub">Los que use. De la inicial del primero sale el usuario.</div></label>
+          <label class="campo"><span>Apellido paterno</span>
+            <input name="apellido_paterno" required autocomplete="off" placeholder="Ej: Soto"></label>
+          <label class="campo"><span>Apellido materno</span>
+            <input name="apellido_materno" autocomplete="off" placeholder="Ej: Ruiz">
+            <div class="sub">Opcional. Si va, aporta su inicial al usuario.</div></label>
+          <label class="campo"><span>Correo</span>
+            <input name="email" type="email" required autocomplete="off"
+                   placeholder="alguien@ejemplo.cl">
+            <div class="sub">Identifica la cuenta. No se puede repetir.</div></label>
+          <label class="campo"><span>Rol</span>
+            <select name="rol" required>
+              <option value="">Elija uno</option>
+              ${Object.entries(ROL_ROTULO).map(([k, v]) =>
+                `<option value="${k}">${esc(v)}</option>`).join("")}
+            </select>
+            <div class="sub">Decide qué módulos abre.</div></label>
+        </div>
+        <div class="pie-form">
+          <button class="bt" type="submit">Crear la cuenta</button>
+          <span class="mensaje"></span>
+        </div>
+      </form>
+    </section>
+
+    <section class="caja">
+      <div class="caja__tit"><h2>Cuentas de la oficina</h2>
+        <span class="nota">${oficinaSinCambiar.length
+          ? `${oficinaSinCambiar.length} sigue${oficinaSinCambiar.length > 1 ? "n" : ""} con la clave inicial`
+          : "Todas eligieron su contraseña"}</span></div>
+      <div class="desliza"><table style="min-width:860px"><thead><tr>
+        <th>Persona</th><th>Rol</th><th>Qué abre</th>
+        <th>Situación</th><th>Último ingreso</th><th></th>
+      </tr></thead><tbody>
+        ${cuentas.map(c => `<tr${c.activo ? "" : ' style="opacity:.6"'}>
+          <td><b class="nowrap">${esc(c.nombre)}</b><span class="sub">${esc(c.usuario)}${
+            c.usuario === USR.yo ? " · usted" : ""} · ${esc(c.email)}</span></td>
+          <td class="nowrap">${esc(ROL_ROTULO[c.rol] || c.rol)}</td>
+          <td><span class="sub">${c.permisos.length
+            ? c.permisos.map(p => esc(modulos.find(m => m.codigo === p)?.corto || p)).join(" · ")
+            : "Ningún módulo"}</span>${c.puede_borrar
+            ? '<span class="sello e-pendiente_facturacion">Puede eliminar</span>' : ""}</td>
+          <td>${selloCuenta(c)}</td>
+          <td class="sub nowrap">${cuandoEntro(c.ultimo_ingreso)}</td>
+          <td class="nowrap"><button class="bt bt--fino bt--chico"
+            data-editar-cuenta="${esc(c.usuario)}">Editar</button></td>
+        </tr>
+        <tr hidden data-form-cuenta="${esc(c.usuario)}">
+          <td colspan="6" style="background:var(--sup-2);padding:0">
+            ${formCuenta(c, modulos, roles)}
+          </td></tr>`).join("")}
+      </tbody></table></div>
+    </section>
+
+    <section class="caja">
+      <div class="caja__tit"><h2>Cuentas de los guardias</h2>
+        <span class="nota">${conClaveInicial.length
+          ? `${conClaveInicial.length} sigue${conClaveInicial.length > 1 ? "n" : ""} entrando con el RUT`
+          : "Todos eligieron su clave"}</span></div>
+      ${aviso("ojo", "Un guardia que sigue con el RUT de clave no puede marcar turno. ",
+        "El sistema no lo deja hasta que elija una propia, y eso es justamente lo que hace "
+        + "que el libro de asistencia sirva de respaldo: con el RUT de clave, cualquier "
+        + "compañero podría marcar la entrada por él.")}
+      <label class="campo" style="max-width:360px;margin-bottom:14px"><span>Buscar</span>
+        <input id="buscar-guardia" type="search" autocomplete="off"
+               value="${esc(buscarGuardia)}" placeholder="Nombre, usuario, RUT o instalación"></label>
+      ${guardiasVisibles.length ? `<div class="desliza"><table style="min-width:900px"><thead><tr>
+        <th>Guardia</th><th>RUT</th><th>Cargo</th><th>Instalación</th>
+        <th>Situación</th><th>Último ingreso</th><th></th>
+      </tr></thead><tbody>
+        ${guardiasVisibles.map(g => `<tr${g.activo ? "" : ' style="opacity:.6"'}>
+          <td><b class="nowrap">${esc(g.nombre)}</b><span class="sub">${esc(g.usuario)}</span></td>
+          <td class="sub nowrap">${esc(g.rut)}</td>
+          <td>${esc(g.cargo)}</td>
+          <td class="sub">${esc(g.instalacion || "sin asignar")}</td>
+          <td>${selloCuenta({ ...g, nunca_entro: !g.ultimo_ingreso })}</td>
+          <td class="sub">${cuandoEntro(g.ultimo_ingreso)}</td>
+          <td class="nowrap">
+            ${g.bloqueada ? `<button class="bt bt--fino bt--chico"
+              data-guardia-desbloquear="${g.id}">Desbloquear</button> ` : ""}
+            <button class="bt bt--fino bt--chico"
+              data-guardia-rut="${g.id}" data-nombre="${esc(g.nombre)}">Clave al RUT</button>
+          </td></tr>`).join("")}
+      </tbody></table></div>`
+      : `<p class="vacio">${buscarGuardia
+          ? "Ningún guardia calza con esa búsqueda."
+          : "Todavía no hay guardias cargados. Se crean en la pestaña Trabajadores."}</p>`}
+    </section>
+
+    <section class="caja">
+      <div class="caja__tit"><h2>Qué abre cada rol</h2>
+        <span class="nota">Le cambia el acceso a todas las personas con ese rol</span></div>
+      ${aviso("ojo", "Esto no es por persona: es por rol. ",
+        "Quitarle un módulo a «Operaciones» se lo quita a todos los que tengan ese rol, "
+        + "ahora y en el futuro. Para darle algo a una sola persona, use «Módulos propios» "
+        + "en su fila de la tabla de arriba. Un cambio acá puede tardar hasta un minuto en "
+        + "notarse en los computadores que ya tienen el sistema abierto.")}
+      ${roles.map(r => `<form class="f-rol" data-rol="${r.codigo}"
+          style="padding:16px;border-top:1px solid var(--borde)">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+          <b style="font-size:1.05rem">${esc(r.rotulo)}</b>
+          <span class="sub">${esc(r.descripcion || "")}</span>
+          <span class="sub" style="margin-left:auto">${r.actualizado_por
+            ? `Lo cambió ${esc(r.actualizado_por)}` : ""}</span>
+        </div>
+        ${casillasModulos(modulos, r.permisos, `rol-${r.codigo}`)}
+        <div class="pie-form"><button class="bt bt--fino" type="submit">Guardar ${esc(r.rotulo)}</button>
+          <span class="mensaje"></span></div>
+      </form>`).join("")}
+    </section>`;
+
+  conectarUsuarios();
+}
+
+function conectarUsuarios() {
+  $("#nueva-cuenta").onclick = () => { abrirCuentaNueva = !abrirCuentaNueva; pintarUsuarios(); };
+
+  const buscador = $("#buscar-guardia");
+  if (buscador) {
+    buscador.oninput = ev => {
+      buscarGuardia = ev.target.value;
+      const donde = ev.target.selectionStart;
+      pintarUsuarios().then(() => {
+        const nuevo = $("#buscar-guardia");
+        if (nuevo) { nuevo.focus(); nuevo.setSelectionRange(donde, donde); }
+      });
+    };
+  }
+
+  $("#cerrar-clave")?.addEventListener("click", () => {
+    claveMostrada = null;
+    $("#caja-clave")?.remove();
+  });
+  $("#copiar-clave")?.addEventListener("click", async ev => {
+    try {
+      await navigator.clipboard.writeText(claveMostrada.clave);
+      recado("Contraseña copiada");
+    } catch {
+      // En http sin permiso del navegador no hay portapapeles: se selecciona
+      // para que se pueda copiar a mano, en vez de no hacer nada.
+      const r = document.createRange();
+      r.selectNodeContents($("#la-clave"));
+      getSelection().removeAllRanges();
+      getSelection().addRange(r);
+      recado("Selecciónela y cópiela con Cmd+C", "mal");
+    }
+    ev.target.blur();
+  });
+
+  // Abrir y cerrar el formulario de cada cuenta.
+  document.querySelectorAll("[data-editar-cuenta]").forEach(b => {
+    b.onclick = () => {
+      const fila = $(`[data-form-cuenta="${b.dataset.editarCuenta}"]`);
+      fila.hidden = !fila.hidden;
+      b.textContent = fila.hidden ? "Editar" : "Cerrar";
+    };
+  });
+
+  $("#f-cuenta-nueva").onsubmit = async ev => {
+    ev.preventDefault();
+    const f = ev.target, msj = f.querySelector(".mensaje");
+    const boton = f.querySelector("button[type=submit]");
+    boton.disabled = true;
+    decir(msj, "Creando…");
+    try {
+      const r = await pedir("/usuarios",
+        { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(f))) });
+      claveMostrada = { usuario: r.cuenta.usuario, nombre: r.cuenta.nombre,
+                        clave: r.clave_temporal, nueva: true };
+      abrirCuentaNueva = false;
+      await pintarUsuarios();
+      $("#caja-clave")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    } catch (e) {
+      decir(msj, e.message, "error");
+      boton.disabled = false;
+    }
+  };
+
+  document.querySelectorAll(".f-cuenta").forEach(f => {
+    const msj = f.querySelector(".mensaje");
+
+    f.onsubmit = async ev => {
+      ev.preventDefault();
+      const boton = f.querySelector("button[type=submit]");
+      boton.disabled = true;
+      decir(msj, "Guardando…");
+      const cuerpo = {
+        rol: f.rol.value,
+        activo: f.activo.value === "true",
+        puede_borrar: f.puede_borrar.checked,
+        permisos_extra: [...f.querySelectorAll('input[name^="extra-"]:checked:not(:disabled)')]
+          .map(c => c.value),
+      };
+      try {
+        const r = await pedir(`/usuarios/cuenta/${f.dataset.usuario}`,
+          { method: "PATCH", body: JSON.stringify(cuerpo) });
+        recado(r.cambios?.length ? r.cambios.join(", ") : "Guardado");
+        await pintarUsuarios();
+      } catch (e) {
+        decir(msj, e.message, "error");
+        boton.disabled = false;
+      }
+    };
+
+    f.querySelector("[data-desbloquear]")?.addEventListener("click", async ev => {
+      ev.target.disabled = true;
+      decir(msj, "Desbloqueando…");
+      try {
+        await pedir(`/usuarios/cuenta/${ev.target.dataset.desbloquear}`,
+          { method: "PATCH", body: JSON.stringify({ desbloquear: true }) });
+        recado("Desbloqueada: ya puede volver a intentar");
+        await pintarUsuarios();
+      } catch (e) { decir(msj, e.message, "error"); ev.target.disabled = false; }
+    });
+
+    f.querySelector("[data-restablecer]")?.addEventListener("click", async ev => {
+      const usuario = ev.target.dataset.restablecer;
+      // Se pregunta porque la contraseña que esa persona tenía deja de servir
+      // en el momento: si estaba en medio de algo, queda afuera.
+      if (!confirm(`¿Restablecer la contraseña de ${usuario}?\n\n`
+        + "La que tiene puesta deja de servir ahora mismo. Se le va a mostrar una "
+        + "temporal, una sola vez, que esa persona tendrá que cambiar al entrar.")) return;
+      ev.target.disabled = true;
+      decir(msj, "Restableciendo…");
+      try {
+        const r = await pedir(`/usuarios/cuenta/${usuario}`,
+          { method: "PATCH", body: JSON.stringify({ restablecer_clave: true }) });
+        claveMostrada = { usuario: r.cuenta.usuario, nombre: r.cuenta.nombre,
+                          clave: r.clave_temporal, nueva: false };
+        await pintarUsuarios();
+        $("#caja-clave")?.scrollIntoView({ behavior: "smooth", block: "center" });
+      } catch (e) { decir(msj, e.message, "error"); ev.target.disabled = false; }
+    });
+  });
+
+  // Los guardias pasan por /trabajadores/:id, que es la ruta que ya usaba la
+  // pestaña Trabajadores: una segunda forma de desbloquear se separaría de la
+  // primera el día que alguna de las dos cambie.
+  document.querySelectorAll("[data-guardia-desbloquear]").forEach(b => {
+    b.onclick = async () => {
+      b.disabled = true;
+      try {
+        await pedir(`/trabajadores/${b.dataset.guardiaDesbloquear}`,
+          { method: "PATCH", body: JSON.stringify({ desbloquear: true }) });
+        recado("Desbloqueado: ya puede marcar");
+        await pintarUsuarios();
+      } catch (e) { recado(e.message, "mal"); b.disabled = false; }
+    };
+  });
+
+  document.querySelectorAll("[data-guardia-rut]").forEach(b => {
+    b.onclick = async () => {
+      if (!confirm(`¿Devolverle la clave al RUT a ${b.dataset.nombre}?\n\n`
+        + "Entra con su RUT y el sistema le va a pedir que elija otra antes de "
+        + "dejarlo marcar turno. La que tenía deja de servir.")) return;
+      b.disabled = true;
+      try {
+        await pedir(`/trabajadores/${b.dataset.guardiaRut}`,
+          { method: "PATCH", body: JSON.stringify({ restablecer_clave: true }) });
+        recado(`${b.dataset.nombre} entra con su RUT y tiene que elegir otra clave`);
+        await pintarUsuarios();
+      } catch (e) { recado(e.message, "mal"); b.disabled = false; }
+    };
+  });
+
+  document.querySelectorAll(".f-rol").forEach(f => {
+    f.onsubmit = async ev => {
+      ev.preventDefault();
+      const msj = f.querySelector(".mensaje");
+      const boton = f.querySelector("button[type=submit]");
+      boton.disabled = true;
+      decir(msj, "Guardando…");
+      const permisos = [...f.querySelectorAll('input[type=checkbox]:checked')].map(c => c.value);
+      try {
+        const r = await pedir(`/usuarios/rol/${f.dataset.rol}`,
+          { method: "PATCH", body: JSON.stringify({ permisos }) });
+        recado([r.agregados.length ? `agregó ${r.agregados.join(", ")}` : "",
+                r.quitados.length ? `quitó ${r.quitados.join(", ")}` : ""]
+               .filter(Boolean).join(" · ") || "Guardado");
+        await pintarUsuarios();
+      } catch (e) {
+        decir(msj, e.message, "error");
+        boton.disabled = false;
+      }
+    };
+  });
+}
+
 const VISTAS = {
   panel: { rotulo: "Panel", pintar: pintarPanel, modulo: "facturacion" },
   calendario: { rotulo: "Calendario", pintar: pintarCalendario, modulo: "facturacion" },
@@ -3091,6 +3595,12 @@ const VISTAS = {
      puerta, en el servidor. */
   pagos: { rotulo: "Estados de pago", pintar: pintarEstadosPago,
            modulo: ["facturacion", "rrhh"] },
+  /* Usuarios la abre solo gerencia: es la pantalla desde la que se reparten
+     los demás permisos, incluido el de ver sueldos, así que no se gana
+     entrando por otra puerta. Las cuentas de los guardias se ven acá, pero
+     quien las toca sigue siendo la pestaña Trabajadores, que pide `personal`:
+     Joaquín no perdió ningún botón de los que ya usaba. */
+  usuarios: { rotulo: "Usuarios", pintar: pintarUsuarios, modulo: "usuarios" },
   /* Personas —RRHH, Fichas, Documentos, Sueldos y Carga masiva— se mudó a
      rrhh.seggarridos.com y NO se dejó una copia acá: dos copias de la misma
      pantalla se separan solas, que es lo que ya pasó tres veces en este
@@ -3115,6 +3625,7 @@ const GRUPOS = [
   { rotulo: "Cobranza",    vistas: ["panel", "calendario", "pagos", "bitacora"] },
   { rotulo: "Comercial",   vistas: ["contactos", "cotizaciones"] },
   { rotulo: "Operaciones", vistas: ["servicio", "instalaciones", "extra", "libro", "trabajadores"] },
+  { rotulo: "Sistema",     vistas: ["usuarios"] },
 ];
 
 /** Cambiar de sección descarta lo marcado: las acciones de la barra no aplican
@@ -3122,6 +3633,10 @@ const GRUPOS = [
  *  `ir()`, en comun.js; la página de Personas no tiene tablas con casillas y
  *  no define este gancho. */
 function alCambiarVista() {
+  // La contraseña temporal se muestra una sola vez: si quien la generó se fue
+  // a otra pantalla, ya no la va a encontrar al volver. Es a propósito, y por
+  // eso el recuadro dice que hay que anotarla en el momento.
+  claveMostrada = null;
   seleccion.tipo = null;
   seleccion.ids.clear();
   seleccion.op = 0;

@@ -10,7 +10,7 @@
  *    desde JavaScript.
  */
 
-import { primero, actualizar } from './datos.js';
+import { buscar, primero, actualizar } from './datos.js';
 
 // Cloudflare Workers no admite más de 100.000 iteraciones de PBKDF2. Es el
 // techo de la plataforma, no una elección: lo que falta de costo de cálculo se
@@ -19,7 +19,26 @@ import { primero, actualizar } from './datos.js';
 const ITERACIONES = 100000;
 const MAX_ITERACIONES_PLATAFORMA = 100000;
 const MAX_INTENTOS = 5;
-const BLOQUEO_MINUTOS = 15;
+
+/**
+ * Cuánto dura el bloqueo por intentos fallidos.
+ *
+ * 29-10-2026: bajó de 15 a 5 minutos, por un reporte de Joaquín. Lo que pasa
+ * de verdad es esto: el guardia cambia su clave, no la guarda en el llavero
+ * del teléfono, a la semana siguiente la tecléa mal cinco veces y queda
+ * afuera. No es un ataque, es alguien que se olvidó de su clave en la caseta
+ * de un parque, de noche.
+ *
+ * Cinco minutos siguen haciendo lo que el bloqueo tiene que hacer —frenar al
+ * que prueba claves ajenas, que es el compañero marcando la entrada por el
+ * que no llegó— porque lo que lo frena no es la espera sino que a los cinco
+ * intentos deje de poder probar. Quince minutos no frenaban a nadie más:
+ * frenaban al dueño de la cuenta.
+ *
+ * Lo que de verdad arregla el caso es lo otro: que el aviso diga a quién
+ * pedirle, y que la oficina tenga el botón para devolvérsela.
+ */
+const BLOQUEO_MINUTOS = 5;
 
 // Dos ámbitos. La oficina entra en adm.seggarridos.com y los guardias en
 // asistencia.seggarridos.com: son dominios distintos y el navegador ya separa
@@ -156,6 +175,42 @@ export const cookieBorrada = (seguro = true, ambito = 'oficina') =>
 
 // ---------------------------------------------------------------- ingreso
 /**
+ * A quién llamar cuando la cuenta quedó bloqueada.
+ *
+ * Vive acá y no en quien llama porque el bloqueo es de este archivo: el que
+ * decide dejar a alguien afuera es el que tiene que decirle cómo volver. Un
+ * «Cuenta bloqueada» a secas es lo que terminaba en una llamada al gerente a
+ * cualquier hora, porque el guardia no sabía a quién más preguntarle.
+ *
+ * Solo se consulta cuando alguien ya quedó bloqueado, así que no le cuesta
+ * nada a los ingresos normales. Y si algo de esto falla —la tabla, el
+ * teléfono, la red— el aviso sale sin la ayuda en vez de no salir: lo que no
+ * puede pasar es que un error acá se coma el motivo del rechazo.
+ */
+async function aQuienPedirle(env, tabla) {
+  try {
+    // Al guardia lo desbloquea quien tenga el módulo `personal` —gerencia y
+    // operaciones—; a una cuenta de oficina, gerencia desde Sistema → Usuarios.
+    const filtroRol = tabla === 'trabajadores'
+      ? 'rol=in.(gerencia,operaciones)' : 'rol=eq.gerencia';
+    const [gente, fono] = await Promise.all([
+      buscar(env, `usuarios?select=nombre&activo=is.true&${filtroRol}&order=nombre.asc`),
+      primero(env, 'datos_empresa?select=valor&codigo=eq.telefono_oficina').catch(() => null),
+    ]);
+
+    const nombres = (gente || []).map((g) => g.nombre).filter(Boolean);
+    if (!nombres.length) return '';
+    const lista = nombres.length === 1
+      ? nombres[0]
+      : `${nombres.slice(0, -1).join(', ')} o ${nombres[nombres.length - 1]}`;
+    const telefono = fono?.valor ? ` (${fono.valor})` : '';
+    return ` Si no se acuerda de su clave, pídale a ${lista}${telefono} que se la devuelva.`;
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Verifica usuario y contraseña, contando intentos fallidos.
  * Devuelve { usuario } o { error, status }.
  *
@@ -199,7 +254,11 @@ export async function ingresar(env, nombreUsuario, clave, opciones = {}) {
 
   if (cuenta.bloqueado_hasta && new Date(cuenta.bloqueado_hasta) > new Date()) {
     const faltan = Math.ceil((new Date(cuenta.bloqueado_hasta) - new Date()) / 60000);
-    return { error: `Cuenta bloqueada por intentos fallidos. Reintente en ${faltan} minuto${faltan > 1 ? 's' : ''}.`, status: 429 };
+    return {
+      error: `Cuenta bloqueada por intentos fallidos. Reintente en ${faltan} minuto${faltan > 1 ? 's' : ''}.`
+             + await aQuienPedirle(env, tabla),
+      status: 429,
+    };
   }
 
   if (!(await claveCorrecta(clave, cuenta.clave))) {
@@ -211,7 +270,11 @@ export async function ingresar(env, nombreUsuario, clave, opciones = {}) {
     }
     await actualizar(env, `${tabla}?usuario=eq.${encodeURIComponent(u)}`, campos);
     if (campos.bloqueado_hasta) {
-      return { error: `Demasiados intentos. Cuenta bloqueada por ${BLOQUEO_MINUTOS} minutos.`, status: 429 };
+      return {
+        error: `Demasiados intentos. Cuenta bloqueada por ${BLOQUEO_MINUTOS} minutos.`
+               + await aQuienPedirle(env, tabla),
+        status: 429,
+      };
     }
     return generico;
   }

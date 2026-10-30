@@ -27,7 +27,13 @@ la cuenta siga con ella, el sistema **no deja hacer nada más que cambiarla**.
 
 **Quién la cambia:** cada uno la suya, desde el panel. Hay que saber la actual.
 
-**Si se pierde:** hoy no hay botón. Es la salida de emergencia del punto 9.
+**Si se pierde:** desde el 29-10-2026, **gerencia la restablece** en el panel,
+en Sistema → Usuarios → Editar → «Restablecer la contraseña». Sale una temporal
+que se muestra **una sola vez** en pantalla y que esa persona tiene que cambiar
+al entrar. Ahí mismo se desbloquea una cuenta que se pasó de intentos.
+
+Si quien no puede entrar es la propia gerencia, es la salida de emergencia del
+punto 9.
 
 ---
 
@@ -54,6 +60,15 @@ entrada por el que todavía no llega.
 «Clave al RUT». Ahí mismo se desbloquea una cuenta que se pasó de intentos.
 
 La tabla de Trabajadores muestra quién sigue andando con el RUT sin cambiar.
+Desde el 29-10-2026 las mismas dos acciones están además en Sistema → Usuarios,
+que junta las cuentas de la oficina y las de los guardias en una sola pantalla.
+
+**El bloqueo dura 5 minutos**, no 15 (se bajó el 29-10-2026 por un reporte de
+Joaquín: el guardia que cambia su clave, no la guarda en el llavero del teléfono
+y la olvida a la semana siguiente es el caso real, y no es un ataque). Y el
+aviso de la pantalla **dice por nombre a quién pedirle que se la devuelva**, con
+el teléfono de la oficina, que sale de `datos_empresa.telefono_oficina` y se
+edita en Documentos → Datos de la empresa.
 
 ---
 
@@ -166,9 +181,30 @@ guarda la derivación, y un texto suelto deja la cuenta sin poder entrar.
 el panel, en Trabajadores. Esta salida es para cuando no se puede entrar ni
 siquiera al panel.
 
+**Desde el 29-10-2026 hay además un camino sin consola**, que es el que sirve
+cuando no se tiene el computador con el repositorio a mano. Todo desde el SQL
+Editor de Supabase, copiando y pegando una línea:
+
+```sql
+select desbloquear_cuenta('jgarridoh');              -- solo estaba bloqueada
+select restablecer_clave('jgarridoh', 'Temporal2026'); -- olvidó la contraseña
+select restablecer_clave_al_rut('pgonzalezm');        -- un guardia, de vuelta a su RUT
+```
+
+Sirven igual para las dos clases de cuenta y dejan la cuenta obligada a cambiar
+la clave al entrar. **Escriben la derivación en el mismo formato que el Worker
+verifica** —comprobado contra `claveCorrecta` de `src/sesion.js`, byte a byte—,
+que es lo que un `update` a mano no puede hacer.
+
+Los pasos completos, con lo que se mira antes y después, están en
+`supabase/USUARIOS-DESDE-SUPABASE.md`. Ahí se explica también **por qué
+Authentication → Users de Supabase está vacío y va a seguir estándolo**: el
+ingreso de este sistema es propio y la lista de verdad es la vista `v_cuentas`,
+que se abre en Table Editor como cualquier tabla.
+
 **Para ver cómo está cada cuenta** sin tocar nada —quién sigue con la clave
-inicial, quién está bloqueado, quién no ha entrado nunca— se pega
-`supabase/revisar-claves.sql` en el SQL Editor.
+inicial, quién está bloqueado, quién no ha entrado nunca— están esa vista
+`v_cuentas` y, desde antes, `supabase/revisar-claves.sql` en el SQL Editor.
 
 ---
 
@@ -177,7 +213,10 @@ inicial, quién está bloqueado, quién no ha entrado nunca— se pega
 - [ ] **Cambiar la clave `123321`** en las cuentas de oficina que todavía no la
       hayan cambiado: quedó escrita en el historial del chat. La consulta de
       arriba dice cuáles son.
-- [ ] Decidir si la oficina necesita un botón para restablecer la contraseña de
-      otra cuenta de oficina. Hoy no existe, y por eso el único camino es el
-      punto 9. Lo razonable es que lo pueda hacer gerencia, quedando anotado en
-      la bitácora.
+- [x] **Botón para restablecer la contraseña de otra cuenta de oficina**
+      (29-10-2026): lo hace gerencia en Sistema → Usuarios, y queda en la
+      bitácora. La contraseña temporal **no** entra a la bitácora: ahí quedaría
+      escrita en claro.
+- [ ] Confirmar el **teléfono de la oficina** que se le muestra al guardia
+      cuando su cuenta queda bloqueada. Hoy está el público (+56 9 8988 7614) y
+      marcado como por confirmar, en Documentos → Datos de la empresa.
