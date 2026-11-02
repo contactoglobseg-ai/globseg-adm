@@ -33,14 +33,35 @@ export const FALTA_MIGRACION =
 
 export const CLASES = {
   libro_asistencia:     'Libro de asistencia',
+  cotizaciones_pagadas: 'Certificado de cotizaciones pagadas',
   libro_remuneraciones: 'Libro de remuneraciones',
   liquidaciones:        'Liquidaciones',
   f30:                  'F30 · Certificado de antecedentes laborales y previsionales',
   f30_1:                'F30-1 · Certificado de cumplimiento de obligaciones',
+  deuda_fiscal:         'Certificado de deuda fiscal · Tesorería',
   previred:             'Planilla Previred',
   factura:              'Factura',
   otro:                 'Otro documento',
 };
+
+/**
+ * Los siete papeles que el mandante exige, en el orden en que se arma la
+ * carpeta. Lo que falta sale **nombrado**: «faltan 2 documentos» deja a la
+ * oficina adivinando cuáles.
+ */
+export const EXIGIDOS = ['libro_asistencia', 'cotizaciones_pagadas', 'libro_remuneraciones',
+                         'liquidaciones', 'f30', 'f30_1', 'deuda_fiscal'];
+
+/**
+ * Las dos clases que agrega la migración del 02-11-2026. Si no se pegó, la
+ * base rechaza el `insert` con su restricción y el mensaje sale en inglés
+ * hablando de un check constraint: acá se cambia por el nombre del archivo que
+ * hay que pegar, que es lo único que se puede hacer al respecto.
+ */
+const CLASES_NUEVAS = ['cotizaciones_pagadas', 'deuda_fiscal'];
+export const FALTA_MIGRACION_CLASES =
+  'Falta aplicar la migración supabase/migrations/20261102140000_carpeta_completa.sql, '
+  + 'que es la que agrega este papel a la carpeta.';
 
 export const ESTADOS = ['armando', 'enviado', 'aprobado', 'pagado'];
 
@@ -79,7 +100,7 @@ export async function tablasListas(env) {
  */
 export async function dotacion(env, { mes, instalacion_id }) {
   const trabajadores = await buscar(env,
-    'trabajadores?select=id,nombre,rut,instalacion_id,banco,cuenta_tipo,cuenta_numero,correo,'
+    'trabajadores?select=id,nombre,rut,instalacion_id,banco,cuenta_tipo,cuenta_numero,email,'
     + 'afp,salud_sistema,salud_isapre,salud_plan_uf,jubilado,apv_monto,activo'
     + '&activo=is.true&order=nombre.asc');
   const dentro = instalacion_id
@@ -194,7 +215,7 @@ export async function listarMes(env, { mes, instalacion_id }) {
   const inst = entero(instalacion_id);
   if (inst) filtros.push(`instalacion_id=eq.${inst}`);
   const filas = await buscar(env,
-    `remuneraciones_mes?select=*,trabajadores(nombre,rut,banco,cuenta_tipo,cuenta_numero,correo)`
+    `remuneraciones_mes?select=*,trabajadores(nombre,rut,banco,cuenta_tipo,cuenta_numero,email)`
     + `&${filtros.join('&')}&order=id.asc`);
   const lista = filas.map((f) => ({
     ...f,
@@ -204,7 +225,7 @@ export async function listarMes(env, { mes, instalacion_id }) {
     banco: f.trabajadores?.banco ?? null,
     cuenta_tipo: f.trabajadores?.cuenta_tipo ?? null,
     cuenta_numero: f.trabajadores?.cuenta_numero ?? null,
-    correo: f.trabajadores?.correo ?? null,
+    correo: f.trabajadores?.email ?? null,
     trabajadores: undefined,
   }));
   const suma = (k) => lista.reduce((a, f) => a + Number(f[k] || 0), 0);
@@ -482,23 +503,44 @@ export async function editarEstado(env, quien, id, cuerpo) {
   return { ok: true, estado: fila?.[0] || null };
 }
 
-/** La carpeta completa: los papeles que hay y los que faltan. */
+/**
+ * La carpeta completa: los papeles que hay, los que faltan, y **quiénes tienen
+ * que aparecer adentro**.
+ *
+ * Esa lista de personas es lo que se pedía para el F30 y el F30-1: el
+ * certificado se pide por instalación y hay que saber a quién nombrar. Sale de
+ * las liquidaciones del mes si el mes ya se calculó —ahí la instalación está
+ * congelada, que es la que vale— y de la ficha si todavía no. Se dice de
+ * dónde salió, porque no es lo mismo: la ficha dice dónde trabaja hoy, la
+ * liquidación dice dónde trabajó ese mes.
+ *
+ * Va con nombre y RUT y **sin un peso adentro**, para que la pueda ver también
+ * quien entró por la puerta de cobranza: armar la carpeta es su trabajo.
+ */
 export async function detalleEstado(env, id) {
   const e = await primero(env, `v_estados_pago?select=*&id=eq.${id}`);
   if (!e) return { error: 'Ese estado de pago no está en el registro', status: 404 };
-  const [archivos, mes] = await Promise.all([
+  const [archivos, mes, dot] = await Promise.all([
     buscar(env, `estado_pago_archivos?select=*&estado_pago_id=eq.${id}&order=subido_en.desc`),
     listarMes(env, { mes: e.mes, instalacion_id: e.instalacion_id }),
+    dotacion(env, { mes: e.mes, instalacion_id: e.instalacion_id }).catch(() => null),
   ]);
-  // Los cinco papeles que el mandante exige. Lo que falta sale nombrado, no
-  // contado: «faltan 2 documentos» deja a la oficina adivinando cuáles.
-  const exigidos = ['libro_asistencia', 'libro_remuneraciones', 'liquidaciones', 'f30', 'f30_1'];
-  const faltan = exigidos.filter((c) => !archivos.some((a) => a.clase === c))
+  const faltan = EXIGIDOS.filter((c) => !archivos.some((a) => a.clase === c))
     .map((c) => ({ clase: c, nombre: CLASES[c] }));
+
+  const personas = mes.remuneraciones.length
+    ? mes.remuneraciones.map((r) => ({
+        trabajador_id: r.trabajador_id, nombre: r.trabajador, rut: r.rut }))
+    : (dot?.trabajadores || []).map((t) => ({
+        trabajador_id: t.id, nombre: t.nombre, rut: t.rut ? formatearRut(t.rut) : null }));
+
   return {
     estado: e,
     archivos: archivos.map((a) => ({ ...a, clase_nombre: CLASES[a.clase] || a.clase })),
+    exigidos: EXIGIDOS.map((c) => ({ clase: c, nombre: CLASES[c] })),
     faltan,
+    personas,
+    personas_origen: mes.remuneraciones.length ? 'mes' : 'ficha',
     remuneraciones: mes.remuneraciones,
     totales: mes.totales,
   };
@@ -506,16 +548,29 @@ export async function detalleEstado(env, id) {
 
 export async function registrarArchivo(env, quien, estadoPagoId, datos) {
   if (!CLASES[datos.clase]) return { error: 'Esa clase de documento no existe', status: 400 };
-  const creado = await insertar(env, 'estado_pago_archivos', {
-    estado_pago_id: estadoPagoId,
-    clase: datos.clase,
-    nombre: limpio(datos.nombre) || CLASES[datos.clase],
-    archivo_ruta: datos.archivo_ruta ?? null,
-    archivo_tipo: datos.archivo_tipo ?? null,
-    archivo_bytes: datos.archivo_bytes ?? null,
-    nota: limpio(datos.nota),
-    subido_por: quien,
-  });
+  let creado;
+  try {
+    creado = await insertar(env, 'estado_pago_archivos', {
+      estado_pago_id: estadoPagoId,
+      clase: datos.clase,
+      nombre: limpio(datos.nombre) || CLASES[datos.clase],
+      archivo_ruta: datos.archivo_ruta ?? null,
+      archivo_tipo: datos.archivo_tipo ?? null,
+      archivo_bytes: datos.archivo_bytes ?? null,
+      nota: limpio(datos.nota),
+      subido_por: quien,
+    });
+  } catch (err) {
+    // 23514 es la restricción de `clase`. Si el papel es de los dos que agrega
+    // la migración nueva, lo que falta es pegarla, y eso se dice con el nombre
+    // del archivo en vez de repetir el error de Postgres.
+    const esCheck = err instanceof ErrorDatos
+      && (err.detalle?.code === '23514' || /check constraint/i.test(err.message || ''));
+    if (esCheck && CLASES_NUEVAS.includes(datos.clase)) {
+      return { error: FALTA_MIGRACION_CLASES, status: 503 };
+    }
+    throw err;
+  }
   await anotar(env, quien, 'estado_pago', estadoPagoId, 'agregó un documento',
     CLASES[datos.clase]);
   return { ok: true, archivo: creado?.[0] || null };

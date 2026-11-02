@@ -2449,7 +2449,11 @@ async function bajarLibroExcel(libro) {
     XLSX.utils.book_append_sheet(libroXL, hojaCorr, "Correcciones");
   }
 
-  XLSX.writeFile(libroXL, `asistencia ${libro.desde} a ${libro.hasta}.xlsx`);
+  const nombre = `asistencia ${libro.desde} a ${libro.hasta}.xlsx`;
+  // La carpeta del estado de pago no lo quiere descargado sino adentro suyo,
+  // así que puede pedir los bytes en vez del archivo en el computador.
+  if (comoBytes) return { nombre, bytes: XLSX.write(libroXL, { bookType: "xlsx", type: "array" }) };
+  XLSX.writeFile(libroXL, nombre);
 }
 
 /** Pone el formato de una celda suelta, si existe. */
@@ -2579,8 +2583,59 @@ async function pintarEstadosPago() {
   if (pagosEstado.abierto) await pintarCarpeta(pagosEstado.abierto);
 }
 
-/** La carpeta de una instalación y un mes: qué papel hay, cuál falta, y los
- *  botones que generan los tres que salen del propio sistema. */
+/*
+ * Los siete papeles de la carpeta, y qué se puede hacer con cada uno.
+ *
+ * Tres los arma el propio sistema con lo que ya tiene. Cuatro llegan de
+ * afuera, y de esos **tres llegan como el archivo de la empresa entera** —el
+ * certificado de cotizaciones de Previred, el libro de remuneraciones y las
+ * liquidaciones que emite el ERP—: lo que esta pantalla hace con ellos es
+ * dejar adentro solo a la gente de esta instalación, que es el trámite que se
+ * hacía a mano. El F30 y el certificado de la Tesorería son de la empresa
+ * entera y no tienen nada que recortar: se suben tal como vinieron.
+ */
+const PAPELES = {
+  libro_asistencia: {
+    sub: "Las jornadas que marcaron los guardias en esta instalación, ese mes.",
+    generar: "Armar desde las marcas",
+  },
+  cotizaciones_pagadas: {
+    sub: "El de Previred: es lo que prueba que las imposiciones del mes se pagaron.",
+    recortar: true,
+  },
+  libro_remuneraciones: {
+    sub: "Una fila por persona con haberes, descuentos y líquido (art. 62 del Código del Trabajo).",
+    generar: "Armar con lo calculado", recortar: true, sueldos: true,
+  },
+  liquidaciones: {
+    sub: "Una liquidación por persona, una por página.",
+    generar: "Armar con lo calculado", recortar: true, sueldos: true,
+  },
+  f30: {
+    sub: "Lo emite la Dirección del Trabajo y es de la empresa entera: no hay qué recortarle.",
+  },
+  f30_1: {
+    sub: "Se pide en dt.cl con un archivo de Previred. Más abajo está el repartidor.",
+    recortar: true,
+  },
+  deuda_fiscal: {
+    sub: "Certificado de deuda fiscal de la Tesorería General de la República.",
+  },
+};
+
+/** El cuerpo del RUT, sin puntos, sin guion y sin dígito verificador. Es con lo
+ *  que se busca a una persona adentro de un Excel o de un PDF ajeno. */
+const cuerpoDeRut = v =>
+  String(v ?? "").replace(/[^0-9kK]/g, "").toUpperCase().slice(0, -1);
+
+/**
+ * La carpeta de una instalación y un mes: una fila por papel, con lo que hay
+ * cargado y los botones que lo consiguen.
+ *
+ * Antes era una lista plana de archivos y tres botones sueltos arriba: para
+ * saber si faltaba el F30-1 había que leer la tabla entera y acordarse de los
+ * cinco nombres.
+ */
 async function pintarCarpeta(id) {
   pagosEstado.abierto = id;
   const caja = $("#ep-detalle");
@@ -2594,6 +2649,47 @@ async function pintarCarpeta(id) {
   pagosEstado.detalle = d;
   const e = d.estado;
   const conSueldos = !d.sin_sueldos;
+  const exigidos = d.exigidos || [];
+  const personas = d.personas || [];
+
+  // Un papel puede tener más de un archivo: las liquidaciones de un mes pueden
+  // llegar en dos tandas. Se muestran todos.
+  const deClase = clase => d.archivos.filter(a => a.clase === clase);
+  const otros = d.archivos.filter(a => !exigidos.some(x => x.clase === a.clase));
+
+  const archivoHTML = a => `<div style="display:flex;flex-wrap:wrap;gap:4px 8px;
+    align-items:center;margin-bottom:8px">
+    <span style="flex:1 1 150px">${esc(a.nombre)}<span class="sub">${
+      esc(fecha(String(a.subido_en).slice(0, 10)))} · ${esc(a.subido_por || "—")}${
+      a.nota ? ` · ${esc(a.nota)}` : ""}</span></span>
+    ${a.archivo_ruta ? `<a class="bt bt--chico bt--fino"
+      href="/api/pagos/estados/${id}/archivo/${a.id}" target="_blank" rel="noopener">Abrir</a>` : ""}
+    <button class="bt bt--chico bt--fino" data-quitar="${a.id}">Quitar</button></div>`;
+
+  const filaPapel = ({ clase, nombre }) => {
+    const p = PAPELES[clase] || {};
+    const hay = deClase(clase);
+    const cerrado = p.sueldos && !conSueldos;
+    return `<tr>
+      <td><b>${esc(nombre)}</b><span class="sub">${esc(p.sub || "")}</span></td>
+      <td>${hay.length ? hay.map(archivoHTML).join("")
+        : `<span class="sello e-solicitar_oc">Falta</span>`}</td>
+      <td style="white-space:normal"><div style="display:flex;flex-wrap:wrap;gap:6px;
+        align-items:center">
+        ${p.generar && !cerrado
+          ? `<button class="bt bt--chico" data-generar="${clase}">${esc(p.generar)}</button>` : ""}
+        ${p.recortar && !cerrado
+          ? `<label class="bt bt--chico bt--fino">Subir el de la empresa y recortar
+               <input type="file" data-recortar="${clase}" accept=".xlsx,.xls,application/pdf" hidden></label>` : ""}
+        <label class="bt bt--chico bt--fino">Subir
+          <input type="file" data-subir="${clase}" hidden></label>
+        ${cerrado ? `<span class="sub">Lleva sueldos adentro: pide el módulo de
+          recursos humanos.</span>` : ""}</div>
+        <div id="ep-salida-${clase}">${
+          pagosEstado.recorte?.clase === clase && pagosEstado.recorte.estado === id
+            ? pagosEstado.recorte.html : ""}</div>
+      </td></tr>`;
+  };
 
   caja.innerHTML = `<section class="caja">
     <div class="caja__tit">
@@ -2619,33 +2715,50 @@ async function pintarCarpeta(id) {
       d.faltan.map(f => f.nombre.split(" · ")[0]).join(" · ")) : ``}
 
     <h3>Los papeles</h3>
-    <div class="pie-form">
-      <button class="bt" id="ep-asis">Libro de asistencia (Excel)</button>
-      <button class="bt" id="ep-remu" ${conSueldos ? "" : "disabled"}>Libro de remuneraciones (Excel)</button>
-      <button class="bt" id="ep-liq" ${conSueldos ? "" : "disabled"}>Liquidaciones (PDF)</button>
-      <label class="bt bt--fino">Subir F30 (PDF)
-        <input type="file" id="ep-f30" accept="application/pdf" hidden></label>
-      <label class="bt bt--fino">Subir otro documento
-        <input type="file" id="ep-otro" hidden></label>
-    </div>
-    ${conSueldos ? `` : `<p class="sub" style="padding:0 16px 12px">El libro de
-      remuneraciones y las liquidaciones llevan sueldos adentro y piden el módulo de
-      recursos humanos.</p>`}
+    <div class="desliza"><table style="min-width:900px"><thead><tr>
+      <th>Documento</th><th>Qué hay cargado</th><th>Cómo se consigue</th>
+      </tr></thead><tbody>
+      ${exigidos.map(filaPapel).join("")}
+      </tbody></table></div>
+
+    ${personas.length ? `<h3>Quiénes van adentro</h3>
+      <p class="sub" style="padding:0 16px 8px">${personas.length}
+        ${personas.length === 1 ? "persona" : "personas"} en esta instalación. Es la lista que
+        tiene que aparecer en el F30-1, y es con la que se recortan los archivos de la empresa.
+        ${d.personas_origen === "mes"
+          ? "Sale de las liquidaciones de este mes, donde la instalación quedó congelada."
+          : "Sale de la ficha de cada uno, porque el mes todavía no se calcula: dice dónde "
+            + "trabajan hoy, no dónde trabajaron ese mes."}</p>
+      <div class="desliza"><table style="min-width:520px"><thead><tr>
+        <th>Nombre</th><th>RUT</th></tr></thead><tbody>
+        ${personas.map(t => `<tr><td>${esc(t.nombre)}</td>
+          <td class="nowrap">${esc(t.rut || "—")}</td></tr>`).join("")}
+        </tbody></table></div>
+      <div class="pie-form"><button class="bt bt--fino" id="ep-lista">Bajar la lista (Excel)</button></div>`
+      : aviso("ojo", "Esta instalación no tiene a nadie asignado",
+          "Sin gente asignada en la ficha no se puede recortar ningún archivo por instalación "
+          + "ni decir quién va en el F30-1. Se arregla en Personas → Fichas.")}
 
     <div class="ep-f301">
-      <h3>F30-1 · repartir el archivo de Previred por instalación</h3>
-      <p class="sub" style="padding:0 16px 12px">El certificado se pide en dt.cl con un archivo que genera Previred.
-        Suba acá ese Excel y el sistema arma uno por instalación, con las mismas columnas y
-        solo las filas de la gente de cada una. Quien no tenga instalación asignada en su
-        ficha queda aparte y se dice quién es.</p>
+      <h3>F30-1 · repartir el archivo de Previred entre todas las instalaciones</h3>
+      <p class="sub" style="padding:0 16px 12px">Lo de arriba recorta un archivo y lo deja en
+        <b>esta</b> carpeta. Esto otro es para cuando se quiere el reparto completo: suba el Excel
+        de Previred y el sistema baja uno por instalación, con las mismas columnas y solo las
+        filas de la gente de cada una. Quien no tenga instalación asignada en su ficha queda
+        aparte y se dice quién es.</p>
       <label class="bt bt--fino">Subir el Excel de Previred
         <input type="file" id="ep-previred" accept=".xlsx,.xls" hidden></label>
       <div id="ep-previred-salida"></div>
     </div>
 
-    ${d.archivos.length ? `<div class="desliza"><table style="min-width:720px"><thead><tr>
+    <h3>Otros documentos</h3>
+    <div class="pie-form">
+      <label class="bt bt--fino">Subir otro documento
+        <input type="file" id="ep-otro" hidden></label>
+    </div>
+    ${otros.length ? `<div class="desliza"><table style="min-width:720px"><thead><tr>
       <th>Documento</th><th>Nombre</th><th>Cuándo</th><th>Quién</th><th></th></tr></thead><tbody>
-      ${d.archivos.map(a => `<tr><td>${esc(a.clase_nombre)}</td>
+      ${otros.map(a => `<tr><td>${esc(a.clase_nombre)}</td>
         <td>${esc(a.nombre)}${a.nota ? `<span class="sub">${esc(a.nota)}</span>` : ""}</td>
         <td class="nowrap">${esc(fecha(String(a.subido_en).slice(0, 10)))}</td>
         <td>${esc(a.subido_por || "—")}</td>
@@ -2654,7 +2767,7 @@ async function pintarCarpeta(id) {
             href="/api/pagos/estados/${id}/archivo/${a.id}" target="_blank" rel="noopener">Abrir</a>` : ""}
           <button class="bt bt--chico bt--fino" data-quitar="${a.id}">Quitar</button>
         </td></tr>`).join("")}
-      </tbody></table></div>` : `<p class="vacio">Todavía no hay documentos cargados.</p>`}
+      </tbody></table></div>` : `<p class="vacio">Nada más por ahora.</p>`}
   </section>
   ${conSueldos ? `<div id="ep-remuneraciones"></div>` : ``}`;
 
@@ -2667,12 +2780,17 @@ async function pintarCarpeta(id) {
     } catch (err) { recado(err.message, "mal"); }
   };
 
-  $("#ep-asis").onclick = () => conPaciencia($("#ep-asis"), () => bajarAsistenciaDeLaCarpeta(e));
-  if (conSueldos) {
-    $("#ep-remu").onclick = () => conPaciencia($("#ep-remu"), () => bajarLibroRemuneraciones(e));
-    $("#ep-liq").onclick = () => conPaciencia($("#ep-liq"), () => bajarLiquidaciones(e));
-  }
-  $("#ep-f30").onchange = ev => subirALaCarpeta(id, ev.target.files[0], "f30");
+  caja.querySelectorAll("[data-generar]").forEach(b => {
+    b.onclick = () => conPaciencia(b, () => armarYAdjuntar(id, b.dataset.generar, e));
+  });
+  caja.querySelectorAll("[data-subir]").forEach(i => {
+    i.onchange = ev => subirALaCarpeta(id, ev.target.files[0], i.dataset.subir);
+  });
+  caja.querySelectorAll("[data-recortar]").forEach(i => {
+    i.onchange = ev => recortarYAdjuntar(id, ev.target.files[0], i.dataset.recortar);
+  });
+  const lista = $("#ep-lista");
+  if (lista) lista.onclick = () => conPaciencia(lista, () => bajarListaDePersonas(e, personas));
   $("#ep-otro").onchange = ev => subirALaCarpeta(id, ev.target.files[0], "otro");
   $("#ep-previred").onchange = ev => repartirF301(id, ev.target.files[0]);
   caja.querySelectorAll("[data-quitar]").forEach(b => {
@@ -2699,6 +2817,40 @@ async function conPaciencia(boton, trabajo) {
   finally { boton.disabled = false; boton.textContent = antes; }
 }
 
+/**
+ * Arma uno de los papeles que salen del propio sistema y lo deja **dentro de
+ * la carpeta**, no en la carpeta de descargas del computador.
+ *
+ * Que quede adentro es lo que hace que la carpeta pueda decir qué falta: un
+ * archivo bajado al escritorio no lo sabe nadie.
+ */
+async function armarYAdjuntar(id, clase, e) {
+  const salida = $(`#ep-salida-${clase}`);
+  if (salida) salida.innerHTML = `<p class="cargando">Armando el archivo…</p>`;
+  let hecho;
+  if (clase === "libro_asistencia")          hecho = await armarAsistencia(e, true);
+  else if (clase === "libro_remuneraciones") hecho = await bajarLibroRemuneraciones(e, true);
+  else if (clase === "liquidaciones")        hecho = await bajarLiquidaciones(e, true);
+  else throw new Error("Ese papel no lo arma el sistema.");
+  await subirBytes(id, clase, hecho.nombre, hecho.bytes, hecho.nota);
+  pagosEstado.recorte = null;
+  recado("Quedó en la carpeta");
+  await pintarEstadosPago();
+}
+
+/** La lista de quiénes van en la carpeta, para el trámite del F30-1. */
+async function bajarListaDePersonas(e, personas) {
+  await cargarScript(SHEETJS, "el generador de Excel");
+  const XLSX = window.XLSX;
+  const libro = XLSX.utils.book_new();
+  const hoja = XLSX.utils.json_to_sheet(personas.map(t => ({
+    Nombre: t.nombre, RUT: t.rut || "" })));
+  hoja["!cols"] = [{ wch: 32 }, { wch: 14 }];
+  XLSX.utils.book_append_sheet(libro, hoja, "Trabajadores");
+  XLSX.writeFile(libro, `trabajadores ${e.instalacion} ${e.mes}.xlsx`);
+}
+
+/** Sube un archivo tal como vino, sin tocarlo. */
 async function subirALaCarpeta(id, archivo, clase) {
   if (!archivo) return;
   try {
@@ -2709,21 +2861,257 @@ async function subirALaCarpeta(id, archivo, clase) {
     });
     const datos = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(datos.error || `La subida falló (${r.status})`);
+    pagosEstado.recorte = null;
     recado("Documento cargado");
-    await pintarCarpeta(id);
+    await pintarEstadosPago();
   } catch (e) { recado(e.message, "mal"); }
+}
+
+/** Lo mismo, con bytes armados acá en vez de un archivo elegido por alguien. */
+async function subirBytes(id, clase, nombre, bytes, nota) {
+  const r = await fetch(`/api/pagos/estados/${id}/archivo?clase=${clase}`, {
+    method: "POST",
+    headers: {
+      "x-archivo-nombre": encodeURIComponent(nombre),
+      ...(nota ? { "x-archivo-nota": encodeURIComponent(nota) } : {}),
+    },
+    body: new Blob([bytes]),
+  });
+  const datos = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(datos.error || `La subida falló (${r.status})`);
+  return datos;
+}
+
+/**
+ * Llega el archivo de la empresa entera y queda en la carpeta solo la parte de
+ * esta instalación.
+ *
+ * Es el trámite que se pedía: el libro de remuneraciones, las liquidaciones y
+ * el certificado de cotizaciones salen del ERP o de Previred con toda la
+ * empresa adentro, y el mandante de un parque no tiene por qué recibir —ni
+ * tiene derecho a ver— el sueldo de la gente de otro.
+ *
+ * **Lo que no calza se dice, no se descarta en silencio.** Una fila que
+ * desaparece sin aviso es una persona que el mandante va a echar de menos, y
+ * una persona de la instalación que no estaba en el archivo es, casi siempre,
+ * un sueldo que no se pagó o un RUT mal escrito.
+ */
+async function recortarYAdjuntar(id, archivo, clase) {
+  if (!archivo) return;
+  const salida = $(`#ep-salida-${clase}`);
+  const e = pagosEstado.detalle?.estado;
+  const personas = (pagosEstado.detalle?.personas || []).filter(p => cuerpoDeRut(p.rut));
+  if (!personas.length) {
+    salida.innerHTML = aviso("ojo", "No hay a quién buscar adentro",
+      "Esta instalación no tiene gente asignada con RUT, así que no se puede saber qué filas "
+      + "son suyas. Se arregla en Personas → Fichas.");
+    return;
+  }
+  salida.innerHTML = `<p class="cargando">Leyendo el archivo…</p>`;
+  try {
+    const esPdf = /\.pdf$/i.test(archivo.name) || archivo.type === "application/pdf";
+    const esExcel = /\.(xlsx|xlsm|xls)$/i.test(archivo.name);
+    if (!esPdf && !esExcel) {
+      throw new Error("Ese archivo no es ni un Excel ni un PDF, que son los dos que se "
+        + "pueden recortar. Si igual tiene que ir en la carpeta, súbalo con «Subir».");
+    }
+    const buf = await archivo.arrayBuffer();
+    const r = esPdf ? await recortePdf(buf, personas) : await recorteExcel(buf, personas);
+
+    const corto = (CLASES_CARPETA[clase] || clase).split(" · ")[0];
+    const nombre = `${corto} ${e.instalacion} ${e.mes}.${r.ext}`;
+    const nota = `Recortado de «${archivo.name}»: ${r.incluidos.length} de ${personas.length} `
+      + `${personas.length === 1 ? "persona" : "personas"} de la instalación.`;
+    await subirBytes(id, clase, nombre, r.bytes, nota);
+
+    pagosEstado.recorte = { clase, estado: id, html: `
+      ${aviso("bien", `Quedó en la carpeta con ${r.incluidos.length}
+        ${r.incluidos.length === 1 ? "persona" : "personas"}`, r.resumen)}
+      ${r.faltantes.length ? aviso("ojo",
+        `${r.faltantes.length} ${r.faltantes.length === 1 ? "persona" : "personas"} de esta `
+        + `instalación no ${r.faltantes.length === 1 ? "estaba" : "estaban"} en ese archivo`,
+        r.faltantes.map(t => t.nombre).join(", ")
+        + ". Conviene mirar si es un RUT mal escrito o un sueldo que no se pagó.") : ""}` };
+    recado("Recortado y guardado en la carpeta");
+    await pintarEstadosPago();
+  } catch (err) {
+    salida.innerHTML = aviso("ojo", "No se pudo recortar ese archivo", err.message);
+  }
+}
+
+/** Los nombres de los papeles, para armar el nombre del archivo recortado. */
+const CLASES_CARPETA = {
+  libro_asistencia: "Libro de asistencia",
+  cotizaciones_pagadas: "Certificado de cotizaciones pagadas",
+  libro_remuneraciones: "Libro de remuneraciones",
+  liquidaciones: "Liquidaciones",
+  f30: "F30",
+  f30_1: "F30-1",
+  deuda_fiscal: "Certificado de deuda fiscal",
+};
+
+/**
+ * Recorta un Excel: se conservan las filas de encabezado tal como vienen y se
+ * copian las celdas sin tocarlas, igual que en el repartidor del F30-1.
+ */
+async function recorteExcel(buf, personas) {
+  await cargarScript(SHEETJS, "el generador de Excel");
+  const XLSX = window.XLSX;
+  if (!XLSX) throw new Error("No se pudo cargar el generador de Excel.");
+  const libro = XLSX.read(buf, { cellDates: true });
+  const nombreHoja = libro.SheetNames[0];
+  const filas = XLSX.utils.sheet_to_json(libro.Sheets[nombreHoja],
+    { header: 1, defval: "", raw: true });
+  if (!filas.length) throw new Error("Ese archivo no tiene filas.");
+
+  // La fila de encabezados es la primera que nombre el RUT: Previred y el ERP
+  // cambian el título de arriba según el informe, así que buscarla es más
+  // seguro que suponer que es la primera.
+  const esRut = v => /^\s*(rut|run)\b/i.test(String(v ?? ""));
+  let fCab = filas.findIndex(f => f.some(esRut));
+  if (fCab < 0) fCab = 0;
+  const cRut = filas[fCab].findIndex(esRut);
+  if (cRut < 0) {
+    throw new Error("No se encontró la columna del RUT en la primera hoja de ese archivo. "
+      + "Tiene que haber una columna que se llame «RUT» o «RUN».");
+  }
+
+  const quiero = new Map(personas.map(p => [cuerpoDeRut(p.rut), p]));
+  const encabezado = filas.slice(0, fCab + 1);
+  const cuerpo = [];
+  const vistos = new Set();
+  let ajenas = 0;
+  for (const fila of filas.slice(fCab + 1)) {
+    if (!String(fila[cRut] ?? "").trim()) continue;
+    const c = cuerpoDeRut(fila[cRut]);
+    if (quiero.has(c)) { cuerpo.push(fila); vistos.add(c); } else ajenas++;
+  }
+  if (!cuerpo.length) {
+    throw new Error("Ninguna fila de ese archivo es de alguien de esta instalación. "
+      + "Puede ser el archivo de otro mes, o que los RUT de las fichas no calcen.");
+  }
+
+  const nuevo = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(nuevo,
+    XLSX.utils.aoa_to_sheet([...encabezado, ...cuerpo]), (nombreHoja || "Hoja1").slice(0, 28));
+
+  return {
+    bytes: XLSX.write(nuevo, { bookType: "xlsx", type: "array" }),
+    ext: "xlsx",
+    incluidos: [...vistos].map(c => quiero.get(c)),
+    faltantes: personas.filter(p => !vistos.has(cuerpoDeRut(p.rut))),
+    resumen: `${cuerpo.length === 1 ? "Quedó una fila" : `Quedaron ${cuerpo.length} filas`}`
+      + ` del archivo.`
+      + (ajenas ? ` ${ajenas === 1 ? "Una fila era de otra instalación"
+                                   : `${ajenas} filas eran de otras instalaciones`}.` : ""),
+  };
+}
+
+/** pdf.js, servido desde el propio dominio.
+ *
+ *  Va copiado adentro y no enlazado desde cdnjs porque su worker se crea con
+ *  `new Worker(url)` y un worker de otro origen no se puede crear: lo prohíbe
+ *  el navegador antes que la CSP. pdf.js tiene un camino de respaldo para ese
+ *  caso, y es exactamente la clase de respaldo que falla distinto en cada
+ *  navegador. Son 1,4 MB que **solo se bajan cuando alguien recorta un PDF**. */
+const PDFJS = "/pdfjs/pdf.min.js";
+const PDFLIB = "https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js";
+
+async function cargarPdfJs() {
+  await cargarScript(PDFJS, "el lector de PDF");
+  const lib = window.pdfjsLib;
+  if (!lib) throw new Error("No se pudo cargar el lector de PDF.");
+  lib.GlobalWorkerOptions.workerSrc = "/pdfjs/pdf.worker.min.js";
+  return lib;
+}
+
+/**
+ * Recorta un PDF: se leen los RUT de cada página y quedan las páginas de la
+ * gente de esta instalación.
+ *
+ * **Una página que no nombra a nadie se queda con el dueño de la anterior.**
+ * Una liquidación que no cabe en una hoja sigue en la siguiente, y esa segunda
+ * hoja no repite el RUT; dejarla fuera partiría el documento por la mitad. Las
+ * que van antes de la primera página con RUT —una carátula, un resumen— no son
+ * de nadie y quedan fuera, y se dice cuántas.
+ */
+async function recortePdf(buf, personas) {
+  const pdfjsLib = await cargarPdfJs();
+  await cargarScript(PDFLIB, "el armador de PDF");
+  if (!window.PDFLib) throw new Error("No se pudo cargar el armador de PDF.");
+
+  // pdf.js se queda con el buffer que recibe (se lo pasa a su worker y queda
+  // inservible acá), así que el armador trabaja sobre otra copia.
+  const paraArmar = buf.slice(0);
+  const doc = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
+
+  const quiero = new Map(personas.map(p => [cuerpoDeRut(p.rut), p]));
+  // Un RUT escrito como lo escribe cualquiera: con o sin puntos, con o sin
+  // guion, y con el dígito verificador a veces separado por el salto de línea
+  // que deja el lector. Buscar ocho dígitos sueltos en el texto plano calzaba
+  // con cualquier monto pegado a otro.
+  const RUT = /(\d{1,2}[.\s]?\d{3}[.\s]?\d{3})\s*-?\s*([0-9kK])\b/;
+
+  const dueno = new Array(doc.numPages).fill(null);
+  let ultimo = null, sinDueno = 0, ajenas = 0;
+  for (let i = 0; i < doc.numPages; i++) {
+    const pagina = await doc.getPage(i + 1);
+    const texto = (await pagina.getTextContent()).items.map(t => t.str).join(" ");
+    const ruts = [...texto.matchAll(new RegExp(RUT, "g"))]
+      .map(m => m[1].replace(/[^0-9]/g, ""));
+    const calce = ruts.find(c => quiero.has(c)) || null;
+    if (calce) { dueno[i] = calce; ultimo = calce; }
+    // Una página con el RUT de alguien que no es de esta instalación es la
+    // liquidación de otro: corta el arrastre, para que la hoja siguiente no
+    // quede colgando de la nuestra.
+    else if (ruts.length) { ultimo = null; ajenas++; }
+    else if (ultimo) { dueno[i] = ultimo; }
+    else { sinDueno++; }
+  }
+
+  const indices = [];
+  const vistos = new Set();
+  dueno.forEach((c, i) => { if (c) { indices.push(i); vistos.add(c); } });
+
+  if (!indices.length) {
+    throw new Error("Ninguna página de ese PDF nombra a alguien de esta instalación. "
+      + "Si es un certificado de la empresa entera —no lleva un RUT por persona— súbalo "
+      + "con «Subir», que es como va en la carpeta.");
+  }
+
+  const { PDFDocument } = window.PDFLib;
+  const origen = await PDFDocument.load(paraArmar, { ignoreEncryption: true });
+  const nuevo = await PDFDocument.create();
+  const hojas = await nuevo.copyPages(origen, indices);
+  hojas.forEach(h => nuevo.addPage(h));
+
+  return {
+    bytes: await nuevo.save(),
+    ext: "pdf",
+    incluidos: [...vistos].map(c => quiero.get(c)),
+    faltantes: personas.filter(p => !vistos.has(cuerpoDeRut(p.rut))),
+    resumen: `${indices.length === 1 ? "Quedó una página" : `Quedaron ${indices.length} páginas`}`
+      + ` de ${doc.numPages}.`
+      + (ajenas ? ` ${ajenas === 1 ? "Una página era de otra instalación"
+                                   : `${ajenas} páginas eran de otras instalaciones`}.` : "")
+      + (sinDueno ? ` ${sinDueno === 1 ? "Una página no nombraba"
+                                       : `${sinDueno} páginas no nombraban`} a nadie.` : ""),
+  };
 }
 
 /** El libro de asistencia de esa instalación y ese mes, con el mismo generador
  *  de Excel que usa la pestaña Asistencia: una sola forma de armar el libro. */
-async function bajarAsistenciaDeLaCarpeta(e) {
+async function armarAsistencia(e, comoBytes = false) {
   const fin = new Date(Number(e.mes.slice(0, 4)), Number(e.mes.slice(5, 7)), 0);
   const desde = `${e.mes}-01`;
   const hasta = `${e.mes}-${String(fin.getDate()).padStart(2, "0")}`;
   const libro = await pedir(
     `/libro?desde=${desde}&hasta=${hasta}&instalacion=${e.instalacion_id}`);
   if (!libro.jornadas?.length) throw new Error("No hay jornadas marcadas en ese mes y esa instalación.");
-  await bajarLibroExcel(libro);
+  const hecho = await bajarLibroExcel(libro, comoBytes);
+  if (!comoBytes) return;
+  return { ...hecho, nombre: `libro de asistencia ${e.instalacion} ${e.mes}.xlsx`,
+           nota: `${libro.jornadas.length} jornadas marcadas.` };
 }
 
 /**
@@ -2734,7 +3122,7 @@ async function bajarAsistenciaDeLaCarpeta(e) {
  * entrega al mandante tiene que decir lo mismo que la liquidación que firmó la
  * persona.
  */
-async function bajarLibroRemuneraciones(e) {
+async function bajarLibroRemuneraciones(e, comoBytes = false) {
   const d = await pedir(`/pagos/remuneraciones?mes=${e.mes}&instalacion=${e.instalacion_id}`);
   if (!d.remuneraciones.length) {
     throw new Error("Ese mes todavía no está calculado. Use «Calcular el mes» más abajo.");
@@ -2793,11 +3181,18 @@ async function bajarLibroRemuneraciones(e) {
   hoja["!autofilter"] = { ref: XLSX.utils.encode_range({
     s: { r: 0, c: 0 }, e: { r: filas.length, c: Object.keys(filas[0]).length - 1 } }) };
   XLSX.utils.book_append_sheet(libro, hoja, "Remuneraciones");
-  XLSX.writeFile(libro, `libro de remuneraciones ${e.instalacion} ${e.mes}.xlsx`);
+  const nombre = `libro de remuneraciones ${e.instalacion} ${e.mes}.xlsx`;
+  if (comoBytes) {
+    return { nombre, bytes: XLSX.write(libro, { bookType: "xlsx", type: "array" }),
+             nota: `${filas.length} ${filas.length === 1 ? "persona" : "personas"}`
+               + (filas.some(f => f.Estado === "Borrador")
+                  ? ". Hay liquidaciones en borrador: todavía se pueden corregir." : ".") };
+  }
+  XLSX.writeFile(libro, nombre);
 }
 
 /** Las liquidaciones de la instalación en un PDF, una por página. */
-async function bajarLiquidaciones(e) {
+async function bajarLiquidaciones(e, comoBytes = false) {
   const d = await pedir(`/pagos/remuneraciones?mes=${e.mes}&instalacion=${e.instalacion_id}`);
   if (!d.remuneraciones.length) {
     throw new Error("Ese mes todavía no está calculado. Use «Calcular el mes» más abajo.");
@@ -2873,7 +3268,14 @@ async function bajarLiquidaciones(e) {
       15, 288);
   });
 
-  doc.save(`liquidaciones ${e.instalacion} ${e.mes}.pdf`);
+  const nombre = `liquidaciones ${e.instalacion} ${e.mes}.pdf`;
+  if (comoBytes) {
+    const borradores = d.remuneraciones.filter(r => r.estado !== "cerrado").length;
+    return { nombre, bytes: doc.output("arraybuffer"),
+             nota: `${d.remuneraciones.length} liquidaciones`
+               + (borradores ? `, ${borradores} en borrador` : "") + "." };
+  }
+  doc.save(nombre);
 }
 
 /**

@@ -1011,11 +1011,16 @@ async function api(request, env, url, usuario) {
           archivo_bytes: bytes.length, nota: decodeURIComponent(
             request.headers.get('x-archivo-nota') || '') || null,
         });
-        if (r.error) throw new Error(r.error);
+        if (r.error) {
+          // La fila no se escribió, así que el archivo recién subido no lo
+          // apunta nadie: se saca, en vez de dejar basura en el bucket. El
+          // motivo se devuelve tal cual —puede ser el de la migración que
+          // falta— en vez de salir como un error del servidor.
+          await arch.borrar(env, ruta).catch(() => {});
+          return error(r.error, r.status);
+        }
         return json(r, 201);
       } catch (e) {
-        // Si la fila no se pudo escribir, el archivo recién subido no lo
-        // apunta nadie: se saca, en vez de dejar basura en el bucket.
         await arch.borrar(env, ruta).catch(() => {});
         throw e;
       }
