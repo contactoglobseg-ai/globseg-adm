@@ -30,15 +30,15 @@
      claro va más gris que el fondo y en oscuro más clara que el negro. Es la
      misma jerarquía de materiales del Mac: la estructura se hunde, el
      contenido flota. */
-  --lateral-sup:rgba(235,235,240,.78);
+  --lateral-sup:rgba(255,255,255,.5);
 }
-:root[data-tema="oscuro"]{--lateral-sup:rgba(28,28,30,.74)}
+:root[data-tema="oscuro"]{--lateral-sup:rgba(10,3,40,.52)}
 @media (prefers-color-scheme: dark){
-  :root:not([data-tema="claro"]){--lateral-sup:rgba(28,28,30,.74)}
+  :root:not([data-tema="claro"]){--lateral-sup:rgba(10,3,40,.52)}
 }
 
 .saltar{position:fixed;top:10px;left:10px;z-index:60;transform:translateY(-250%);
-  background:var(--sup);color:var(--texto);border:1px solid var(--borde);
+  background:var(--sup-solido);color:var(--texto);border:1px solid var(--borde);
   border-radius:var(--r-s);padding:9px 14px;font:600 .85rem var(--cuerpo);
   text-decoration:none;box-shadow:var(--sombra-alta)}
 .saltar:focus{transform:none}
@@ -46,7 +46,7 @@
 .lateral{position:fixed;top:0;left:0;bottom:0;width:var(--lateral);z-index:40;
   display:flex;flex-direction:column;
   background:var(--lateral-sup);border-right:1px solid var(--cromo-borde);
-  -webkit-backdrop-filter:saturate(180%) blur(24px);backdrop-filter:saturate(180%) blur(24px)}
+  -webkit-backdrop-filter:var(--desenfoque);backdrop-filter:var(--desenfoque)}
 .lateral__marca{display:flex;align-items:center;gap:10px;flex:none;
   padding:14px 16px 12px;padding-top:calc(14px + env(safe-area-inset-top,0px))}
 .lateral__marca img{width:28px;height:28px;flex:none}
@@ -104,7 +104,7 @@
 .columna{margin-left:var(--lateral);min-height:100%;display:flex;flex-direction:column}
 
 .barra{background:var(--cromo);color:var(--texto);
-  -webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);
+  -webkit-backdrop-filter:var(--desenfoque);backdrop-filter:var(--desenfoque);
   border-bottom:1px solid transparent;
   padding:9px clamp(12px,2.5vw,28px);padding-top:calc(9px + env(safe-area-inset-top,0px));
   display:flex;align-items:center;gap:12px;min-height:52px;
@@ -134,13 +134,14 @@ main{padding:clamp(16px,2.5vw,28px);max-width:1500px;margin-inline:auto;width:10
 
 /* ---------- controles de apariencia ---------- */
 .ajustes{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.segmento{display:inline-flex;background:var(--sup-3);border-radius:980px;padding:2px;gap:2px}
+.segmento{display:inline-flex;background:var(--sup-3);border-radius:980px;padding:2px;gap:2px;
+  border:1px solid var(--borde-suave)}
 .segmento button{border:0;background:none;cursor:pointer;color:var(--texto-2);
   font:500 .72rem var(--cuerpo);padding:5px 8px;border-radius:980px;line-height:1.2;
   min-width:26px;touch-action:manipulation;transition:background-color .15s,color .15s}
 .segmento button:hover{color:var(--texto)}
-.segmento button[aria-pressed="true"]{background:var(--sup);color:var(--texto);
-  font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.12)}
+.segmento button[aria-pressed="true"]{background:var(--sup-solido);color:var(--texto);
+  font-weight:600;box-shadow:0 1px 3px rgba(16,8,48,.18)}
 .segmento--letra button:nth-child(1){font-size:.7rem}
 .segmento--letra button:nth-child(2){font-size:.82rem}
 .segmento--letra button:nth-child(3){font-size:.95rem}
@@ -183,7 +184,7 @@ main{padding:clamp(16px,2.5vw,28px);max-width:1500px;margin-inline:auto;width:10
 }
 
 /* ---------- avisos ---------- */
-.aviso{border-radius:4px;padding:14px 16px;margin-bottom:18px;display:flex;gap:12px;
+.aviso{border-radius:var(--r-s);padding:14px 16px;margin-bottom:18px;display:flex;gap:12px;
   align-items:flex-start;font-size:.92rem;line-height:1.5}
 .aviso b{display:block;font-weight:600;margin-bottom:2px}
 .aviso--mal{background:var(--rojo-suave);color:var(--rojo)}
@@ -196,7 +197,7 @@ main{padding:clamp(16px,2.5vw,28px);max-width:1500px;margin-inline:auto;width:10
    con el mismo sangrado del texto del aviso, para que se lea como su
    continuación y no como otra cosa. */
 .faltantes{margin:-18px 0 18px;padding:0 16px 14px 48px;background:var(--ambar-suave);
-  border-radius:0 0 4px 4px;font-size:.88rem;line-height:1.5}
+  border-radius:0 0 var(--r-s) var(--r-s);font-size:.88rem;line-height:1.5}
 .faltantes>div{display:flex;flex-wrap:wrap;gap:4px 10px;padding:3px 0}
 .faltantes b{color:var(--ambar);font-weight:600;flex:none}
 .faltantes span{color:var(--texto-2)}
@@ -209,7 +210,8 @@ main{padding:clamp(16px,2.5vw,28px);max-width:1500px;margin-inline:auto;width:10
 /* ---------- tarjetas de resumen ---------- */
 .resumen{display:grid;grid-template-columns:repeat(auto-fit,minmax(196px,1fr));gap:12px;margin-bottom:20px}
 .ficha{background:var(--sup);border:1px solid var(--borde-suave);border-radius:var(--r);
-  padding:16px 18px;box-shadow:var(--sombra)}
+  padding:16px 18px;box-shadow:var(--sombra),var(--brillo);
+  -webkit-backdrop-filter:var(--desenfoque);backdrop-filter:var(--desenfoque)}
 .ficha dt{font-size:.8rem;color:var(--texto-2);font-weight:500;letter-spacing:-.005em}
 .ficha dd{margin:8px 0 0;font-size:1.8rem;line-height:1.05;font-weight:600;
   letter-spacing:-.03em;overflow-wrap:anywhere}
@@ -217,8 +219,12 @@ main{padding:clamp(16px,2.5vw,28px);max-width:1500px;margin-inline:auto;width:10
 .ficha--ojo dd{color:var(--ambar)} .ficha--plata dd{color:var(--texto)}
 
 /* ---------- tablas ---------- */
+/* El desenfoque va UNA vez por caja, no por fila: la caja es el vidrio y las
+   filas son tinte encima. Una tabla de cien filas con backdrop-filter en cada
+   una es cien capas que el navegador recompone en cada cuadro. */
 .caja{background:var(--sup);border:1px solid var(--borde-suave);border-radius:var(--r);
-  overflow:hidden;margin-bottom:22px;box-shadow:var(--sombra)}
+  overflow:hidden;margin-bottom:22px;box-shadow:var(--sombra),var(--brillo);
+  -webkit-backdrop-filter:var(--desenfoque);backdrop-filter:var(--desenfoque)}
 .caja__tit{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
   padding:13px 16px;background:var(--sup-2);border-bottom:1px solid var(--borde-suave)}
 .caja__tit h2{font-size:1.02rem}
@@ -333,6 +339,7 @@ tr.fila-corr td,tr.fila-corr:hover td{background:var(--sup-2);padding:0}
    cual: mismo ancho de lectura que un papel, no el ancho de la pantalla. Un
    contrato a 1200px de ancho no lo lee nadie. */
 .documento{background:var(--sup);border:1px solid var(--borde);border-radius:var(--r);
+  -webkit-backdrop-filter:var(--desenfoque);backdrop-filter:var(--desenfoque);
   padding:22px 24px;margin:0 16px 16px;max-width:74ch;white-space:pre-wrap;
   line-height:1.62;font-size:.92rem;color:var(--texto)}
 .documento b{color:var(--texto)}
@@ -396,9 +403,13 @@ tr.fila-corr td,tr.fila-corr:hover td{background:var(--sup-2);padding:0}
 .vencida{color:var(--ambar);font-size:.76rem}
 
 /* ---------- entrada ---------- */
-.puerta{min-height:100%;display:grid;place-items:center;padding:24px 16px;background:var(--fondo)}
-.puerta__caja{width:100%;max-width:400px;background:var(--sup);border-radius:16px;
-  border:1px solid var(--borde-suave);box-shadow:var(--sombra-alta);overflow:hidden}
+/* Sin background: antes pintaba var(--fondo) opaco encima de la escena y la
+   pantalla de entrada era la única del sistema sin fondo. */
+.puerta{min-height:100%;display:grid;place-items:center;padding:24px 16px}
+.puerta__caja{width:100%;max-width:400px;background:var(--sup);border-radius:20px;
+  border:1px solid var(--borde-suave);box-shadow:var(--sombra-alta),var(--brillo);
+  overflow:hidden;
+  -webkit-backdrop-filter:var(--desenfoque);backdrop-filter:var(--desenfoque)}
 .puerta__tit{padding:26px 26px 18px;display:flex;align-items:center;gap:12px}
 .puerta__tit img{width:40px;height:40px}
 .puerta__tit b{display:block;font-family:var(--marca);font-size:1.2rem;text-transform:uppercase}
@@ -456,9 +467,9 @@ tr.marcada:hover{background:var(--acento-suave)}
   padding:0 clamp(10px,3vw,26px);pointer-events:none}
 .barra-sel__fila,.barra-sel .omitidos{pointer-events:auto}
 .barra-sel__fila{max-width:1100px;margin-inline:auto;
-  background:var(--cromo);border:1px solid var(--cromo-borde);border-radius:16px;
-  -webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);
-  box-shadow:var(--sombra-alta);padding:11px 14px;
+  background:var(--cromo);border:1px solid var(--cromo-borde);border-radius:18px;
+  -webkit-backdrop-filter:var(--desenfoque);backdrop-filter:var(--desenfoque);
+  box-shadow:var(--sombra-alta),var(--brillo);padding:11px 14px;
   display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .barra-sel__n{font-size:1.25rem;font-weight:600;line-height:1.05;white-space:nowrap;
   letter-spacing:-.02em}
@@ -482,9 +493,11 @@ tr.marcada:hover{background:var(--acento-suave)}
 .salto{display:flex;gap:6px;align-items:center}
 .salto select{width:auto;font-size:1.05rem;font-weight:600;letter-spacing:-.02em;
   padding:7px 10px;border-radius:var(--r-s);background:var(--sup);text-transform:capitalize}
+/* El desenfoque va en la rejilla, no en los cuarenta y dos días. */
 .cal{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:1px;
   background:var(--borde-suave);border:1px solid var(--borde-suave);
-  border-radius:var(--r);overflow:hidden;box-shadow:var(--sombra)}
+  border-radius:var(--r);overflow:hidden;box-shadow:var(--sombra),var(--brillo);
+  -webkit-backdrop-filter:var(--desenfoque);backdrop-filter:var(--desenfoque)}
 .cal__dia-sem{background:var(--sup-2);padding:9px 10px;font-size:.72rem;font-weight:600;
   letter-spacing:-.005em;color:var(--texto-3)}
 .cal__dia{background:var(--sup);min-height:104px;padding:7px 8px;
