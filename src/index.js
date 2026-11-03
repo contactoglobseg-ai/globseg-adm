@@ -2068,13 +2068,21 @@ async function revisarTablas(env) {
   }
   // Las vistas pueden faltar aunque las tablas estén: se crean al final de la
   // migración y son de las que la pantalla de RRHH consulta primero.
+  //
+  // Acá, además, se guarda **por qué** falló. Un `false` pelado se lee como
+  // «la vista no existe» y el 02-11-2026 costó una tarde: las tres estaban
+  // creadas en la base, con permiso y con su columna `id`, y el diagnóstico
+  // las daba por ausentes igual. Lo que no se podía ver era el mensaje.
+  r.vistas_por_que = {};
   for (const v of ['v_personal', 'v_documentos', 'v_documentos_generados',
                    'v_estados_pago']) {
     try {
       await buscar(env, `${v}?select=id&limit=1`);
       r[v] = true;
-    } catch {
+    } catch (e) {
       r[v] = false;
+      r.vistas_por_que[v] = [e?.detalle?.code, e?.message].filter(Boolean).join(' · ')
+        || 'sin mensaje';
     }
   }
   return r;
