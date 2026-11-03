@@ -305,6 +305,12 @@ async function responderPdfDocumento(env, fila) {
     headers: {
       'content-type': fila.archivo_tipo || 'application/pdf',
       'content-disposition': arch.comoAdjunto(fila.archivo_nombre || 'documento.pdf'),
+      // La CSP va en las imágenes y no en los PDF, por lo mismo que en la
+      // subida de RRHH: `default-src 'none'` bloquea el `embed` con que el
+      // navegador monta su visor y la persona vería una hoja en blanco. Lo
+      // que de verdad protege es que los bytes se revisaron al subir.
+      ...(fila.archivo_tipo && fila.archivo_tipo !== 'application/pdf'
+        ? { 'content-security-policy': "default-src 'none'" } : {}),
       'x-content-type-options': 'nosniff',
       'x-frame-options': 'DENY',
       'cache-control': 'no-store, private',
@@ -327,7 +333,7 @@ async function api(request, env, url, usuario) {
   const esSubidaDeArchivo = metodo === 'POST'
     && (/^\/rrhh\/documentos\/\d+\/archivo$/.test(ruta)
         || /^\/pagos\/estados\/\d+\/archivo$/.test(ruta)
-        || /^\/documentos\/prevencion$/.test(ruta));
+        || /^\/documentos\/prevencion(\/carpeta)?$/.test(ruta));
 
   const cuerpo = (metodo === 'POST' || metodo === 'PATCH') && !esSubidaDeArchivo
     ? await request.json().catch(() => ({}))
@@ -1297,14 +1303,78 @@ async function api(request, env, url, usuario) {
       }
 
       if (sub === '/prevencion' && metodo === 'GET') {
-        const [tipos, personas, envios] = await Promise.all([
+        // La carpeta puede no estar —es otra migración— y en ese caso la
+        // pantalla la muestra apagada con el nombre del archivo, mientras
+        // mandar a firmar sigue andando igual.
+        const hayCarpeta = await prev.carpetaLista(env);
+        const [tipos, personas, envios, instalaciones, carpeta, vence] = await Promise.all([
           prev.tipos(env), prev.destinatarios(env), prev.listarEnvios(env),
+          buscar(env, 'instalaciones?select=id,nombre&activa=is.true&order=nombre.asc'),
+          hayCarpeta ? prev.carpeta(env, {
+            instalacion: url.searchParams.get('instalacion'),
+            incluirBajas: url.searchParams.get('bajas') === 'si',
+          }) : [],
+          prev.porVencer(env),
         ]);
         // Las personas van con nombre, RUT, cargo e instalación y nada más.
         // El prevencionista necesita saber a quién entregarle el papel; el
         // sueldo y la cuenta bancaria no son parte de esa pregunta, y por eso
         // esto no pasa por /catalogos, que los deja ver a quien tiene `rrhh`.
-        return json({ tipos, personas, envios });
+        return json({
+          tipos, personas, envios, instalaciones, carpeta,
+          clases: prev.CLASES,
+          por_vencer: vence,
+          carpeta_lista: hayCarpeta,
+          aviso_carpeta: hayCarpeta ? null : prev.avisoCarpeta(),
+          migracion_carpeta: prev.MIGRACION_CARPETA,
+        });
+      }
+
+      // ------------------------------------------------- la carpeta
+      if (sub === '/prevencion/carpeta' && metodo === 'POST') {
+        if (!(await prev.carpetaLista(env))) return error(prev.avisoCarpeta(), 503);
+        let forma;
+        try {
+          forma = await request.formData();
+        } catch {
+          return error('No llegó el formulario con el archivo', 400);
+        }
+        const archivo = forma.get('archivo');
+        if (!archivo || typeof archivo.arrayBuffer !== 'function') {
+          return error('No llegó ningún archivo', 400);
+        }
+        if (Number(archivo.size || 0) > arch.MAX_BYTES) {
+          return error(`El archivo pesa más de ${Math.round(arch.MAX_BYTES / 1048576)} MB.`, 413);
+        }
+        let datos = {};
+        try {
+          datos = JSON.parse(String(forma.get('datos') || '{}'));
+        } catch {
+          return error('Los datos del documento llegaron mal', 400);
+        }
+        const bytes = new Uint8Array(await archivo.arrayBuffer());
+        const r = await prev.guardarEnCarpeta(env, usuario.usuario,
+          { bytes, nombre: archivo.name }, datos);
+        if (r.error) return error(r.error, r.status);
+        return json(r, 201);
+      }
+
+      const mCarpeta = sub.match(/^\/prevencion\/carpeta\/(\d+)(\/[a-z]+)?$/);
+      if (mCarpeta) {
+        if (!(await prev.carpetaLista(env))) return error(prev.avisoCarpeta(), 503);
+        const id = Number(mCarpeta[1]);
+        const accion = mCarpeta[2] || '';
+
+        // El archivo sale por acá, como todos: el bucket es privado y la
+        // sesión se mira en cada pasada.
+        if (accion === '/archivo' && metodo === 'GET') {
+          return responderPdfDocumento(env, await prev.filaDeCarpeta(env, id));
+        }
+        if (accion === '/baja' && metodo === 'POST') {
+          const r = await prev.darDeBajaDeCarpeta(env, usuario.usuario, id, cuerpo.motivo);
+          if (r.error) return error(r.error, r.status);
+          return json(r);
+        }
       }
 
       if (sub === '/prevencion' && metodo === 'POST') {
@@ -2111,6 +2181,7 @@ const RELACIONES = [
   'fichas_ingreso', 'intentos_publicos',
   'v_personal', 'v_documentos', 'v_documentos_generados', 'v_estados_pago',
   'v_envios_prevencion',
+  'documentos_prevencion', 'v_documentos_prevencion',
 ];
 
 const COLUMNAS = [

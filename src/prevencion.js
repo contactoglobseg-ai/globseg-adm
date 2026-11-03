@@ -33,7 +33,7 @@
  *  - **No manda correos.** El trabajador lo ve donde ya entra todos los días.
  */
 
-import { buscar, primero, insertar, anotar } from './datos.js';
+import { buscar, primero, insertar, actualizar, anotar } from './datos.js';
 import { siguientesNumeros } from './documentos.js';
 import * as arch from './archivos.js';
 
@@ -215,3 +215,197 @@ export const verEnvio = (env, envioId) =>
   buscar(env, 'v_documentos_generados?select=*'
     + `&envio_id=eq.${encodeURIComponent(String(envioId).slice(0, 40))}`
     + '&order=trabajador.asc');
+
+// =================================================== la carpeta de prevención
+//
+// Los papeles que **no son de nadie**: la matriz de riesgos, el programa anual,
+// el acta del comité paritario, el plan de emergencia de un parque, lo que
+// prescribe la mutual. Hasta hoy no tenían dónde ir, porque todo lo que el
+// sistema guardaba colgaba de un trabajador.
+//
+// `instalacion_id` en null significa «de toda la empresa». Es el caso del
+// RIOHS y del programa anual, y es la razón de que la columna sea nulable en
+// vez de obligar a elegir un parque cualquiera.
+
+export const MIGRACION_CARPETA = '20261103120000_carpeta_prevencion.sql';
+
+/**
+ * Qué puede subir, con su nombre y si ese papel suele vencer.
+ *
+ * `vence` no obliga a nada: solo hace que la pantalla proponga la fecha en vez
+ * de dejarla en blanco. El MIPER y el programa se actualizan cada año; un acta
+ * del comité no vence nunca, y pedirle una fecha de vencimiento sería pedirle
+ * que invente una.
+ *
+ * Vive acá y no en la base por lo mismo que las clases de los estados de pago:
+ * son nombres que cambian una vez al año. Lo que hace que la lista no se
+ * quede corta es **`otro`**, que acepta cualquier papel con su título escrito
+ * a mano.
+ */
+export const CLASES = [
+  { codigo: 'miper', nombre: 'Matriz de riesgos (MIPER)', vence: true,
+    nota: 'Identificación de peligros y evaluación de riesgos. Se actualiza al menos una vez al año.' },
+  { codigo: 'programa', nombre: 'Programa anual de prevención', vence: true, nota: null },
+  { codigo: 'riohs', nombre: 'Reglamento Interno (RIOHS) vigente', vence: false,
+    nota: 'El reglamento mismo. La constancia de que cada trabajador lo recibió se manda a firmar aparte.' },
+  { codigo: 'comite_paritario', nombre: 'Acta del comité paritario', vence: false, nota: null },
+  { codigo: 'plan_emergencia', nombre: 'Plan de emergencia y evacuación', vence: true, nota: null },
+  { codigo: 'mutual', nombre: 'Informe o prescripción de la mutual', vence: false, nota: null },
+  { codigo: 'investigacion', nombre: 'Investigación de accidente o incidente', vence: false, nota: null },
+  { codigo: 'charla', nombre: 'Registro de charla o capacitación', vence: false, nota: null },
+  { codigo: 'procedimiento', nombre: 'Procedimiento de trabajo seguro', vence: true, nota: null },
+  { codigo: 'otro', nombre: 'Otro documento de prevención', vence: false, nota: null },
+];
+
+const NOMBRE_CLASE = Object.fromEntries(CLASES.map((c) => [c.codigo, c.nombre]));
+
+export async function carpetaLista(env) {
+  try {
+    await buscar(env, 'v_documentos_prevencion?select=id&limit=1');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const avisoCarpeta = () =>
+  'Falta aplicar la migración ' + MIGRACION_CARPETA + ' en el SQL Editor de Supabase. '
+  + 'La carpeta de documentos de la empresa no está disponible hasta que se aplique; '
+  + 'mandar a firmar y el resto de la pantalla funcionan igual. '
+  + 'Ver COMO-APLICAR-MIGRACIONES.md.';
+
+/** Lo que hay en la carpeta. Lo dado de baja no sale, salvo que se pida. */
+export const carpeta = (env, { instalacion, incluirBajas } = {}) =>
+  buscar(env, 'v_documentos_prevencion?select=*'
+    + (incluirBajas ? '' : '&vigente=is.true')
+    + (instalacion === 'empresa' ? '&instalacion_id=is.null'
+       : instalacion ? `&instalacion_id=eq.${Number(instalacion)}` : '')
+    + '&order=creado_en.desc&limit=300');
+
+/** Guarda un papel en la carpeta. `archivo` es `{ bytes, nombre }`. */
+export async function guardarEnCarpeta(env, quien, { bytes, nombre }, datos) {
+  const clase = limpio(datos?.clase, 40);
+  if (!NOMBRE_CLASE[clase]) {
+    return { error: 'Elija qué documento es', status: 400 };
+  }
+  const titulo = limpio(datos?.titulo, 200);
+  if (!titulo) {
+    return { error: 'Escriba qué dice el documento. Con el título puesto, esta carpeta se '
+                    + 'puede leer dentro de un año sin tener que abrir cada archivo.',
+             status: 400 };
+  }
+
+  if (!bytes || !bytes.length) return { error: 'No llegó ningún archivo', status: 400 };
+  if (bytes.length > arch.MAX_BYTES) {
+    return { error: `El archivo pesa más de ${Math.round(arch.MAX_BYTES / 1048576)} MB.`,
+             status: 413 };
+  }
+  // Acá **sí se acepta una imagen**, al revés que el documento que se manda a
+  // firmar: un acta del comité paritario suele llegar como la foto de una hoja
+  // escrita a mano, y no hay nada que sellar al pie de sus hojas.
+  const reconocido = arch.reconocer(bytes);
+  if (!reconocido) {
+    return { error: 'Ese archivo no es un PDF ni una imagen (JPG, PNG, WebP o HEIC). '
+                    + 'Si es un Word o un Excel, guárdelo como PDF antes de subirlo.',
+             status: 415 };
+  }
+
+  // La instalación es opcional: sin ella, el papel es de toda la empresa.
+  let instalacionId = null;
+  if (datos?.instalacion_id) {
+    instalacionId = Number(datos.instalacion_id);
+    const existe = await primero(env,
+      `instalaciones?select=id&id=eq.${instalacionId}`);
+    if (!existe) return { error: 'Esa instalación no existe', status: 404 };
+  }
+
+  const fecha = (v) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null);
+  const emision = fecha(datos?.fecha_emision);
+  const vence = fecha(datos?.fecha_vencimiento);
+  if (emision && vence && vence < emision) {
+    return { error: 'La fecha de vencimiento es anterior a la de emisión', status: 400 };
+  }
+
+  const ruta = arch.rutaCarpetaPrevencion(reconocido.ext);
+  await arch.subir(env, ruta, bytes, reconocido.tipo);
+
+  let creado;
+  try {
+    [creado] = await insertar(env, 'documentos_prevencion', {
+      clase,
+      titulo,
+      instalacion_id: instalacionId,
+      fecha_emision: emision,
+      fecha_vencimiento: vence,
+      archivo_ruta: ruta,
+      archivo_nombre: arch.nombreSeguro(nombre || '', reconocido.ext),
+      archivo_tipo: reconocido.tipo,
+      archivo_bytes: bytes.length,
+      observacion: limpio(datos?.observacion, 500),
+      creado_por: quien,
+    });
+  } catch (e) {
+    // Si la fila no se pudo escribir, el archivo recién subido no lo apunta
+    // nadie: se saca. Mismo orden que el envío y que los documentos de RRHH.
+    await arch.borrar(env, ruta).catch(() => {});
+    throw e;
+  }
+
+  await anotar(env, quien, 'documento_prevencion', creado.id, 'guardó un documento de prevención',
+    `${NOMBRE_CLASE[clase]} · ${titulo}`);
+
+  return { documento: creado };
+}
+
+/**
+ * Lo da de baja. No lo borra.
+ *
+ * El MIPER del año pasado es el que estaba vigente cuando pasó lo que haya
+ * pasado, y es justamente el que habría que mostrar. Por eso el archivo se
+ * queda donde está: lo único que cambia es que deja de salir en la lista.
+ */
+export async function darDeBajaDeCarpeta(env, quien, id, motivo) {
+  const d = await primero(env, `documentos_prevencion?select=*&id=eq.${Number(id)}`);
+  if (!d) return { error: 'Ese documento no existe', status: 404 };
+  if (!d.vigente) return { ok: true, ya_estaba: true };
+
+  const razon = limpio(motivo, 300);
+  await actualizar(env, `documentos_prevencion?id=eq.${d.id}`, { vigente: false });
+  await anotar(env, quien, 'documento_prevencion', d.id, 'dio de baja un documento de prevención',
+    `${NOMBRE_CLASE[d.clase] || d.clase} · ${d.titulo}${razon ? ' · ' + razon : ''}`);
+  return { ok: true };
+}
+
+/** La fila cruda, para poder entregar el archivo. */
+export const filaDeCarpeta = (env, id) =>
+  primero(env, 'documentos_prevencion'
+    + `?select=archivo_ruta,archivo_tipo,archivo_nombre&id=eq.${Number(id)}`);
+
+/**
+ * Lo que está venciendo, en una sola lista.
+ *
+ * Junta las dos mitades que hasta hoy había que mirar por separado: lo que
+ * vence de **las personas** —la credencial OS-10, los exámenes, el IRL de cada
+ * uno— y lo que vence de **la empresa** —el MIPER, el programa—. La
+ * prevencionista persigue una sola lista, que es la diferencia entre revisarla
+ * y no revisarla.
+ *
+ * Cada mitad cae en silencio si su migración no está: lo que no se puede leer
+ * no sale, y la otra mitad se muestra igual.
+ */
+export async function porVencer(env) {
+  const [personas, empresa] = await Promise.all([
+    buscar(env, 'v_documentos?select=id,trabajador,tipo_nombre,fecha_vencimiento,'
+      + 'estado,dias_para_vencer&tipo_grupo=in.(prevencion,salud)'
+      + '&estado=in.(vencido,por_vencer)&trabajador_activo=is.true'
+      + '&order=fecha_vencimiento.asc&limit=100').catch(() => []),
+    buscar(env, 'v_documentos_prevencion?select=id,titulo,clase,instalacion,'
+      + 'fecha_vencimiento,estado,dias_para_vencer'
+      + '&estado=in.(vencido,por_vencer)&order=fecha_vencimiento.asc&limit=100')
+      .catch(() => []),
+  ]);
+  return {
+    personas,
+    empresa: empresa.map((d) => ({ ...d, clase_nombre: NOMBRE_CLASE[d.clase] || d.clase })),
+  };
+}

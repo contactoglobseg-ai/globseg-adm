@@ -119,6 +119,21 @@ export function rutaPrevencion(envioId, extension) {
   return `prevencion/${envioId}.${extension}`;
 }
 
+/**
+ * Ruta de un papel de la carpeta de prevención.
+ *
+ * No cuelga de nadie, como `rutaPrevencion`, pero por otra razón: estos
+ * documentos son de la empresa o de una instalación. Lleva algo al azar para
+ * que no sea adivinable, y se escribe antes de tener el id de la fila: se
+ * sube primero y se inserta después, y si la inserción falla el archivo se
+ * borra. Al revés quedaría una fila apuntando a un archivo que no existe.
+ */
+export function rutaCarpetaPrevencion(extension) {
+  const azar = [...crypto.getRandomValues(new Uint8Array(12))]
+    .map((b) => b.toString(16).padStart(2, '0')).join('');
+  return `prevencion-carpeta/${azar}.${extension}`;
+}
+
 /** SHA-256 de unos bytes, en hexadecimal. Es lo que firma quien firma un
  *  documento que llegó como archivo: ahí no hay texto que resumir. */
 export async function hashBytes(bytes) {

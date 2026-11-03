@@ -291,6 +291,11 @@ const VISTAS = {
      permiso. El servidor abre esta puerta con la misma regla. */
   documentos: { rotulo: "Documentos",   pintar: pintarDocumentos,
                 modulo: ["rrhh", "documentos"] },
+  /* La pantalla de la prevencionista: lo que vence, lo que se manda a firmar
+     y la carpeta de los papeles que no son de nadie. Misma puerta que
+     Documentos, que es donde vivía antes la mitad de esto. */
+  prevencion: { rotulo: "Prevención",   pintar: pintarPrevencion,
+                modulo: ["rrhh", "documentos"] },
   /* Mismos dos permisos que Documentos, y por lo mismo: el prevencionista
      entrega los elementos de protección y operaciones las radios. */
   activos:    { rotulo: "Activos y EPP", pintar: pintarActivos,
@@ -308,8 +313,8 @@ const VISTAS = {
    Fichas» en vez de solo «Fichas». */
 const GRUPOS = [
   { rotulo: "Personas",
-    vistas: ["rrhh", "personal", "documentos", "activos", "sueldos", "carga",
-             "transferencias"] },
+    vistas: ["rrhh", "personal", "documentos", "prevencion", "activos", "sueldos",
+             "carga", "transferencias"] },
 ];
 
 /** Quien entra acá sin el módulo no es alguien a quien le falte una pantalla
@@ -2964,6 +2969,11 @@ const DOCS = {
   prev: {
     datos: null, tipo: "", archivo: null, paginas: null, nota: "",
     instalacion: "", marcados: new Set(), envio: null, resultado: null,
+    /* Lo de la carpeta, aparte: el formulario de arriba y el de abajo se
+       llenan en momentos distintos y uno no tiene por qué borrar al otro. */
+    carpeta: { clase: "", titulo: "", instalacion: "", emision: "", vence: "",
+               obs: "", archivo: null },
+    carpetaFiltro: "", verBajas: false,
   },
 };
 
@@ -3060,8 +3070,6 @@ async function pintarDocumentos() {
 
     <div id="d-previa"></div>
 
-    <div id="d-prevencion"></div>
-
     ${seccionEmpresa(c)}
 
     <section class="caja">
@@ -3118,7 +3126,6 @@ async function pintarDocumentos() {
   }
 
   if (DOCS.previa) pintarPrevia();
-  pintarPrevencion().catch(() => {});
   if (DOCS.abierto) pintarAbierto().catch(e => decir($("#m-docs"), e.message, "error"));
 }
 
@@ -3140,19 +3147,20 @@ const ESTILO_CASILLA = "width:1.05rem;height:1.05rem;flex:none;margin:0;"
   + "padding:0;accent-color:var(--btn);cursor:pointer";
 
 async function pintarPrevencion() {
-  const caja = $("#d-prevencion");
-  if (!caja) return;
+  const caja = $("#app");
   const P = DOCS.prev;
 
   if (!P.datos) {
     try {
-      P.datos = await pedir("/documentos/prevencion");
+      P.datos = await pedir("/documentos/prevencion"
+        + (P.carpetaFiltro ? `?instalacion=${encodeURIComponent(P.carpetaFiltro)}` : "")
+        + (P.verBajas ? (P.carpetaFiltro ? "&" : "?") + "bajas=si" : ""));
     } catch (e) {
-      // La migración puede no estar aplicada. Se dice con el nombre del
-      // archivo y el resto de Documentos sigue andando igual.
+      // La migración de lo que se firma puede no estar aplicada. Se dice con
+      // el nombre del archivo y el resto del sistema sigue andando igual.
       caja.innerHTML = `<section class="caja"><div class="caja__tit">
         <h2>Prevención de riesgos</h2></div>
-        ${aviso("ojo", "Todavía no se puede mandar a firmar. ", e.message)}</section>`;
+        ${aviso("ojo", "Esta pantalla todavía no se puede usar. ", e.message)}</section>`;
       return;
     }
   }
@@ -3166,9 +3174,11 @@ async function pintarPrevencion() {
     : personas;
 
   caja.innerHTML = `
+    ${seccionVence(P.datos.por_vencer)}
+
     <section class="caja">
-      <div class="caja__tit"><h2>Prevención de riesgos</h2>
-        <span class="nota">Suba el documento y mándelo a firmar</span></div>
+      <div class="caja__tit"><h2>Mandar un documento a firmar</h2>
+        <span class="nota">Lo firma cada trabajador desde su teléfono</span></div>
 
       <div class="rejilla">
         <label class="campo" style="grid-column:span 2"><span>Qué documento es</span>
@@ -3265,7 +3275,11 @@ async function pintarPrevencion() {
       : `<p class="sub">Todavía no se ha mandado ninguno.</p>`}
     </section>
 
-    <div id="d-envio"></div>`;
+    <div id="d-envio"></div>
+
+    ${seccionCarpeta(P)}
+
+    <div id="d-abierto"></div>`;
 
   $("#p-tipo").onchange = e => { P.tipo = e.target.value; pintarPrevencion(); };
   $("#p-instalacion").onchange = e => { P.instalacion = e.target.value; pintarPrevencion(); };
@@ -3319,7 +3333,284 @@ async function pintarPrevencion() {
     }).catch(() => {});
   }
   if (P.envio) pintarEnvio().catch(() => {});
+  conectarCarpeta(P);
 }
+
+
+/**
+ * Lo que está venciendo, arriba de todo.
+ *
+ * Junta las dos mitades que hasta hoy había que mirar por separado: lo que
+ * vence de **las personas** —la credencial OS-10, los exámenes, el IRL de cada
+ * uno— y lo que vence de **la empresa** —el MIPER, el programa anual—. Es una
+ * sola lista a propósito: dos listas se revisan una.
+ *
+ * Va primero porque es lo único de esta pantalla que tiene plazo. Lo demás se
+ * hace cuando se puede; esto se hace antes de que se venza.
+ */
+function seccionVence(v) {
+  const n = (v?.personas?.length || 0) + (v?.empresa?.length || 0);
+  if (!n) {
+    return `<section class="caja">
+      <div class="caja__tit"><h2>Lo que está venciendo</h2></div>
+      ${aviso("bien", "Nada vencido ni por vencer. ",
+        "Se miran los papeles de prevención y los exámenes de la gente activa, "
+        + "y los documentos de la empresa, hasta 30 días hacia adelante.")}</section>`;
+  }
+  const sello = d => d.estado === "vencido"
+    ? '<span class="sello e-error">Vencido</span>'
+    : `<span class="sello e-solicitar_oc">${d.dias_para_vencer} ${
+        d.dias_para_vencer === 1 ? "día" : "días"}</span>`;
+
+  return `<section class="caja">
+    <div class="caja__tit"><h2>Lo que está venciendo</h2>
+      <span class="nota">${n} ${n === 1 ? "documento" : "documentos"}</span></div>
+    <div class="desliza"><table class="envios" style="min-width:720px">
+      <thead><tr><th>Documento</th><th>De quién</th><th>Vence</th><th></th></tr></thead>
+      <tbody>
+      ${v.empresa.map(d => `<tr>
+        <td><b>${esc(d.clase_nombre)}</b><br>
+          <span class="sub" style="margin:0;font-size:.78rem">${esc(d.titulo)}</span></td>
+        <td>${esc(d.instalacion || "Toda la empresa")}</td>
+        <td class="nowrap">${fecha(d.fecha_vencimiento)}</td>
+        <td class="nowrap">${sello(d)}</td>
+      </tr>`).join("")}
+      ${v.personas.map(d => `<tr>
+        <td>${esc(d.tipo_nombre)}</td>
+        <td>${esc(d.trabajador || "—")}</td>
+        <td class="nowrap">${fecha(d.fecha_vencimiento)}</td>
+        <td class="nowrap">${sello(d)}</td>
+      </tr>`).join("")}
+      </tbody></table></div>
+    <p class="sub">Lo de cada persona se corrige en su ficha; lo de la empresa, en la
+      carpeta de más abajo.</p>
+  </section>`;
+}
+
+/**
+ * La carpeta: los papeles que no son de nadie.
+ *
+ * La matriz de riesgos, el programa anual, el acta del comité paritario, el
+ * plan de emergencia de un parque, lo que prescribe la mutual. Hasta hoy no
+ * tenían dónde ir, porque todo lo que el sistema guardaba colgaba de un
+ * trabajador, y colgar el MIPER de Puelche de una persona cualquiera lo
+ * habría hecho desaparecer el día que esa persona se fuera.
+ */
+function seccionCarpeta(P) {
+  const d = P.datos;
+  if (!d.carpeta_lista) {
+    return `<section class="caja">
+      <div class="caja__tit"><h2>Carpeta de prevención</h2></div>
+      ${aviso("ojo", "La carpeta todavía no está disponible. ", d.aviso_carpeta || "")}
+    </section>`;
+  }
+  const C = P.carpeta;
+  const clase = d.clases.find(c => c.codigo === C.clase);
+
+  return `
+  <section class="caja">
+    <div class="caja__tit"><h2>Guardar un documento de la empresa</h2>
+      <span class="nota">Lo que no es de una persona</span></div>
+    <div class="rejilla">
+      <label class="campo" style="grid-column:span 2"><span>Qué documento es</span>
+        <select id="c-clase">
+          <option value="">Elija uno…</option>
+          ${d.clases.map(x => `<option value="${esc(x.codigo)}"
+            ${x.codigo === C.clase ? " selected" : ""}>${esc(x.nombre)}</option>`).join("")}
+        </select></label>
+      <label class="campo" style="grid-column:span 2"><span>De dónde es</span>
+        <select id="c-instalacion">
+          <option value="">De toda la empresa</option>
+          ${d.instalaciones.map(i => `<option value="${i.id}"
+            ${String(i.id) === String(C.instalacion) ? " selected" : ""}>${esc(i.nombre)}</option>`).join("")}
+        </select></label>
+      <label class="campo" style="grid-column:span 4"><span>Qué dice</span>
+        <input id="c-titulo" value="${esc(C.titulo)}"
+          placeholder="Por ejemplo: Matriz de riesgos 2026 — puesto de guardia"></label>
+      <label class="campo"><span>Emitido el</span>
+        <input id="c-emision" type="date" value="${esc(C.emision)}"></label>
+      <label class="campo"><span>Vence el (si vence)</span>
+        <input id="c-vence" type="date" value="${esc(C.vence)}"></label>
+      <label class="campo" style="grid-column:span 2"><span>El archivo</span>
+        <input type="file" id="c-archivo" accept="application/pdf,.pdf,image/*"></label>
+      <label class="campo" style="grid-column:span 4"><span>Observación (opcional)</span>
+        <input id="c-obs" value="${esc(C.obs)}"></label>
+    </div>
+    ${clase && clase.nota ? `<p class="sub">${esc(clase.nota)}</p>` : ""}
+    ${clase && clase.vence && !C.vence ? aviso("ojo",
+      "Este documento suele vencer. ",
+      "Escriba hasta cuándo vale y va a aparecer arriba, en «Lo que está venciendo», "
+      + "antes de que se pase.") : ""}
+    ${C.archivo ? `<p class="sub"><b>${esc(C.archivo.name)}</b> ·
+      ${pesoArchivo(C.archivo.size)} ·
+      <button class="bt bt--fino bt--chico" type="button" id="c-quitar">Quitar</button></p>` : ""}
+    <div class="pie-form">
+      <button class="bt" type="button" id="c-guardar">Guardar en la carpeta</button>
+      <span class="mensaje" id="m-carpeta"></span>
+    </div>
+  </section>
+
+  <section class="caja">
+    <div class="caja__tit"><h2>Carpeta de prevención</h2>
+      <span class="nota">${d.carpeta.length} ${d.carpeta.length === 1
+        ? "documento" : "documentos"}</span></div>
+    <div class="rejilla">
+      <label class="campo" style="grid-column:span 2"><span>Mostrar</span>
+        <select id="c-filtro">
+          <option value=""${!P.carpetaFiltro ? " selected" : ""}>Todo</option>
+          <option value="empresa"${P.carpetaFiltro === "empresa" ? " selected" : ""}>
+            Solo lo de toda la empresa</option>
+          ${d.instalaciones.map(i => `<option value="${i.id}"
+            ${String(i.id) === String(P.carpetaFiltro) ? " selected" : ""}>${esc(i.nombre)}</option>`).join("")}
+        </select></label>
+      <div class="campo" style="grid-column:span 2;justify-content:flex-end">
+        <label style="display:flex;gap:9px;align-items:center;font-size:.86rem;cursor:pointer">
+          <input type="checkbox" id="c-bajas"${P.verBajas ? " checked" : ""}
+            style="${ESTILO_CASILLA}">
+          <span>Ver también las dadas de baja</span></label>
+      </div>
+    </div>
+    ${d.carpeta.length ? `<div class="desliza"><table class="envios" style="min-width:900px">
+      <thead><tr><th>Documento</th><th>De dónde</th><th>Emitido</th><th>Vence</th>
+        <th>Lo subió</th><th></th></tr></thead><tbody>
+      ${d.carpeta.map(x => `<tr${x.vigente ? "" : ' style="opacity:.55"'}>
+        <td><b>${esc(nombreClase(d.clases, x.clase))}</b><br>
+          <span class="sub" style="margin:0;font-size:.78rem">${esc(x.titulo)}</span>
+          ${x.observacion ? `<br><span class="sub" style="margin:0;font-size:.76rem">${
+            esc(x.observacion)}</span>` : ""}</td>
+        <td>${esc(x.instalacion || "Toda la empresa")}</td>
+        <td class="nowrap">${x.fecha_emision ? fecha(x.fecha_emision) : "—"}</td>
+        <td class="nowrap">${x.fecha_vencimiento ? fecha(x.fecha_vencimiento) : "—"}
+          ${selloVence(x)}</td>
+        <td class="nowrap">${esc(x.creado_por || "—")}</td>
+        <td class="celda-acciones">
+          ${x.tiene_archivo ? `<a class="bt bt--fino" target="_blank" rel="noopener"
+            href="/api/documentos/prevencion/carpeta/${x.id}/archivo">Abrir</a>` : ""}
+          ${x.vigente ? `<button class="bt bt--fino" type="button"
+            data-baja="${x.id}">Dar de baja</button>` : '<span class="sub" style="margin:0">De baja</span>'}
+        </td>
+      </tr>`).join("")}
+    </tbody></table></div>`
+    : `<p class="sub">Todavía no hay nada guardado acá.</p>`}
+  </section>`;
+}
+
+const nombreClase = (clases, codigo) =>
+  (clases.find(c => c.codigo === codigo) || {}).nombre || codigo;
+
+const selloVence = x => x.estado === "vencido"
+  ? ' <span class="sello e-error">Vencido</span>'
+  : x.estado === "por_vencer"
+    ? ` <span class="sello e-solicitar_oc">${x.dias_para_vencer} días</span>` : "";
+
+function conectarCarpeta(P) {
+  if (!P.datos.carpeta_lista) return;
+  const C = P.carpeta;
+  const atar = (id, campo) => {
+    const el = $(id);
+    if (el) el.oninput = e => { C[campo] = e.target.value; };
+  };
+  if ($("#c-clase")) {
+    $("#c-clase").onchange = e => { C.clase = e.target.value; pintarPrevencion(); };
+  }
+  if ($("#c-instalacion")) {
+    $("#c-instalacion").onchange = e => { C.instalacion = e.target.value; };
+  }
+  atar("#c-titulo", "titulo");
+  atar("#c-obs", "obs");
+  // Las fechas repintan: de ellas depende el aviso de «este documento suele
+  // vencer», y un aviso que no se va cuando ya se llenó deja de leerse.
+  for (const [id, campo] of [["#c-emision", "emision"], ["#c-vence", "vence"]]) {
+    const el = $(id);
+    if (el) el.onchange = e => { C[campo] = e.target.value; pintarPrevencion(); };
+  }
+  if ($("#c-archivo")) {
+    $("#c-archivo").onchange = e => {
+      const f = e.target.files[0];
+      if (f && f.size > MAX_ARCHIVO) {
+        return decir($("#m-carpeta"),
+          `«${f.name}» pesa ${pesoArchivo(f.size)} y el máximo es 10 MB.`, "error");
+      }
+      C.archivo = f || null;
+      pintarPrevencion();
+    };
+  }
+  if ($("#c-quitar")) {
+    $("#c-quitar").onclick = () => { C.archivo = null; pintarPrevencion(); };
+  }
+  if ($("#c-guardar")) {
+    $("#c-guardar").onclick = () => guardarEnCarpeta()
+      .catch(e => decir($("#m-carpeta"), e.message, "error"));
+  }
+  if ($("#c-filtro")) {
+    $("#c-filtro").onchange = e => {
+      P.carpetaFiltro = e.target.value; P.datos = null; pintarPrevencion();
+    };
+  }
+  if ($("#c-bajas")) {
+    $("#c-bajas").onchange = e => {
+      P.verBajas = e.target.checked; P.datos = null; pintarPrevencion();
+    };
+  }
+  for (const b of document.querySelectorAll("[data-baja]")) {
+    b.onclick = () => darDeBajaCarpeta(Number(b.dataset.baja))
+      .catch(e => decir($("#m-carpeta"), e.message, "error"));
+  }
+}
+
+async function guardarEnCarpeta() {
+  const C = DOCS.prev.carpeta;
+  if (!C.clase) throw new Error("Elija qué documento es.");
+  if (!C.titulo.trim()) throw new Error("Escriba qué dice el documento.");
+  if (!C.archivo) throw new Error("Falta el archivo.");
+
+  const bt = $("#c-guardar");
+  bt.disabled = true;
+  decir($("#m-carpeta"), "Guardando…");
+  try {
+    const forma = new FormData();
+    forma.append("archivo", C.archivo, C.archivo.name);
+    forma.append("datos", JSON.stringify({
+      clase: C.clase,
+      titulo: C.titulo,
+      instalacion_id: C.instalacion || null,
+      fecha_emision: C.emision || null,
+      fecha_vencimiento: C.vence || null,
+      observacion: C.obs || null,
+    }));
+    // Sin `content-type` a mano: lo pone el navegador con el límite entre
+    // partes que él mismo inventa, y escribirlo lo rompe.
+    const resp = await fetch("/api/documentos/prevencion/carpeta",
+      { method: "POST", body: forma });
+    const cuerpo = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(cuerpo.error || `Error ${resp.status}`);
+
+    DOCS.prev.carpeta = carpetaVacia();
+    DOCS.prev.datos = null;
+    await pintarPrevencion();
+    decir($("#m-carpeta"), "Guardado.", "ok");
+  } finally {
+    if ($("#c-guardar")) $("#c-guardar").disabled = false;
+  }
+}
+
+/** No borra: deja de estar vigente. El MIPER del año pasado es el que estaba
+ *  en pie cuando pasó lo que haya pasado, y es el que habría que mostrar. */
+async function darDeBajaCarpeta(id) {
+  const motivo = prompt("¿Por qué se da de baja?\n\n"
+    + "El documento no se borra: deja de salir en la carpeta y se puede volver a ver "
+    + "marcando «Ver también las dadas de baja».");
+  if (motivo === null) return;
+  await pedir(`/documentos/prevencion/carpeta/${id}/baja`, {
+    method: "POST", body: JSON.stringify({ motivo }),
+  });
+  DOCS.prev.datos = null;
+  await pintarPrevencion();
+}
+
+const carpetaVacia = () => ({
+  clase: "", titulo: "", instalacion: "", emision: "", vence: "", obs: "", archivo: null,
+});
 
 const selloEnvio = e => {
   const falta = Number(e.por_firmar || 0);
@@ -3635,7 +3926,7 @@ async function generarDocumento() {
   });
   DOCS.previa = null;
   DOCS.abierto = r.documento.id;
-  await pintarDocumentos();
+  await repintarDocs();
 }
 
 async function abrirDocumento(id) {
@@ -3735,6 +4026,13 @@ async function pintarAbierto() {
   }
 }
 
+/* Un documento se abre desde las dos pantallas —Documentos y Prevención—, así
+   que al firmarlo, anularlo o archivarlo hay que repintar la que se está
+   mirando: llamar siempre a `pintarDocumentos()` sacaba a la prevencionista de
+   su pestaña cada vez que archivaba un IRL. */
+const repintarDocs = () =>
+  (estado.vista === "prevencion" ? pintarPrevencion() : pintarDocumentos());
+
 const rolRotulo = r => ({ trabajador: "El trabajador", empleador: "Por la empresa",
                           arrendador: "El arrendador" }[r] || r);
 
@@ -3753,7 +4051,7 @@ async function firmarComoEmpresa(d, lienzo) {
     method: "POST",
     body: JSON.stringify({ imagen: lienzo.png(), leido: true }),
   });
-  await pintarDocumentos();
+  await repintarDocs();
 }
 
 async function anularDocumento(d) {
@@ -3763,7 +4061,7 @@ async function anularDocumento(d) {
   await pedir(`/documentos/${d.id}/anular`, {
     method: "POST", body: JSON.stringify({ motivo }),
   });
-  await pintarDocumentos();
+  await repintarDocs();
 }
 
 /**
@@ -3780,7 +4078,7 @@ async function archivarDocumento(d) {
   const r = await pedir(`/documentos/${d.id}/archivar`, { method: "POST" });
   const nombre = `${d.numero} ${d.titulo}.pdf`.replace(/[\\/:*?"<>|]/g, "-");
   await subirArchivo(r.documento_id, new File([blob], nombre, { type: "application/pdf" }));
-  await pintarDocumentos();
+  await repintarDocs();
 }
 
 /* pdf-lib sí viene de cdnjs, al revés que pdf.js: no usa worker, así que no
