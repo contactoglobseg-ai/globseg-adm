@@ -23,6 +23,7 @@ import * as carga from './carga.js';
 import * as arch from './archivos.js';
 import * as ing from './ingreso.js';
 import * as docs from './documentos.js';
+import * as prev from './prevencion.js';
 import * as activos from './activos.js';
 import * as pagos from './pagos.js';
 import * as usr from './usuarios.js';
@@ -285,6 +286,33 @@ async function panel(env) {
   return { hoy: hoyISO(), ciclos, extras_sueltos: sueltos };
 }
 
+/**
+ * Entrega el PDF de un documento que llegó como archivo.
+ *
+ * Sale por acá y nunca por una URL de Storage, igual que los documentos de la
+ * ficha: el bucket es privado y la sesión se mira en cada pasada. La usan las
+ * dos puertas —el panel y el libro de asistencia—, porque el que lo lee en el
+ * teléfono y la que lo mandó piden el mismo papel.
+ *
+ * Va `inline`: lo que se hace con esto es leerlo, no guardarlo. Y con
+ * `X-Frame-Options: DENY`, que no estorba porque la pantalla lo dibuja con
+ * pdf.js en un canvas y no lo mete en un marco.
+ */
+async function responderPdfDocumento(env, fila) {
+  if (!fila?.archivo_ruta) return error('Ese documento no tiene archivo', 404);
+  const contenido = await arch.bajar(env, fila.archivo_ruta);
+  return new Response(contenido, {
+    headers: {
+      'content-type': fila.archivo_tipo || 'application/pdf',
+      'content-disposition': arch.comoAdjunto(fila.archivo_nombre || 'documento.pdf'),
+      'x-content-type-options': 'nosniff',
+      'x-frame-options': 'DENY',
+      'cache-control': 'no-store, private',
+      ...soloHttps(),
+    },
+  });
+}
+
 // ---------------------------------------------------------------- API
 async function api(request, env, url, usuario) {
   const ruta = url.pathname.replace(/^\/api/, '');
@@ -293,9 +321,13 @@ async function api(request, env, url, usuario) {
   // La subida de un archivo manda bytes, no JSON. Leerla acá como JSON no
   // fallaría con ruido —el catch la deja en {}— pero sí dejaría el cuerpo
   // consumido, y más abajo el archivo llegaría vacío sin que nada lo diga.
+  // El envío de prevención manda el PDF y a quiénes va en el mismo formulario,
+  // así que viaja como multipart y no como JSON. Se lee más abajo, donde se
+  // sabe que es esa ruta.
   const esSubidaDeArchivo = metodo === 'POST'
     && (/^\/rrhh\/documentos\/\d+\/archivo$/.test(ruta)
-        || /^\/pagos\/estados\/\d+\/archivo$/.test(ruta));
+        || /^\/pagos\/estados\/\d+\/archivo$/.test(ruta)
+        || /^\/documentos\/prevencion$/.test(ruta));
 
   const cuerpo = (metodo === 'POST' || metodo === 'PATCH') && !esSubidaDeArchivo
     ? await request.json().catch(() => ({}))
@@ -1252,6 +1284,68 @@ async function api(request, env, url, usuario) {
       }) });
     }
 
+    // ------------------------------------------- prevención de riesgos
+    //
+    // Acá no se arma nada: la prevencionista sube el PDF que ya tiene hecho y
+    // marca a quiénes se lo manda. Es la puerta de este módulo, `documentos`,
+    // que es justamente el único permiso del prevencionista: no hace falta
+    // `rrhh` porque un IRL no lleva sueldos adentro.
+    if (sub === '/prevencion' || sub.startsWith('/prevencion/')) {
+      if (!(await prev.tablasListas(env))) {
+        return json({ sin_migracion: true, aviso: prev.avisoMigracion(),
+                      migracion: prev.MIGRACION }, 503);
+      }
+
+      if (sub === '/prevencion' && metodo === 'GET') {
+        const [tipos, personas, envios] = await Promise.all([
+          prev.tipos(env), prev.destinatarios(env), prev.listarEnvios(env),
+        ]);
+        // Las personas van con nombre, RUT, cargo e instalación y nada más.
+        // El prevencionista necesita saber a quién entregarle el papel; el
+        // sueldo y la cuenta bancaria no son parte de esa pregunta, y por eso
+        // esto no pasa por /catalogos, que los deja ver a quien tiene `rrhh`.
+        return json({ tipos, personas, envios });
+      }
+
+      if (sub === '/prevencion' && metodo === 'POST') {
+        let forma;
+        try {
+          forma = await request.formData();
+        } catch {
+          return error('No llegó el formulario con el archivo', 400);
+        }
+        const archivo = forma.get('archivo');
+        if (!archivo || typeof archivo.arrayBuffer !== 'function') {
+          return error('No llegó ningún archivo', 400);
+        }
+        // El tamaño se mira antes de leer los bytes, igual que en la subida de
+        // documentos de RRHH: un archivo de cien megas no puede llegar a
+        // cargarse en memoria para después rechazarlo.
+        if (Number(archivo.size || 0) > arch.MAX_BYTES) {
+          return error(`El archivo pesa más de ${Math.round(arch.MAX_BYTES / 1048576)} MB. `
+            + 'Guárdelo con menos resolución o divídalo.', 413);
+        }
+        let datos = {};
+        try {
+          datos = JSON.parse(String(forma.get('datos') || '{}'));
+        } catch {
+          return error('Los datos del envío llegaron mal', 400);
+        }
+        const bytes = new Uint8Array(await archivo.arrayBuffer());
+        const r = await prev.enviar(env, usuario.usuario,
+          { bytes, nombre: archivo.name || datos.archivo }, datos);
+        if (r.error) return json({ error: r.error, omitidos: r.omitidos }, r.status);
+        return json(r, 201);
+      }
+
+      const mEnvio = sub.match(/^\/prevencion\/([a-f0-9]{8,40})$/);
+      if (mEnvio && metodo === 'GET') {
+        return json({ documentos: await prev.verEnvio(env, mEnvio[1]) });
+      }
+
+      return error('Ruta no encontrada', 404);
+    }
+
     // Vista previa: arma y devuelve, no escribe. La oficina tiene que poder
     // leer el contrato entero antes de congelarlo, porque después no se edita.
     if (sub === '/vista-previa' && metodo === 'POST') {
@@ -1282,6 +1376,15 @@ async function api(request, env, url, usuario) {
       }
 
       if (!accion && metodo === 'GET') return json({ documento: d });
+
+      // El PDF de los que llegaron como archivo (prevención). El de los de
+      // plantilla se arma en la pantalla desde el cuerpo congelado, que es
+      // otra cosa: acá se devuelve el papel tal como se subió.
+      if (accion === '/archivo' && metodo === 'GET') {
+        const fila = await primero(env, 'documentos_generados'
+          + `?select=archivo_ruta,archivo_tipo,archivo_nombre&id=eq.${id}`);
+        return responderPdfDocumento(env, fila);
+      }
 
       // La firma de la empresa. Va con el nombre y el RUT del representante
       // legal, que salen de `datos_empresa`, y queda anotado qué cuenta la
@@ -1919,15 +2022,39 @@ async function apiAsistencia(request, env, url) {
       return error('Ese documento no existe', 404);
     }
     // Se manda el cuerpo entero: lo que se firma es lo que se lee, y un
-    // resumen o un enlace a «ver más» sería firmar lo que no se leyó.
+    // resumen o un enlace a «ver más» sería firmar lo que no se leyó. Cuando
+    // el documento llegó como archivo no hay cuerpo que mandar: la pantalla
+    // pide el PDF por la ruta de abajo y lo dibuja hoja por hoja, que es la
+    // misma idea.
     return json({
       documento: {
         id: d.id, numero: d.numero, titulo: d.titulo, cuerpo: d.cuerpo,
         estado: d.estado, por_confirmar: d.por_confirmar,
         creado_en: d.creado_en,
+        tiene_archivo: d.tiene_archivo === true,
+        archivo_nombre: d.archivo_nombre || null,
+        archivo_paginas: d.archivo_paginas || null,
+        tipo_nombre: d.datos?.tipo_nombre || null,
+        base_legal: d.datos?.base_legal || null,
+        firma_todas_hojas: d.firma_todas_hojas === true,
         firmas: d.firmas.map((f) => ({ rol: f.rol, nombre: f.nombre, firmado_en: f.firmado_en })),
       },
     });
+  }
+
+  // El PDF del documento, para leerlo antes de firmarlo. Solo el suyo: la
+  // sesión del libro ya dice quién es, y esto es para que un id cambiado a
+  // mano en la llamada no sirva para leer el papel de otro.
+  const mPdf = ruta.match(/^\/documentos\/(\d+)\/archivo$/);
+  if (mPdf && metodo === 'GET') {
+    if (!(await docs.tablasListas(env))) return error(docs.avisoMigracion(), 503);
+    const fila = await primero(env, 'documentos_generados'
+      + '?select=trabajador_id,archivo_ruta,archivo_tipo,archivo_nombre'
+      + `&id=eq.${Number(mPdf[1])}`);
+    if (!fila || fila.trabajador_id !== trabajador.id) {
+      return error('Ese documento no existe', 404);
+    }
+    return responderPdfDocumento(env, fila);
   }
 
   const mPoner = ruta.match(/^\/documentos\/(\d+)\/firma$/);
@@ -1983,6 +2110,7 @@ const RELACIONES = [
   'bancos', 'roles_permisos', 'v_cuentas',
   'fichas_ingreso', 'intentos_publicos',
   'v_personal', 'v_documentos', 'v_documentos_generados', 'v_estados_pago',
+  'v_envios_prevencion',
 ];
 
 const COLUMNAS = [
@@ -1996,6 +2124,7 @@ const COLUMNAS = [
   ['contacto_con_limite',          'contactos',              ['ip_huella']],
   ['ficha_rrhh',                   'trabajadores',           ['fecha_ingreso', 'afp', 'salud_sistema']],
   ['documentos_con_archivo',       'documentos_trabajador',  ['archivo_ruta']],
+  ['documentos_desde_archivo',     'documentos_generados',   ['archivo_ruta', 'envio_id', 'tipo_documento']],
   ['instalaciones_con_direccion',  'instalaciones',          ['direccion']],
   ['permiso_de_borrar',            'usuarios',               ['puede_borrar']],
 ];

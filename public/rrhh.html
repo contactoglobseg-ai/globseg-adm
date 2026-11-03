@@ -86,6 +86,7 @@ try {
 
 <script src="apariencia.js"></script>
 <script src="firma.js"></script>
+<script src="visorpdf.js"></script>
 <script src="comun.js"></script>
 <script>
 "use strict";
@@ -2956,6 +2957,14 @@ const DOCS = {
   campos: {},
   previa: null,
   abierto: null,
+  /* Lo de prevención. El archivo vive acá y no en el `<input type=file>`
+     porque la pantalla se repinta entera al marcar a alguien, y un input de
+     archivo no se puede volver a llenar desde JavaScript: el PDF elegido se
+     perdería a la primera casilla. */
+  prev: {
+    datos: null, tipo: "", archivo: null, paginas: null, nota: "",
+    instalacion: "", marcados: new Set(), envio: null, resultado: null,
+  },
 };
 
 /* Los campos del arriendo. Viven acá y no en la base porque son el formulario,
@@ -2993,8 +3002,12 @@ async function pintarDocumentos() {
     return;
   }
 
-  const { lista } = await pedir("/documentos").then(r => ({ lista: r.documentos || [] }))
+  const { lista: todos } = await pedir("/documentos").then(r => ({ lista: r.documentos || [] }))
     .catch(() => ({ lista: [] }));
+  // Los de prevención salen en su propia sección, agrupados por envío. Un IRL
+  // mandado a doce guardias son doce filas, y con dos envíos esta tabla deja
+  // de poder leerse justo para lo que sirve: encontrar un contrato.
+  const lista = todos.filter(d => !d.envio_id);
 
   const p = c.plantillas.find(x => x.codigo === DOCS.plantilla);
   const laboral = p && p.clase === "laboral";
@@ -3046,6 +3059,8 @@ async function pintarDocumentos() {
     </section>
 
     <div id="d-previa"></div>
+
+    <div id="d-prevencion"></div>
 
     ${seccionEmpresa(c)}
 
@@ -3103,7 +3118,338 @@ async function pintarDocumentos() {
   }
 
   if (DOCS.previa) pintarPrevia();
+  pintarPrevencion().catch(() => {});
   if (DOCS.abierto) pintarAbierto().catch(e => decir($("#m-docs"), e.message, "error"));
+}
+
+// ------------------------------------------------- prevención de riesgos
+/**
+ * Mandar un documento de prevención a firmar.
+ *
+ * Es otra cosa que generar un contrato, y por eso tiene su propia sección: acá
+ * no se arma nada. La prevencionista ya tiene el IRL hecho —con los riesgos del
+ * puesto y de esa instalación, que es trabajo suyo y no del sistema—, lo sube,
+ * marca a quiénes y cada uno lo firma desde su teléfono.
+ *
+ * Lo abre quien tenga `documentos`, que es el único permiso del prevencionista.
+ * No hace falta `rrhh`: un IRL no lleva sueldos adentro. De la gente se ve el
+ * nombre, el RUT, el cargo y dónde trabaja, que es lo que hace falta para saber
+ * a quién entregarle el papel.
+ */
+const ESTILO_CASILLA = "width:1.05rem;height:1.05rem;flex:none;margin:0;"
+  + "padding:0;accent-color:var(--btn);cursor:pointer";
+
+async function pintarPrevencion() {
+  const caja = $("#d-prevencion");
+  if (!caja) return;
+  const P = DOCS.prev;
+
+  if (!P.datos) {
+    try {
+      P.datos = await pedir("/documentos/prevencion");
+    } catch (e) {
+      // La migración puede no estar aplicada. Se dice con el nombre del
+      // archivo y el resto de Documentos sigue andando igual.
+      caja.innerHTML = `<section class="caja"><div class="caja__tit">
+        <h2>Prevención de riesgos</h2></div>
+        ${aviso("ojo", "Todavía no se puede mandar a firmar. ", e.message)}</section>`;
+      return;
+    }
+  }
+
+  const { tipos, personas, envios } = P.datos;
+  const tipo = tipos.find(t => t.codigo === P.tipo);
+  const instalaciones = [...new Map(personas.filter(x => x.instalacion_id)
+    .map(x => [x.instalacion_id, x.instalacion])).entries()];
+  const visibles = P.instalacion
+    ? personas.filter(x => String(x.instalacion_id) === String(P.instalacion))
+    : personas;
+
+  caja.innerHTML = `
+    <section class="caja">
+      <div class="caja__tit"><h2>Prevención de riesgos</h2>
+        <span class="nota">Suba el documento y mándelo a firmar</span></div>
+
+      <div class="rejilla">
+        <label class="campo" style="grid-column:span 2"><span>Qué documento es</span>
+          <select id="p-tipo">
+            <option value="">Elija uno…</option>
+            ${tipos.map(t => `<option value="${esc(t.codigo)}"
+              ${t.codigo === P.tipo ? " selected" : ""}>${esc(t.nombre)}</option>`).join("")}
+          </select></label>
+        <label class="campo" style="grid-column:span 2"><span>El archivo, en PDF</span>
+          <input type="file" id="p-archivo" accept="application/pdf,.pdf"></label>
+      </div>
+
+      ${tipo && tipo.base_legal
+        ? `<p class="sub">${esc(tipo.base_legal)}</p>` : ""}
+      ${tipo && tipo.vence && tipo.meses_validez ? aviso("bien",
+        "Vuelve a pedirse solo. ",
+        `Al guardarlo en la ficha de cada uno queda venciendo a los ${tipo.meses_validez} `
+        + "meses, así que RRHH vuelve a verlo en la lista de lo que está por vencer.") : ""}
+
+      ${P.archivo ? `
+      <p class="sub"><b>${esc(P.archivo.name)}</b> · ${pesoArchivo(P.archivo.size)}<span
+        id="p-hojas">${P.paginas ? ` · ${P.paginas} ${P.paginas === 1 ? "hoja" : "hojas"}`
+        : ""}</span>
+        · <button class="bt bt--fino bt--chico" type="button" id="p-quitar">Quitar</button></p>
+      <div id="p-visor"></div>
+      <p class="sub">La firma de cada persona va al pie de todas las hojas, como se
+        visa en papel, más una hoja al final con el registro de la firma.</p>` : ""}
+
+      <div class="caja__tit" style="padding-left:0"><h3 style="font-size:.95rem;margin:0">
+        A quiénes</h3>
+        <span class="nota" id="p-cuenta">${P.marcados.size} marcados</span></div>
+
+      <div class="rejilla">
+        <label class="campo" style="grid-column:span 2"><span>Instalación</span>
+          <select id="p-instalacion">
+            <option value="">Todas</option>
+            ${instalaciones.map(([id, nom]) => `<option value="${id}"
+              ${String(id) === String(P.instalacion) ? " selected" : ""}>${esc(nom)}</option>`).join("")}
+          </select></label>
+        <div class="campo" style="grid-column:span 2;justify-content:flex-end">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="bt bt--fino bt--chico" type="button" id="p-todos">
+              Marcar los ${visibles.length} de la lista</button>
+            <button class="bt bt--fino bt--chico" type="button" id="p-ninguno">
+              Desmarcar todos</button>
+          </div>
+        </div>
+      </div>
+
+      ${visibles.length ? `<div style="max-height:320px;overflow:auto;border:1px solid var(--borde);
+        border-radius:var(--r-s);padding:8px 10px;display:grid;
+        grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:4px 14px">
+        ${visibles.map(x => `<label style="display:flex;gap:9px;align-items:center;
+          padding:4px 0;font-size:.86rem;cursor:pointer">
+          <input type="checkbox" class="p-quien" value="${x.id}"
+            ${P.marcados.has(x.id) ? " checked" : ""} style="${ESTILO_CASILLA}">
+          <span><b style="font-weight:500">${esc(x.nombre)}</b><br>
+            <span class="sub" style="margin:0;font-size:.76rem">${esc(rutLindoSeguro(x.rut))}${
+              x.cargo ? " · " + esc(x.cargo) : ""}${
+              !P.instalacion && x.instalacion ? " · " + esc(x.instalacion) : ""}</span></span>
+        </label>`).join("")}
+      </div>` : `<p class="sub">No hay nadie activo en esa instalación.</p>`}
+
+      <label class="campo" style="margin-top:12px"><span>Nota (opcional)</span>
+        <input id="p-nota" value="${esc(P.nota)}"
+          placeholder="Por ejemplo: charla del 2 de noviembre en Puelche"></label>
+
+      ${P.resultado ? avisoResultado(P.resultado) : ""}
+
+      <div class="pie-form">
+        <button class="bt" type="button" id="p-enviar">Mandar a firmar</button>
+        <span class="mensaje" id="m-prev"></span>
+      </div>
+    </section>
+
+    <section class="caja">
+      <div class="caja__tit"><h2>Lo mandado a firmar</h2>
+        <span class="nota">${envios.length} ${envios.length === 1 ? "envío" : "envíos"}</span></div>
+      ${envios.length ? `<div class="desliza"><table class="envios" style="min-width:860px">
+        <thead><tr><th>Cuándo</th><th>Documento</th><th>Archivo</th>
+          <th>Firmaron</th><th>Lo mandó</th><th></th></tr></thead><tbody>
+        ${envios.map(e => `<tr>
+          <td class="nowrap">${fecha(String(e.creado_en).slice(0, 10))}</td>
+          <td>${esc(e.tipo_nombre || e.tipo_documento || "—")}</td>
+          <td>${esc(e.archivo_nombre || "—")}${e.archivo_paginas
+            ? ` <span class="sub" style="margin:0">· ${e.archivo_paginas} hojas</span>` : ""}</td>
+          <td class="nowrap">${selloEnvio(e)}</td>
+          <td class="nowrap">${esc(e.creado_por || "—")}</td>
+          <td class="celda-acciones">
+            <button class="bt bt--fino" type="button" data-envio="${esc(e.envio_id)}">
+              Ver quiénes</button></td>
+        </tr>`).join("")}
+      </tbody></table></div>`
+      : `<p class="sub">Todavía no se ha mandado ninguno.</p>`}
+    </section>
+
+    <div id="d-envio"></div>`;
+
+  $("#p-tipo").onchange = e => { P.tipo = e.target.value; pintarPrevencion(); };
+  $("#p-instalacion").onchange = e => { P.instalacion = e.target.value; pintarPrevencion(); };
+  $("#p-archivo").onchange = e => elegirPdfPrevencion(e.target.files[0])
+    .catch(err => decir($("#m-prev"), err.message, "error"));
+  if ($("#p-quitar")) {
+    $("#p-quitar").onclick = () => {
+      P.archivo = null; P.paginas = null; P.resultado = null; pintarPrevencion();
+    };
+  }
+  $("#p-nota").oninput = e => { P.nota = e.target.value; };
+
+  // Marcar a alguien **no repinta la sección**: repintar volvería a dibujar el
+  // PDF hoja por hoja en cada clic, que es lo más caro que hace esta pantalla.
+  // Solo se mueve la cuenta de arriba.
+  const contar = () => { $("#p-cuenta").textContent = `${P.marcados.size} marcados`; };
+  for (const c of document.querySelectorAll(".p-quien")) {
+    c.onchange = () => {
+      const id = Number(c.value);
+      if (c.checked) P.marcados.add(id); else P.marcados.delete(id);
+      contar();
+    };
+  }
+  $("#p-todos").onclick = () => {
+    for (const x of visibles) P.marcados.add(x.id);
+    for (const c of document.querySelectorAll(".p-quien")) c.checked = true;
+    contar();
+  };
+  $("#p-ninguno").onclick = () => {
+    P.marcados.clear();
+    for (const c of document.querySelectorAll(".p-quien")) c.checked = false;
+    contar();
+  };
+  $("#p-enviar").onclick = () => enviarPrevencion()
+    .catch(e => decir($("#m-prev"), e.message, "error"));
+  for (const b of document.querySelectorAll("[data-envio]")) {
+    b.onclick = () => verEnvioPrevencion(b.dataset.envio)
+      .catch(e => decir($("#m-prev"), e.message, "error"));
+  }
+
+  // El PDF se dibuja **después** de pintar y sin esperarlo: son 1,4 MB de
+  // lector y varias hojas que renderizar, y el resto de la pantalla tiene que
+  // estar usable mientras tanto. Las hojas que cuenta se escriben en su
+  // rotulito, sin repintar: repintar volvería a dibujarlo todo de nuevo.
+  if (P.archivo && $("#p-visor")) {
+    VisorPdf.dibujarArchivo($("#p-visor"), P.archivo).then(hojas => {
+      if (!hojas) return;
+      P.paginas = hojas;
+      const el = $("#p-hojas");
+      if (el) el.textContent = ` · ${hojas} ${hojas === 1 ? "hoja" : "hojas"}`;
+    }).catch(() => {});
+  }
+  if (P.envio) pintarEnvio().catch(() => {});
+}
+
+const selloEnvio = e => {
+  const falta = Number(e.por_firmar || 0);
+  const firmados = Number(e.firmados || 0);
+  const clase = falta ? "e-solicitar_oc" : "e-cerrado";
+  return `<span class="sello ${clase}">${firmados} de ${e.total}</span>`;
+};
+
+/** Lo que pasó al mandar: cuántos salieron y, sobre todo, quién no. */
+function avisoResultado(r) {
+  if (!r.omitidos || !r.omitidos.length) {
+    return aviso("bien", "Mandado. ",
+      `${r.enviados} ${r.enviados === 1 ? "persona lo tiene" : "personas lo tienen"} `
+      + "para firmar al entrar a marcar turno.");
+  }
+  return aviso("ojo", `Mandado a ${r.enviados}, pero quedaron fuera ${r.omitidos.length}. `,
+    r.omitidos.map(o => `${o.nombre || "el id " + o.id} (${o.motivo})`).join("; ") + ".");
+}
+
+/**
+ * El PDF elegido. Se abre acá mismo, antes de mandarlo: es la única
+ * oportunidad de ver que no se subió el archivo equivocado, porque después
+ * son doce documentos firmados.
+ *
+ * De paso se cuentan las hojas, que es lo que la pantalla muestra en la lista
+ * y lo que deja decir «la firma va en las tres».
+ */
+async function elegirPdfPrevencion(archivo) {
+  const P = DOCS.prev;
+  P.resultado = null;
+  if (!archivo) { P.archivo = null; P.paginas = null; return pintarPrevencion(); }
+  if (archivo.size > MAX_ARCHIVO) {
+    throw new Error(`«${archivo.name}» pesa ${pesoArchivo(archivo.size)} y el máximo es 10 MB.`);
+  }
+  // El tipo que dice el navegador no decide nada —el servidor mira los bytes—
+  // pero sirve para no hacerle subir 8 MB a alguien que eligió un Word.
+  if (archivo.type && archivo.type !== "application/pdf") {
+    throw new Error("El documento tiene que ser un PDF. Si lo tiene en Word, guárdelo "
+      + "como PDF antes de subirlo.");
+  }
+  P.archivo = archivo;
+  P.paginas = null;
+  await pintarPrevencion();
+}
+
+async function enviarPrevencion() {
+  const P = DOCS.prev;
+  if (!P.tipo) throw new Error("Elija qué documento de prevención es.");
+  if (!P.archivo) throw new Error("Falta el archivo en PDF.");
+  if (!P.marcados.size) throw new Error("Marque a quiénes se lo manda.");
+
+  const bt = $("#p-enviar");
+  bt.disabled = true;
+  decir($("#m-prev"), "Mandando el documento…");
+  try {
+    const forma = new FormData();
+    forma.append("archivo", P.archivo, P.archivo.name);
+    forma.append("datos", JSON.stringify({
+      tipo: P.tipo,
+      trabajadores: [...P.marcados],
+      paginas: P.paginas,
+      nota: P.nota,
+    }));
+    // Sin `content-type` a mano: lo pone el navegador con el límite entre
+    // partes que él mismo inventa, y escribirlo lo rompe.
+    const resp = await fetch("/api/documentos/prevencion", { method: "POST", body: forma });
+    const cuerpo = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(cuerpo.error || `Error ${resp.status}`);
+
+    P.resultado = cuerpo;
+    P.archivo = null;
+    P.paginas = null;
+    P.marcados.clear();
+    P.datos = null;              // para que la lista de envíos traiga el nuevo
+    P.envio = cuerpo.envio_id;
+    decir($("#m-prev"), "");
+    await pintarPrevencion();
+  } finally {
+    if ($("#p-enviar")) $("#p-enviar").disabled = false;
+  }
+}
+
+async function verEnvioPrevencion(envioId) {
+  DOCS.prev.envio = envioId;
+  await pintarEnvio();
+  $("#d-envio").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+/** Quién firmó y quién no. Es la pregunta que se le hace a esto antes de una
+ *  fiscalización, y por eso los que faltan salen primero y en ámbar. */
+async function pintarEnvio() {
+  const caja = $("#d-envio");
+  if (!caja || !DOCS.prev.envio) return;
+  const { documentos } = await pedir(`/documentos/prevencion/${DOCS.prev.envio}`);
+  const faltan = documentos.filter(d => d.estado === "por_firmar");
+
+  caja.innerHTML = `
+    <section class="caja">
+      <div class="caja__tit"><h2>Quiénes lo tienen</h2>
+        <span class="nota">${documentos.length} ${documentos.length === 1
+          ? "persona" : "personas"}</span></div>
+      ${faltan.length ? aviso("ojo",
+        `Faltan ${faltan.length} por firmar. `,
+        "Lo ven al entrar a asistencia.seggarridos.com con su propia cuenta, la misma "
+        + "con la que marcan turno.") : aviso("bien", "Firmado por todos. ",
+        "Cada uno se puede guardar en su ficha desde «Abrir».")}
+      <div class="desliza"><table class="envios" style="min-width:820px">
+        <thead><tr><th>Persona</th><th>RUT</th><th>N°</th><th>Estado</th>
+          <th>En su ficha</th><th></th></tr></thead><tbody>
+        ${documentos.map(d => `<tr>
+          <td>${esc(d.trabajador || "—")}</td>
+          <td class="nowrap">${esc(rutLindoSeguro(d.trabajador_rut))}</td>
+          <td class="nowrap">${esc(d.numero)}</td>
+          <td>${selloDoc(d)}</td>
+          <td>${d.documento_id ? "Guardado" : "—"}</td>
+          <td class="celda-acciones">
+            <button class="bt bt--fino" type="button" data-abrir="${d.id}">Abrir</button></td>
+        </tr>`).join("")}
+      </tbody></table></div>
+      <div class="pie-form">
+        <button class="bt bt--fino" type="button" id="p-cerrar-envio">Cerrar</button>
+        <span class="mensaje" id="m-envio"></span>
+      </div>
+    </section>`;
+
+  for (const b of caja.querySelectorAll("[data-abrir]")) {
+    b.onclick = () => abrirDocumento(Number(b.dataset.abrir))
+      .catch(e => decir($("#m-envio"), e.message, "error"));
+  }
+  $("#p-cerrar-envio").onclick = () => { DOCS.prev.envio = null; caja.innerHTML = ""; };
 }
 
 const selloDoc = d => d.estado === "firmado"
@@ -3319,7 +3665,11 @@ async function pintarAbierto() {
         "Lo ve al entrar a asistencia.seggarridos.com con su propia cuenta, la misma "
         + "con la que marca turno.") : ""}
 
-      <div class="documento">${esc(d.cuerpo)}</div>
+      ${d.tiene_archivo
+        ? `<p class="sub">${esc(d.archivo_nombre || "Documento en PDF")}${d.archivo_paginas
+            ? ` · ${d.archivo_paginas} ${d.archivo_paginas === 1 ? "hoja" : "hojas"}` : ""}</p>
+           <div id="d-visor"></div>`
+        : `<div class="documento">${esc(d.cuerpo || "")}</div>`}
 
       ${d.firmas.length ? `<div class="firmas">${d.firmas.map(f => `
         <div class="firma-hecha">
@@ -3349,7 +3699,9 @@ async function pintarAbierto() {
 
       <div class="pie-form">
         ${tocaEmpresa ? '<button class="bt" type="button" id="d-firmar">Firmar</button>' : ""}
-        <button class="bt bt--fino" type="button" id="d-pdf">Descargar en PDF</button>
+        <button class="bt bt--fino" type="button" id="d-pdf">${d.tiene_archivo
+          ? (d.firmas.length ? "Descargar firmado" : "Descargar el PDF")
+          : "Descargar en PDF"}</button>
         ${d.estado === "firmado" && d.trabajador_id && !d.documento_id
           ? '<button class="bt bt--fino" type="button" id="d-archivar">Guardar en su ficha</button>'
           : ""}
@@ -3359,6 +3711,10 @@ async function pintarAbierto() {
         <span class="mensaje" id="m-abierto"></span>
       </div>
     </section>`;
+
+  if (d.tiene_archivo && $("#d-visor")) {
+    VisorPdf.dibujar($("#d-visor"), `/api/documentos/${d.id}/archivo`).catch(() => {});
+  }
 
   let lienzo = null;
   if (tocaEmpresa) {
@@ -3427,6 +3783,206 @@ async function archivarDocumento(d) {
   await pintarDocumentos();
 }
 
+/* pdf-lib sí viene de cdnjs, al revés que pdf.js: no usa worker, así que no
+   choca con lo que prohíbe crear un worker de otro origen. Mismo criterio que
+   el recorte de PDF de los estados de pago. */
+const PDFLIB = "https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js";
+
+/**
+ * Lo que las fuentes de siempre de un PDF saben escribir.
+ *
+ * Helvetica se guarda con WinAnsi, que tiene las tildes y la eñe pero no las
+ * comillas curvas que mete Word ni los guiones largos de algunos nombres
+ * pegados desde otra parte. `drawText` con un carácter que la fuente no tiene
+ * **lanza una excepción**, así que el documento firmado no se podría bajar por
+ * una comilla. Se cambian por su equivalente de toda la vida.
+ */
+const winansi = (t) => String(t ?? "")
+  .replace(/[‘’‛]/g, "'")
+  .replace(/[“”]/g, '"')
+  .replace(/[–—]/g, "-")
+  .replace(/…/g, "...")
+  .replace(/ /g, " ")
+  .replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\xFF]/g, "");
+
+/**
+ * La copia firmada de un documento que llegó como archivo.
+ *
+ * **La firma va al pie de todas las hojas**, que es lo que el gerente pidió y
+ * lo que en papel se hace visando una por una. Cómo se hace sin romper nada:
+ *
+ *  - El original **no se dibuja encima**. Cada hoja se incrusta encogida lo
+ *    justo para dejar abajo una franja limpia. Estampar sobre el margen es lo
+ *    más común y es lo que se descartó: si el PDF trae texto hasta el borde
+ *    —y un IRL con una tabla de riesgos largos lo trae— la firma taparía justo
+ *    lo que había que informar. El precio es que el texto queda un poco más
+ *    chico, y es barato al lado de eso.
+ *  - Al final va **una hoja de registro** con la firma grande, con qué cuenta
+ *    se puso, a qué hora según el servidor, desde dónde, y el SHA-256 del
+ *    archivo. Esa hoja es la que contesta «quién firmó y cuándo», que es lo
+ *    único que se discute cuando alguien objeta una firma electrónica simple.
+ *
+ * El PDF es una impresión y no el registro: se vuelve a armar igual cuando se
+ * quiera, porque el registro son el archivo guardado y las filas de firmas.
+ */
+async function pdfPrevencionSellado(d, op = {}) {
+  await cargarScript(PDFLIB, "el armador de PDF");
+  if (!window.PDFLib) throw new Error("No se pudo cargar el armador de PDF.");
+  const { PDFDocument, StandardFonts, rgb } = window.PDFLib;
+
+  const resp = await fetch(`/api/documentos/${d.id}/archivo`, { credentials: "same-origin" });
+  if (!resp.ok) throw new Error("No se pudo bajar el documento original.");
+  const original = await PDFDocument.load(await resp.arrayBuffer());
+
+  const pdf = await PDFDocument.create();
+  const normal = await pdf.embedFont(StandardFonts.Helvetica);
+  const negrita = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const tinta = rgb(0.07, 0, 0.32);
+  const gris = rgb(0.43, 0.43, 0.52);
+
+  // Las firmas, incrustadas una vez y reusadas en cada hoja. Una firma que el
+  // PDF no pueda dibujar no bota el documento entero: lo que importa en la
+  // franja es el nombre, el RUT y la hora.
+  const firmas = [];
+  for (const f of (d.firmas || [])) {
+    let img = null;
+    try { img = f.imagen ? await pdf.embedPng(f.imagen) : null; } catch (_) { img = null; }
+    firmas.push({ ...f, img });
+  }
+
+  // **Con los índices de todas las páginas.** `embedPdf` sin el segundo
+  // argumento incrusta solo la primera, y el documento sellado salía de una
+  // hoja: el IRL de tres quedaba en una, con el pie diciendo «hoja 1 de 1».
+  // Se vio leyendo el PDF que salió, no el código.
+  const hojas = await pdf.embedPdf(original, original.getPageIndices());
+  const FRANJA = 46;
+
+  hojas.forEach((hoja, i) => {
+    const pagina = pdf.addPage([hoja.width, hoja.height]);
+    const escala = (hoja.height - FRANJA) / hoja.height;
+    pagina.drawPage(hoja, {
+      x: (hoja.width * (1 - escala)) / 2,
+      y: FRANJA,
+      xScale: escala,
+      yScale: escala,
+    });
+
+    // La raya que separa el documento de lo que agregó el sistema. Sin ella,
+    // la franja se lee como parte del papel original.
+    pagina.drawLine({
+      start: { x: 34, y: FRANJA - 4 }, end: { x: hoja.width - 34, y: FRANJA - 4 },
+      thickness: 0.6, color: gris,
+    });
+
+    let x = 34;
+    for (const f of firmas) {
+      if (f.img) {
+        const alto = 20;
+        const ancho = Math.min(74, (f.img.width / f.img.height) * alto);
+        pagina.drawImage(f.img, { x, y: FRANJA - 28, width: ancho, height: alto });
+        x += ancho + 6;
+      }
+      pagina.drawText(winansi(f.nombre || ""),
+        { x, y: FRANJA - 15, size: 6.5, font: negrita, color: tinta });
+      pagina.drawText(winansi(`${f.rut || ""} · ${cuando(f.firmado_en)}`),
+        { x, y: FRANJA - 23, size: 6, font: normal, color: gris });
+      x += 150;
+    }
+
+    pagina.drawText(winansi(`${d.numero} · hoja ${i + 1} de ${hojas.length}`),
+      { x: hoja.width - 34 - normal.widthOfTextAtSize(
+          winansi(`${d.numero} · hoja ${i + 1} de ${hojas.length}`), 6.5),
+        y: FRANJA - 15, size: 6.5, font: normal, color: gris });
+  });
+
+  // ------------------------------------------------------- hoja de registro
+  const reg = pdf.addPage([595.28, 841.89]);     // A4 en puntos
+  const M = 56;
+  let y = 790;
+  const linea = (texto, { tam = 9.5, fuente = normal, color = rgb(0.12, 0.12, 0.16),
+                          salto = 14, ancho = 595.28 - M * 2 } = {}) => {
+    for (const trozo of cortar(winansi(texto), fuente, tam, ancho)) {
+      reg.drawText(trozo, { x: M, y, size: tam, font: fuente, color });
+      y -= salto;
+    }
+  };
+
+  linea("REGISTRO DE FIRMA ELECTRÓNICA", { tam: 13, fuente: negrita, color: tinta, salto: 20 });
+  linea("GLOBSEG SPA · RUT 78.095.104-4 · Seguridad Garridos",
+    { tam: 8.5, color: gris, salto: 18 });
+  linea(d.titulo, { tam: 11, fuente: negrita, color: tinta, salto: 17 });
+  linea(`Documento N° ${d.numero}`, { tam: 9, color: gris });
+  linea(`Archivo: ${d.archivo_nombre || "—"} · ${hojas.length} `
+    + `${hojas.length === 1 ? "hoja" : "hojas"}`, { tam: 9, color: gris });
+  if (d.datos && d.datos.base_legal) linea(d.datos.base_legal, { tam: 8.5, color: gris });
+  if (d.creado_por) {
+    // La cuenta y no «fulano»: `creado_por` guarda el usuario, y decir un
+    // nombre que no está guardado sería inventarlo adentro de un documento.
+    linea(`Lo entregó la cuenta ${d.creado_por}, el ${cuando(d.creado_en)}`,
+      { tam: 9, color: gris });
+  }
+  y -= 10;
+
+  for (const f of firmas) {
+    if (f.img) {
+      const alto = 42;
+      const ancho = Math.min(160, (f.img.width / f.img.height) * alto);
+      reg.drawImage(f.img, { x: M, y: y - alto + 8, width: ancho, height: alto });
+      y -= alto + 2;
+    }
+    reg.drawLine({ start: { x: M, y }, end: { x: M + 180, y }, thickness: 0.6, color: gris });
+    y -= 13;
+    linea(f.nombre || "", { tam: 10, fuente: negrita, color: tinta, salto: 12 });
+    linea(`${f.rut || ""} · ${rolRotulo(f.rol)}`, { tam: 8.5, color: gris, salto: 11 });
+    linea(`Firmado el ${cuando(f.firmado_en)} (hora del servidor)`,
+      { tam: 8.5, color: gris, salto: 11 });
+    linea(f.origen === "asistencia"
+      ? `Desde el libro de asistencia, con la cuenta ${f.quien || ""}`
+      : `Desde el panel, con la cuenta ${f.quien || ""}`, { tam: 8.5, color: gris, salto: 18 });
+  }
+
+  y -= 6;
+  linea("Firma electrónica simple conforme a la Ley 19.799. No es firma electrónica "
+    + "avanzada: eso exige un certificado de un prestador acreditado. Lo que este "
+    + "registro acredita es que la persona entró con su propia cuenta y su propia "
+    + "clave, leyó el documento y firmó a la hora indicada. La firma va repetida al "
+    + "pie de todas las hojas del documento.",
+    { tam: 7.5, color: gris, salto: 10 });
+  y -= 4;
+  linea(`Verificación del archivo (SHA-256): ${d.cuerpo_hash || ""}`,
+    { tam: 7, color: gris, salto: 9 });
+
+  const bytes = await pdf.save();
+  const blob = new Blob([bytes], { type: "application/pdf" });
+  if (op.descargar === false) return blob;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${d.numero} ${d.titulo}.pdf`.replace(/[\\/:*?"<>|]/g, "-");
+  a.click();
+  URL.revokeObjectURL(url);
+  return null;
+}
+
+/** Corta un texto al ancho de la hoja. pdf-lib no parte líneas solo. */
+function cortar(texto, fuente, tam, ancho) {
+  const salidas = [];
+  for (const parrafo of String(texto).split("\n")) {
+    let linea = "";
+    for (const palabra of parrafo.split(" ")) {
+      const prueba = linea ? linea + " " + palabra : palabra;
+      if (fuente.widthOfTextAtSize(prueba, tam) > ancho && linea) {
+        salidas.push(linea);
+        linea = palabra;
+      } else {
+        linea = prueba;
+      }
+    }
+    salidas.push(linea);
+  }
+  return salidas;
+}
+
 /**
  * El PDF.
  *
@@ -3437,6 +3993,9 @@ async function archivarDocumento(d) {
  */
 async function pdfDocumento(d, opciones) {
   const op = opciones || {};
+  // Los que llegaron como archivo no se imprimen desde un cuerpo: no lo
+  // tienen. Se sella el PDF original, que es otra cosa y vive aparte.
+  if (d.tiene_archivo) return pdfPrevencionSellado(d, op);
   await cargarScript(JSPDF);
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit: "mm", format: "a4" });

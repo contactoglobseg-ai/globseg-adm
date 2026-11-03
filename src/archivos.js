@@ -108,6 +108,25 @@ export function rutaPara(trabajadorId, documentoId, extension) {
   return `${trabajadorId}/${documentoId}-${azar}.${extension}`;
 }
 
+/**
+ * Ruta del archivo de un envío de prevención.
+ *
+ * **No cuelga de ningún trabajador**, al revés que `rutaPara`: el mismo PDF es
+ * de todos los del envío. Mandar el IRL a doce guardias sube un archivo, no
+ * doce, y por eso anular el documento de uno no borra nada.
+ */
+export function rutaPrevencion(envioId, extension) {
+  return `prevencion/${envioId}.${extension}`;
+}
+
+/** SHA-256 de unos bytes, en hexadecimal. Es lo que firma quien firma un
+ *  documento que llegó como archivo: ahí no hay texto que resumir. */
+export async function hashBytes(bytes) {
+  const resumen = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(resumen)]
+    .map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 // ---------------------------------------------------------------- transporte
 // `SUPABASE_STORAGE` existe por lo mismo que `SUPABASE_REST` en datos.js: para
 // que las pruebas locales apunten a un Storage simulado en vez de a la nube.

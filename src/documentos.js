@@ -24,7 +24,7 @@
  */
 
 import { buscar, primero, insertar, actualizar, anotar } from './datos.js';
-import { hoyISO, esFecha } from './fechas.js';
+import { hoyISO, esFecha, sumarMeses } from './fechas.js';
 import { armar, faltantes, explicarFaltantes, hash,
          datosLaborales, datosArriendo } from './plantillas.js';
 import { ipDe, huellaDe } from './limite.js';
@@ -77,7 +77,13 @@ export async function catalogos(env) {
   return {
     // El cuerpo no viaja a la pantalla: es largo, no se edita desde ahí y lo
     // que se muestra es siempre el documento ya armado.
-    plantillas: plantillas.map(({ cuerpo, ...resto }) => resto),
+    //
+    // Las de `fuente` 'archivo' no salen acá: no se arman desde una plantilla,
+    // se sube el PDF hecho. Ofrecerlas en el formulario de generar daría un
+    // documento vacío, que es peor que no ofrecerlas. Viven en su propia
+    // sección (ver src/prevencion.js).
+    plantillas: plantillas.filter((p) => (p.fuente || 'texto') === 'texto')
+                          .map(({ cuerpo, ...resto }) => resto),
     bloques,
     empresa: empresa.map((e) => ({ ...e, ...rotuloEmpresa(e) })),
     empresa_por_confirmar: empresa.filter((e) => e.por_confirmar),
@@ -301,11 +307,26 @@ export async function generar(env, quien, cuerpo,
 
 /** Correlativo por año, como el de las cotizaciones. */
 async function siguienteNumero(env) {
+  return (await siguientesNumeros(env, 1))[0];
+}
+
+/**
+ * Los `cuantos` correlativos que siguen.
+ *
+ * Un envío de prevención saca doce documentos de una vez y los doce necesitan
+ * su número. Se pide el último una sola vez y se cuentan desde ahí: pedirlo
+ * doce veces daría doce veces el mismo, porque ninguno está grabado todavía.
+ * La columna es única, así que si dos personas envían en el mismo segundo la
+ * segunda inserción falla y se vuelve a intentar: no quedan dos documentos con
+ * el mismo número.
+ */
+export async function siguientesNumeros(env, cuantos) {
   const anio = hoyISO().slice(0, 4);
   const ultima = await primero(env,
     `documentos_generados?select=numero&numero=like.${anio}-*&order=numero.desc`);
-  const n = ultima ? Number(ultima.numero.split('-')[1]) + 1 : 1;
-  return `${anio}-${String(n).padStart(4, '0')}`;
+  const desde = ultima ? Number(ultima.numero.split('-')[1]) + 1 : 1;
+  return Array.from({ length: cuantos },
+    (_, i) => `${anio}-${String(desde + i).padStart(4, '0')}`);
 }
 
 // ----------------------------------------------------------------- consultas
@@ -319,13 +340,21 @@ export async function ver(env, id) {
   const d = await primero(env, `documentos_generados?select=*&id=eq.${entero(id)}`);
   if (!d) return null;
   const [p, firmas] = await Promise.all([
-    primero(env, `plantillas_documento?select=nombre,clase,firmantes&codigo=eq.${encodeURIComponent(d.plantilla)}`),
+    primero(env, 'plantillas_documento?select=nombre,clase,firmantes,fuente'
+                 + `&codigo=eq.${encodeURIComponent(d.plantilla)}`),
     buscar(env, `firmas_documento?select=*&documento_id=eq.${d.id}&order=firmado_en.asc`),
   ]);
+  // La ruta dentro del bucket no viaja a la pantalla. No es un secreto —el
+  // bucket es privado y solo el Worker lo abre— pero tampoco es asunto de
+  // nadie afuera: lo que la pantalla necesita saber es que hay archivo y que
+  // se pide por /documentos/:id/archivo.
+  const { archivo_ruta, ...resto } = d;
   return {
-    ...d,
+    ...resto,
+    tiene_archivo: !!archivo_ruta,
     plantilla_nombre: p?.nombre ?? d.plantilla,
     clase: p?.clase ?? 'general',
+    fuente: p?.fuente ?? 'texto',
     firmantes: (p?.firmantes || '').split(',').map((s) => s.trim()).filter(Boolean),
     firmas,
     // Si alguna firma no calza con el cuerpo, el texto cambió después de
@@ -509,15 +538,31 @@ export async function archivar(env, quien, id) {
 
   const p = await primero(env,
     `plantillas_documento?select=tipo_documento,nombre&codigo=eq.${encodeURIComponent(d.plantilla)}`);
-  const tipo = p?.tipo_documento || 'otro';
+  // El tipo elegido al enviar manda sobre el de la plantilla. En prevención la
+  // plantilla es una sola y el tipo lo eligió la prevencionista: si se tomara
+  // el de la plantilla, un IRL se archivaría como «otro» y no volvería a salir
+  // en las alertas de RRHH a los doce meses, que es la mitad de para qué sirve
+  // archivarlo.
+  const tipo = d.tipo_documento || p?.tipo_documento || 'otro';
+
+  // Cuándo vuelve a hacer falta. El catálogo ya lo dice —el IRL del DS 40
+  // vence a los doce meses— y si no se escribe acá, el documento queda
+  // archivado para siempre y nunca vuelve a salir en las alertas de RRHH, que
+  // es la mitad de para qué se archiva. Misma cuenta que la carga masiva.
+  const td = await primero(env,
+    `tipos_documento?select=nombre,vence,meses_validez&codigo=eq.${encodeURIComponent(tipo)}`);
+  const emision = String(d.creado_en).slice(0, 10);
+  const vence = td?.vence && td?.meses_validez
+    ? sumarMeses(emision, Number(td.meses_validez)) : null;
 
   const [doc] = await insertar(env, 'documentos_trabajador', {
     trabajador_id: d.trabajador_id,
     contrato_id: d.contrato_id,
     tipo,
-    glosa: `${p?.nombre || 'Documento'} N° ${d.numero}, firmado en el sistema`,
+    glosa: `${td?.nombre || p?.nombre || 'Documento'} N° ${d.numero}, firmado en el sistema`,
     numero: d.numero,
-    fecha_emision: String(d.creado_en).slice(0, 10),
+    fecha_emision: emision,
+    fecha_vencimiento: vence,
     creado_por: quien,
   });
   await actualizar(env, `documentos_generados?id=eq.${d.id}`, { documento_id: doc.id });

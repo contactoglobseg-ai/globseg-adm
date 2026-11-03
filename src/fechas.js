@@ -16,6 +16,27 @@ export function sumarDias(iso, dias) {
   return new Date(Date.UTC(a, m - 1, d) + dias * 86400000).toISOString().slice(0, 10);
 }
 
+/**
+ * La misma fecha `meses` más adelante, por aniversario.
+ *
+ * Si el día no existe en el mes de llegada se recorta al último (31 de enero
+ * + 1 mes = 28 de febrero), que es la misma regla con que se cuenta el ciclo
+ * de cobro. La usa el vencimiento de un documento: un IRL firmado el 15 de
+ * marzo vence el 15 de marzo del año siguiente, no 365 días después.
+ *
+ * Hay dos copias privadas de esto, en `carga.js` y en `activos.js`, escritas
+ * antes de que existiera este lugar. Conviene traerlas acá; no se hizo en el
+ * mismo cambio para no tocar archivos que otra sesión tenía a medio escribir.
+ */
+export function sumarMeses(iso, meses) {
+  const [a, m, d] = iso.split('-').map(Number);
+  const total = (m - 1) + meses;
+  const anio = a + Math.floor(total / 12);
+  const mes = (total % 12) + 1;
+  const ultimo = new Date(Date.UTC(anio, mes, 0)).getUTCDate();
+  return `${anio}-${String(mes).padStart(2, '0')}-${String(Math.min(d, ultimo)).padStart(2, '0')}`;
+}
+
 export function diasEntre(desde, hasta) {
   const p = (s) => { const [a, m, d] = s.split('-').map(Number); return Date.UTC(a, m - 1, d); };
   return Math.round((p(hasta) - p(desde)) / 86400000);

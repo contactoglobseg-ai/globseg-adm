@@ -216,6 +216,7 @@ input:focus,select:focus{outline:none;border-color:var(--acento);
 
 <script src="apariencia.js"></script>
 <script src="firma.js"></script>
+<script src="visorpdf.js"></script>
 <script>
 "use strict";
 
@@ -571,12 +572,17 @@ async function verDocumento(id) {
   $("#app").innerHTML = `
     <div class="caja">
       <div class="caja__tit">${esc(d.titulo)}</div>
-      <div class="documento">${esc(d.cuerpo)}</div>
+      ${d.tiene_archivo ? `
+        ${d.base_legal ? `<p class="firmado" style="padding:0 16px">${esc(d.base_legal)}</p>` : ""}
+        <div style="padding:0 16px 14px"><div id="doc-visor"></div></div>`
+      : `<div class="documento">${esc(d.cuerpo || "")}</div>`}
     </div>
 
     ${d.estado === "por_firmar" ? `
     <div class="caja">
       <div class="caja__tit">Su firma</div>
+      ${d.firma_todas_hojas ? `<p class="firmado" style="padding:0 16px">
+        Firme una vez: su firma queda al pie de todas las hojas del documento.</p>` : ""}
       <label class="leido">
         <input type="checkbox" id="leido">
         <span>Leí el documento completo y estoy de acuerdo con lo que dice.</span>
@@ -606,6 +612,15 @@ async function verDocumento(id) {
     await cargarPendientes();
     pintar();
   };
+
+  // El documento que llegó como archivo se dibuja hoja por hoja con pdf.js,
+  // no en un marco: en el iPhone un `<iframe>` con un PDF adentro muestra la
+  // primera hoja y no deja desplazarse, y un IRL de tres hojas quedaría
+  // firmado habiendo visto una. Ver public/visorpdf.js.
+  if (d.tiene_archivo && $("#doc-visor")) {
+    VisorPdf.dibujar($("#doc-visor"), `/api/asistencia/documentos/${d.id}/archivo`)
+      .catch(() => {});
+  }
 
   if (d.estado !== "por_firmar") return;
 
