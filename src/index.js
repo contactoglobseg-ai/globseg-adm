@@ -1948,143 +1948,111 @@ async function apiAsistencia(request, env, url) {
  * Dice qué tablas responden. No devuelve ningún dato: solo si cada una existe
  * y es accesible, para saber si falta correr una migración.
  */
+/**
+ * Qué relaciones y qué columnas expone PostgREST, **en una sola pedida**.
+ *
+ * La raíz de la API devuelve su especificación OpenAPI: ahí está todo lo que
+ * el Worker podría consultar, con sus columnas. Si una vista existe en la base
+ * pero PostgREST no la ve, acá no sale, que es exactamente lo que importa
+ * saber.
+ */
+async function esquemaExpuesto(env) {
+  const spec = await buscar(env, '');
+  const defs = spec?.definitions || {};
+  const mapa = new Map();
+  for (const [nombre, def] of Object.entries(defs)) {
+    mapa.set(nombre, new Set(Object.keys(def?.properties || {})));
+  }
+  if (!mapa.size) throw new ErrorDatos('La raíz de PostgREST no devolvió el esquema', 502);
+  return mapa;
+}
+
+// Lo que el diagnóstico revisa: primero las relaciones, después las columnas
+// que llegaron en una migración posterior y que son la señal de que esa
+// migración entró.
+const RELACIONES = [
+  'usuarios', 'clientes', 'instalaciones', 'servicios', 'tarifas',
+  'ciclos', 'extras', 'bitacora', 'cotizaciones', 'cotizacion_items',
+  'contactos', 'trabajadores', 'marcas',
+  'contratos', 'documentos_trabajador', 'ausencias',
+  'tipos_documento', 'parametros_rrhh', 'afps', 'tramos_impuesto',
+  'plantillas_documento', 'bloques_plantilla', 'documentos_generados',
+  'firmas_documento', 'datos_empresa', 'cargas_familiares',
+  'articulos', 'entregas', 'v_entregas',
+  'remuneraciones_mes', 'estados_pago', 'estado_pago_archivos',
+  'bancos', 'roles_permisos', 'v_cuentas',
+  'fichas_ingreso', 'intentos_publicos',
+  'v_personal', 'v_documentos', 'v_documentos_generados', 'v_estados_pago',
+];
+
+const COLUMNAS = [
+  // [rótulo, relación, columnas que tienen que estar]
+  ['ciclos_con_cobranza',          'ciclos',                 ['pago_estado']],
+  ['ciclo_mensual',                'servicios',              ['ciclo_tipo']],
+  ['marcas_con_correccion',        'marcas',                 ['origen', 'registrada_por', 'motivo']],
+  ['cotizaciones_en_uf',           'cotizaciones',           ['moneda', 'uf_valor']],
+  ['trabajador_cambia_clave',      'trabajadores',           ['debe_cambiar_clave']],
+  ['usuarios_con_permisos_extra',  'usuarios',               ['permisos_extra']],
+  ['contacto_con_limite',          'contactos',              ['ip_huella']],
+  ['ficha_rrhh',                   'trabajadores',           ['fecha_ingreso', 'afp', 'salud_sistema']],
+  ['documentos_con_archivo',       'documentos_trabajador',  ['archivo_ruta']],
+  ['instalaciones_con_direccion',  'instalaciones',          ['direccion']],
+  ['permiso_de_borrar',            'usuarios',               ['puede_borrar']],
+];
+
+/**
+ * El estado de la base, visto desde el Worker.
+ *
+ * **Va por el esquema de PostgREST y no por una consulta a cada tabla.** Hasta
+ * el 02-11-2026 preguntaba una por una: cincuenta y tres pedidas en una sola
+ * invocación, y **un Worker tiene un tope de cincuenta**. Las que caían
+ * después del tope fallaban siempre —daba igual lo que hubiera en la base— y
+ * las últimas de la lista son las vistas, así que el diagnóstico las daba por
+ * desaparecidas. Costó pegar un reparador que no tenía nada que reparar: las
+ * tres vistas estaban enteras, con permiso y con su columna `id`.
+ *
+ * No se vio antes porque en las pruebas locales el Worker corre sobre Node,
+ * donde ese tope no existe: ahí salían las cincuenta y tres y todo en verde.
+ * El tope es de la plataforma, no del código, así que **la forma de no volver
+ * a chocar no es subirlo sino no necesitarlo**: ahora son tres pedidas en
+ * total, y agregar una tabla a la lista no cuesta ninguna.
+ */
 async function revisarTablas(env) {
   const r = {};
-  for (const t of ['usuarios', 'clientes', 'instalaciones', 'servicios', 'tarifas',
-                   'ciclos', 'extras', 'bitacora', 'cotizaciones', 'cotizacion_items',
-                   'contactos', 'trabajadores', 'marcas',
-                   'contratos', 'documentos_trabajador', 'ausencias',
-                   'tipos_documento', 'parametros_rrhh', 'afps', 'tramos_impuesto',
-                   'plantillas_documento', 'bloques_plantilla', 'documentos_generados',
-                   'firmas_documento', 'datos_empresa', 'cargas_familiares',
-                   'articulos', 'entregas', 'v_entregas',
-                   'remuneraciones_mes', 'estados_pago', 'estado_pago_archivos',
-                   'bancos', 'roles_permisos', 'v_cuentas']) {
+  let mapa;
+  try {
+    mapa = await esquemaExpuesto(env);
+  } catch (e) {
+    // Sin el esquema no se puede afirmar nada de nada, y decir `false` de
+    // todo sería inventar una base vacía. Se dice que no se pudo leer.
+    return { esquema_leido: false, por_que: e?.message || 'sin mensaje' };
+  }
+  r.esquema_leido = true;
+
+  for (const t of RELACIONES) r[t] = mapa.has(t);
+  for (const [rotulo, relacion, cols] of COLUMNAS) {
+    r[rotulo] = mapa.has(relacion) && cols.every((c) => mapa.get(relacion).has(c));
+  }
+
+  // Estas dos no salen del esquema: una cuenta filas y la otra pregunta por
+  // Storage, que es otro servicio. Son las únicas dos pedidas que quedan.
+  //
+  // No basta con que la columna `puede_borrar` exista: si el update no corrió,
+  // nadie tiene el permiso y los botones quedan apagados para todos. Se
+  // informa cuántas cuentas lo tienen, nunca cuáles: esta ruta es pública.
+  if (r.permiso_de_borrar) {
     try {
-      await buscar(env, `${t}?select=count&limit=1`);
-      r[t] = true;
+      const con = await buscar(env,
+        'usuarios?select=usuario&puede_borrar=is.true&activo=is.true');
+      r.cuentas_que_pueden_borrar = con.length;
     } catch {
-      r[t] = false;
+      r.cuentas_que_pueden_borrar = null;
     }
-  }
-  // Columnas que llegaron después: si faltan, es que quedó una migración sin
-  // correr y el sistema lo dice en vez de fallar en medio de un trámite.
-  try {
-    await buscar(env, 'ciclos?select=pago_estado&limit=1');
-    r.ciclos_con_cobranza = true;
-  } catch {
-    r.ciclos_con_cobranza = false;
-  }
-  // No basta con que la columna exista: si el update no corrió, nadie tiene el
-  // permiso y los botones quedan apagados para todos. Se informa cuántas
-  // cuentas lo tienen, nunca cuáles: esta ruta es pública.
-  try {
-    const con = await buscar(env,
-      'usuarios?select=usuario&puede_borrar=is.true&activo=is.true');
-    r.permiso_de_borrar = true;
-    r.cuentas_que_pueden_borrar = con.length;
-  } catch {
-    r.permiso_de_borrar = false;
-  }
-  try {
-    await buscar(env, 'servicios?select=ciclo_tipo&limit=1');
-    r.ciclo_mensual = true;
-  } catch {
-    r.ciclo_mensual = false;
-  }
-  try {
-    await buscar(env, 'marcas?select=origen,registrada_por,motivo&limit=1');
-    r.marcas_con_correccion = true;
-  } catch {
-    r.marcas_con_correccion = false;
-  }
-  // Sin estas dos columnas la cotización sigue andando en pesos; lo que no
-  // existe es cotizar en UF, y la pantalla lo dice en vez de fallar al guardar.
-  try {
-    await buscar(env, 'cotizaciones?select=moneda,uf_valor&limit=1');
-    r.cotizaciones_en_uf = true;
-  } catch {
-    r.cotizaciones_en_uf = false;
-  }
-  try {
-    await buscar(env, 'trabajadores?select=debe_cambiar_clave&limit=1');
-    r.trabajador_cambia_clave = true;
-  } catch {
-    r.trabajador_cambia_clave = false;
-  }
-  // La tabla `roles_permisos` puede existir y la columna no: van juntas en la
-  // misma migración, pero son dos caminos distintos y puede entrar una sola.
-  // Mientras esto sea false, los permisos salen de lo escrito en el código.
-  try {
-    await buscar(env, 'usuarios?select=permisos_extra&limit=1');
-    r.usuarios_con_permisos_extra = true;
-  } catch {
-    r.usuarios_con_permisos_extra = false;
-  }
-  // Sin esta columna el formulario público sigue recibiendo, pero sin tope.
-  try {
-    await buscar(env, 'contactos?select=ip_huella&limit=1');
-    r.contacto_con_limite = true;
-  } catch {
-    r.contacto_con_limite = false;
-  }
-  // La ficha de RRHH son columnas agregadas a `trabajadores`: la tabla existe
-  // igual, así que hay que preguntar por una columna para saber si la
-  // migración entró.
-  try {
-    await buscar(env, 'trabajadores?select=fecha_ingreso,afp,salud_sistema&limit=1');
-    r.ficha_rrhh = true;
-  } catch {
-    r.ficha_rrhh = false;
   }
   // El archivo de un documento necesita las dos cosas: las columnas en la
   // tabla y el bucket en Storage, que van en la misma migración pero por
   // caminos distintos. Si falta el bucket, subir falla y hay que mirar acá.
-  try {
-    await buscar(env, 'documentos_trabajador?select=archivo_ruta&limit=1');
-    r.documentos_con_archivo = true;
-  } catch {
-    r.documentos_con_archivo = false;
-  }
   r.bucket_documentos = await arch.bucketListo(env);
-  // La calle de la instalación llegó con las plantillas de contrato: sin ella
-  // el contrato sale diciendo la comuna pero no la dirección.
-  try {
-    await buscar(env, 'instalaciones?select=direccion&limit=1');
-    r.instalaciones_con_direccion = true;
-  } catch {
-    r.instalaciones_con_direccion = false;
-  }
-  // La ficha de ingreso por enlace. Sin estas dos, el panel y el libro siguen
-  // andando igual: lo que no existe es generar enlaces, y la pantalla lo dice
-  // en vez de reventar.
-  for (const t of ['fichas_ingreso', 'intentos_publicos']) {
-    try {
-      await buscar(env, `${t}?select=count&limit=1`);
-      r[t] = true;
-    } catch {
-      r[t] = false;
-    }
-  }
-  // Las vistas pueden faltar aunque las tablas estén: se crean al final de la
-  // migración y son de las que la pantalla de RRHH consulta primero.
-  //
-  // Acá, además, se guarda **por qué** falló. Un `false` pelado se lee como
-  // «la vista no existe» y el 02-11-2026 costó una tarde: las tres estaban
-  // creadas en la base, con permiso y con su columna `id`, y el diagnóstico
-  // las daba por ausentes igual. Lo que no se podía ver era el mensaje.
-  r.vistas_por_que = {};
-  for (const v of ['v_personal', 'v_documentos', 'v_documentos_generados',
-                   'v_estados_pago']) {
-    try {
-      await buscar(env, `${v}?select=id&limit=1`);
-      r[v] = true;
-    } catch (e) {
-      r[v] = false;
-      r.vistas_por_que[v] = [e?.detalle?.code, e?.message].filter(Boolean).join(' · ')
-        || 'sin mensaje';
-    }
-  }
   return r;
 }
 
