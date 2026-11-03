@@ -929,12 +929,12 @@ async function api(request, env, url, usuario) {
     const sinSueldos = () => error('Esta parte lleva sueldos adentro y pide el módulo de '
       + 'recursos humanos', 403);
 
-    if (!(await pagos.tablasListas(env))) {
+    const listo = await pagos.tablasListas(env);
+    if (!listo.ok) {
       // `error` va además de `aviso` porque `pedir()` en la pantalla levanta
       // el mensaje de ahí: sin él, el aviso diría «Error 503» y nadie sabría
-      // que lo que falta es pegar una migración.
-      return json({ sin_migracion: true, aviso: pagos.FALTA_MIGRACION,
-                    error: pagos.FALTA_MIGRACION }, 503);
+      // que lo que falta es pegar un archivo.
+      return json({ sin_migracion: true, aviso: listo.aviso, error: listo.aviso }, 503);
     }
 
     // ----------------------------------------------------------- la carpeta

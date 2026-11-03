@@ -31,6 +31,17 @@ import { formatearRut, normalizarRut } from './rut.js';
 export const FALTA_MIGRACION =
   'Falta aplicar la migración supabase/migrations/20261027120000_estados_pago.sql';
 
+/**
+ * La vista se puede perder sola, y ya pasó dos veces (29-10 y 02-11-2026): las
+ * tablas siguen en pie y `v_estados_pago` desaparece. Sin ella esta pantalla
+ * contestaba con el error crudo de Postgres —«relation v_estados_pago does not
+ * exist»—, que no le dice a nadie qué hacer. El reparador existe y está en el
+ * repositorio; lo único que hace falta es nombrarlo.
+ */
+export const FALTA_VISTA =
+  'Falta la vista v_estados_pago en la base: se pega supabase/reparar-vistas.sql '
+  + 'en el SQL Editor y vuelve. No se pierde ningún dato, las tablas están intactas.';
+
 export const CLASES = {
   libro_asistencia:     'Libro de asistencia',
   cotizaciones_pagadas: 'Certificado de cotizaciones pagadas',
@@ -82,10 +93,18 @@ export async function tablasListas(env) {
   try {
     await buscar(env, 'estados_pago?select=id&limit=1');
     await buscar(env, 'remuneraciones_mes?select=id&limit=1');
-    return true;
   } catch {
-    return false;
+    return { ok: false, aviso: FALTA_MIGRACION };
   }
+  // La vista va aparte de las tablas porque se pierde aparte: se ha ido dos
+  // veces con las tablas intactas, y lo que hay que hacer en cada caso es
+  // distinto.
+  try {
+    await buscar(env, 'v_estados_pago?select=id&limit=1');
+  } catch {
+    return { ok: false, aviso: FALTA_VISTA };
+  }
+  return { ok: true };
 }
 
 // ------------------------------------------------------------ remuneraciones
