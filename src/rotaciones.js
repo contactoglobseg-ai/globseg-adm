@@ -1,24 +1,32 @@
 /**
- * Rotación de patrullas: a qué parque va cada patrulla, cada día.
+ * Rotación de patrullas: a qué dependencia va la patrulla, cada día.
  *
- * En Copec RM hay cuatro parques y una patrulla de dos personas que visita uno
- * por día. El orden lo arma la oficina —José o Joaquín— semana por semana, y
- * lo que el gerente pidió cuidar es que no sea siempre el mismo: un recorrido
- * que se sabe de memoria es un recorrido que se puede esperar.
+ * La forma del negocio, que el gerente fijó el 04-11-2026: Copec RM no es un
+ * parque, es el contrato. Adentro hay cuatro parques —las dependencias—, cada
+ * uno con su dirección y su comuna, y una patrulla de dos personas que visita
+ * uno por día. El orden lo arma José o Joaquín, semana por semana.
+ *
+ * Qué manda dónde, que es lo que explica todo lo demás:
+ *  · **Se cobra por instalación.** El estado de pago y el F30-1 son de Copec
+ *    RM entera. La dependencia no parte la carpeta.
+ *  · **El guardia pertenece a la instalación.** Su contrato dice Copec RM; la
+ *    dependencia le cambia cada día. Por eso la ficha no se toca.
+ *  · **La rotación reparte dependencias**, y es el único lugar del sistema
+ *    donde la dependencia manda.
  *
  * Cuatro reglas que explican casi todo el archivo:
  *
- * 1. **Un día, un parque.** Lo obliga un índice único de la base, no este
- *    archivo. Acá solo se traduce el error de Postgres a una frase que se
+ * 1. **Un día, una dependencia.** Lo obliga un índice único de la base, no
+ *    este archivo. Acá solo se traduce el error de Postgres a una frase que se
  *    entienda.
- * 2. **Una persona no puede estar en dos parques el mismo día.** Esto sí se
+ * 2. **Una persona no puede estar en dos partes el mismo día.** Esto sí se
  *    rechaza, y es la única cosa que este módulo se niega a guardar: no es un
  *    hecho que ya ocurrió y hay que anotar, es una planificación imposible, y
  *    descubrirla el martes en la mañana cuesta un turno sin cubrir. El error
  *    dice en qué otra rotación quedó esa persona.
- * 3. **Mandar la patrulla a un parque que no es de la rotación se acepta, con
- *    aviso.** Pasa de verdad: un día hay que ir a otro lado. Negarlo haría que
- *    el turno se arme por WhatsApp y no quede escrito en ninguna parte.
+ * 3. **Mandar la patrulla a una dependencia que no está en la rotación se
+ *    acepta, con aviso.** Pasa de verdad: un día hay que ir a otro lado.
+ *    Negarlo haría que el turno se arme por WhatsApp y no quede escrito.
  * 4. **Esto es lo que se planeó, no lo que pasó.** Lo que pasó son las marcas
  *    del libro de asistencia. Son dos cosas distintas y la pantalla lo dice:
  *    si se confunden, la planilla termina usándose como respaldo de horas
@@ -30,14 +38,14 @@ import { buscar, insertar, actualizar, borrar, anotar } from './datos.js';
 // copiarse: una segunda copia se separa de la primera el día que una cambie.
 import { limpio, entero, fechaO } from './rrhh.js';
 
-export const MIGRACION = '20261104120000_rotaciones.sql';
+export const MIGRACION = '20261104170000_dependencias.sql';
 
 /** Si la migración no corrió, la pantalla lo dice con el nombre del archivo y
  *  el resto del sistema sigue andando. Nadie las aplica solo desde el 14-10. */
 export async function tablasListas(env) {
   try {
-    await buscar(env, 'rotaciones?select=count&limit=1');
-    await buscar(env, 'rotacion_dias?select=count&limit=1');
+    await buscar(env, 'dependencias?select=count&limit=1');
+    await buscar(env, 'rotacion_dias?select=dependencia_id&limit=1');
     return true;
   } catch {
     return false;
@@ -78,65 +86,166 @@ export function diasDeLaSemana(lunes) {
     new Date(base + i * 86400000).toISOString().slice(0, 10));
 }
 
-// --------------------------------------------------------------- rotaciones
+// -------------------------------------------------------------- dependencias
 /**
- * Las rotaciones con sus parques.
+ * Las dependencias de una instalación, o todas.
  *
- * Los parques se pegan con una segunda consulta y no con un `embed` de
- * PostgREST: son unas pocas filas, no se nota, y así no hay una sintaxis que
- * solo se pueda probar contra la base de verdad. Mismo criterio que `panel()`.
+ * Es el catálogo que alimenta la rotación, y se mantiene desde la pestaña
+ * Instalaciones: ahí ya está el lugar del que cuelgan, y una pantalla más
+ * sería una pantalla que hay que acordarse de visitar.
  */
-export async function listarRotaciones(env) {
-  const [rotaciones, puntos, instalaciones] = await Promise.all([
-    buscar(env, 'rotaciones?select=*&order=activa.desc,nombre.asc'),
-    buscar(env, 'rotacion_puntos?select=rotacion_id,instalacion_id'),
-    buscar(env, 'instalaciones?select=id,nombre,comuna,activa&order=nombre.asc'),
-  ]);
-  const porId = new Map(instalaciones.map(i => [i.id, i]));
-  for (const r of rotaciones) {
-    r.parques = puntos
-      .filter(p => p.rotacion_id === r.id)
-      .map(p => porId.get(p.instalacion_id))
-      .filter(Boolean);
-  }
-  return { rotaciones, instalaciones };
+export async function listarDependencias(env, instalacionId) {
+  const filtro = instalacionId ? `&instalacion_id=eq.${entero(instalacionId)}` : '';
+  return buscar(env, `v_dependencias?select=*${filtro}&order=instalacion.asc,nombre.asc`);
 }
 
-async function guardarParques(env, rotacionId, ids) {
+export async function crearDependencia(env, quien, cuerpo) {
+  const instalacion_id = entero(cuerpo.instalacion_id);
+  if (!instalacion_id) return { error: 'Falta decir de qué instalación es.', status: 400 };
+  const nombre = limpio(cuerpo.nombre, 120);
+  if (!nombre) return { error: 'La dependencia necesita un nombre.', status: 400 };
+
+  const campos = {
+    instalacion_id, nombre,
+    direccion: limpio(cuerpo.direccion, 200),
+    comuna: limpio(cuerpo.comuna, 80),
+    region: limpio(cuerpo.region, 80),
+    notas: limpio(cuerpo.notas, 300),
+    creado_por: quien,
+  };
+  try {
+    const [fila] = await insertar(env, 'dependencias', campos);
+    await anotar(env, quien, 'dependencia', fila.id, 'creada', nombre);
+    return { dependencia: fila };
+  } catch (e) {
+    if (String(e.message || e).includes('dependencias_nombre_unico')) {
+      return { error: `Esa instalación ya tiene una dependencia llamada «${nombre}».`,
+               status: 400 };
+    }
+    throw e;
+  }
+}
+
+export async function editarDependencia(env, quien, id, cuerpo) {
+  const campos = {};
+  if ('nombre' in cuerpo) {
+    const nombre = limpio(cuerpo.nombre, 120);
+    if (!nombre) return { error: 'La dependencia necesita un nombre.', status: 400 };
+    campos.nombre = nombre;
+  }
+  for (const c of ['direccion', 'comuna', 'region', 'notas']) {
+    if (c in cuerpo) campos[c] = limpio(cuerpo[c], c === 'notas' ? 300 : 200);
+  }
+  if ('activa' in cuerpo) campos.activa = cuerpo.activa === true || cuerpo.activa === 'true';
+  if (!Object.keys(campos).length) return { ok: true, sin_cambios: true };
+
+  try {
+    await actualizar(env, `dependencias?id=eq.${id}`, campos);
+  } catch (e) {
+    if (String(e.message || e).includes('dependencias_nombre_unico')) {
+      return { error: `Esa instalación ya tiene una dependencia llamada «${campos.nombre}».`,
+               status: 400 };
+    }
+    throw e;
+  }
+  await anotar(env, quien, 'dependencia', Number(id), 'editada', Object.keys(campos).join(', '));
+  return { ok: true };
+}
+
+// --------------------------------------------------------------- rotaciones
+/**
+ * Las rotaciones con su instalación y sus dependencias.
+ *
+ * Se pegan con consultas aparte y no con un `embed` de PostgREST: son unas
+ * pocas filas, no se nota, y así no hay una sintaxis que solo se pueda probar
+ * contra la base de verdad. Mismo criterio que `panel()`.
+ */
+export async function listarRotaciones(env) {
+  const [rotaciones, puntos, dependencias, instalaciones] = await Promise.all([
+    buscar(env, 'rotaciones?select=*&order=activa.desc,nombre.asc'),
+    buscar(env, 'rotacion_puntos?select=rotacion_id,dependencia_id'),
+    buscar(env, 'v_dependencias?select=*&order=nombre.asc'),
+    buscar(env, 'instalaciones?select=id,nombre,comuna,activa&order=nombre.asc'),
+  ]);
+  const porId = new Map(dependencias.map(d => [d.id, d]));
+  const nombreInst = new Map(instalaciones.map(i => [i.id, i.nombre]));
+  for (const r of rotaciones) {
+    r.instalacion = nombreInst.get(r.instalacion_id) || null;
+    r.dependencias = puntos
+      .filter(p => p.rotacion_id === r.id)
+      .map(p => porId.get(p.dependencia_id))
+      .filter(Boolean);
+  }
+  return { rotaciones, dependencias, instalaciones };
+}
+
+async function guardarPuntos(env, rotacionId, ids) {
   await borrar(env, `rotacion_puntos?rotacion_id=eq.${rotacionId}`);
   if (ids.length) {
     await insertar(env, 'rotacion_puntos',
-      ids.map(instalacion_id => ({ rotacion_id: rotacionId, instalacion_id })));
+      ids.map(dependencia_id => ({ rotacion_id: rotacionId, dependencia_id })));
   }
 }
 
-/** Los parques que vienen de la pantalla, sin repetidos y como números. */
-function idsDeParques(cuerpo) {
-  if (!Array.isArray(cuerpo.parques)) return null;
-  return [...new Set(cuerpo.parques.map(entero).filter(Boolean))];
+/** Las dependencias que vienen de la pantalla, sin repetidos y como números. */
+function idsDePuntos(cuerpo) {
+  if (!Array.isArray(cuerpo.dependencias)) return null;
+  return [...new Set(cuerpo.dependencias.map(entero).filter(Boolean))];
+}
+
+/**
+ * Las dependencias elegidas tienen que ser de la instalación de la rotación.
+ * Acá sí se rechaza, al revés que en la planilla del día: armar la rotación
+ * con una dependencia de otro contrato no es «un día hay que ir a otro lado»,
+ * es un error de carga que después reparte gente todas las semanas.
+ */
+async function sonDeLaInstalacion(env, instalacionId, ids) {
+  if (!ids.length) return null;
+  const deps = await buscar(env,
+    `dependencias?select=id,nombre,instalacion_id&id=in.(${ids.join(',')})`);
+  const perdidas = ids.filter(id => !deps.some(d => d.id === id));
+  if (perdidas.length) {
+    return 'Quedó elegida una dependencia que ya no existe. Vuelva a cargar la pantalla.';
+  }
+  const ajenas = deps.filter(d => d.instalacion_id !== instalacionId);
+  if (ajenas.length) {
+    return `${ajenas.map(d => d.nombre).join(', ')} no ${ajenas.length === 1 ? 'es' : 'son'} `
+         + 'de esta instalación. Una rotación reparte las dependencias de una sola.';
+  }
+  return null;
 }
 
 export async function crearRotacion(env, quien, cuerpo) {
   const nombre = limpio(cuerpo.nombre, 120);
   if (!nombre) return { error: 'La rotación necesita un nombre.', status: 400 };
+  const instalacion_id = entero(cuerpo.instalacion_id);
+  if (!instalacion_id) {
+    return { error: 'Falta decir de qué instalación es la rotación.', status: 400 };
+  }
+
+  const puntos = idsDePuntos(cuerpo) || [];
+  const malas = await sonDeLaInstalacion(env, instalacion_id, puntos);
+  if (malas) return { error: malas, status: 400 };
 
   let fila;
   try {
     [fila] = await insertar(env, 'rotaciones',
-      { nombre, notas: limpio(cuerpo.notas, 500), creado_por: quien });
+      { nombre, instalacion_id, notas: limpio(cuerpo.notas, 500), creado_por: quien });
   } catch (e) {
     if (String(e.message || e).includes('rotaciones_nombre_unico')) {
       return { error: `Ya hay una rotación que se llama «${nombre}».`, status: 400 };
     }
     throw e;
   }
-  const parques = idsDeParques(cuerpo);
-  if (parques?.length) await guardarParques(env, fila.id, parques);
+  if (puntos.length) await guardarPuntos(env, fila.id, puntos);
   await anotar(env, quien, 'rotacion', fila.id, 'creada', nombre);
   return { rotacion: fila };
 }
 
 export async function editarRotacion(env, quien, id, cuerpo) {
+  const actual = (await buscar(env, `rotaciones?select=*&id=eq.${id}`))[0];
+  if (!actual) return { error: 'Esa rotación no existe.', status: 404 };
+
   const campos = {};
   if ('nombre' in cuerpo) {
     const nombre = limpio(cuerpo.nombre, 120);
@@ -145,6 +254,18 @@ export async function editarRotacion(env, quien, id, cuerpo) {
   }
   if ('notas' in cuerpo) campos.notas = limpio(cuerpo.notas, 500);
   if ('activa' in cuerpo) campos.activa = cuerpo.activa === true || cuerpo.activa === 'true';
+  if ('instalacion_id' in cuerpo) {
+    const i = entero(cuerpo.instalacion_id);
+    if (!i) return { error: 'Falta decir de qué instalación es la rotación.', status: 400 };
+    campos.instalacion_id = i;
+  }
+  const instalacion = campos.instalacion_id || actual.instalacion_id;
+
+  const puntos = idsDePuntos(cuerpo);
+  if (puntos) {
+    const malas = await sonDeLaInstalacion(env, instalacion, puntos);
+    if (malas) return { error: malas, status: 400 };
+  }
 
   if (Object.keys(campos).length) {
     try {
@@ -156,10 +277,9 @@ export async function editarRotacion(env, quien, id, cuerpo) {
       throw e;
     }
   }
-  const parques = idsDeParques(cuerpo);
-  if (parques) await guardarParques(env, id, parques);
-  await anotar(env, quien, 'rotacion', id, 'editada',
-    Object.keys(campos).concat(parques ? ['parques'] : []).join(', ') || 'sin cambios');
+  if (puntos) await guardarPuntos(env, id, puntos);
+  await anotar(env, quien, 'rotacion', Number(id), 'editada',
+    Object.keys(campos).concat(puntos ? ['dependencias'] : []).join(', ') || 'sin cambios');
   return { ok: true };
 }
 
@@ -174,25 +294,33 @@ export async function editarRotacion(env, quien, id, cuerpo) {
 export async function verSemana(env, rotacionId, fecha) {
   const lunes = lunesDe(fecha || new Date().toISOString().slice(0, 10));
   const dias = diasDeLaSemana(lunes);
-  const [rotacion, guardados, guardias] = await Promise.all([
-    buscar(env, `rotaciones?select=*&id=eq.${rotacionId}`).then(f => f[0] || null),
+  const rotacion = (await buscar(env, `rotaciones?select=*&id=eq.${rotacionId}`))[0];
+  if (!rotacion) return { error: 'Esa rotación no existe.', status: 404 };
+
+  const [guardados, guardias, dependencias] = await Promise.all([
     buscar(env, `v_rotacion_dias?rotacion_id=eq.${rotacionId}`
       + `&fecha=gte.${dias[0]}&fecha=lte.${dias[6]}&order=fecha.asc`),
     buscar(env, 'trabajadores?select=id,nombre,cargo,instalacion_id'
       + '&activo=is.true&order=nombre.asc'),
+    // Las de la instalación, para poder mandar la patrulla a otra del mismo
+    // contrato sin tener que editar la rotación entera.
+    rotacion.instalacion_id
+      ? buscar(env, 'dependencias?select=id,nombre,activa'
+        + `&instalacion_id=eq.${rotacion.instalacion_id}&order=nombre.asc`)
+      : Promise.resolve([]),
   ]);
-  if (!rotacion) return { error: 'Esa rotación no existe.', status: 404 };
 
   const porFecha = new Map(guardados.map(d => [d.fecha, d]));
   return {
     rotacion,
     lunes,
     guardias,
+    dependencias,
     dias: dias.map((fecha, i) => ({
       fecha,
       dia: DIAS[i],
       ...(porFecha.get(fecha) || {
-        instalacion_id: null, guardia_1_id: null, guardia_2_id: null, notas: null,
+        dependencia_id: null, guardia_1_id: null, guardia_2_id: null, notas: null,
       }),
     })),
   };
@@ -202,8 +330,8 @@ export async function verSemana(env, rotacionId, fecha) {
  * Guarda la semana completa de una pasada.
  *
  * Es una llamada y no siete porque la semana se arma mirándola entera: con una
- * por día, la mitad de los choques entre parques se descubren recién al guardar
- * el último. Acá se revisan todos antes de escribir ninguno.
+ * por día, la mitad de los choques entre dependencias se descubren recién al
+ * guardar el último. Acá se revisan todos antes de escribir ninguno.
  */
 export async function guardarSemana(env, quien, rotacionId, cuerpo) {
   const entrantes = Array.isArray(cuerpo.dias) ? cuerpo.dias : [];
@@ -226,7 +354,7 @@ export async function guardarSemana(env, quien, rotacionId, cuerpo) {
     filas.push({
       rotacion_id: Number(rotacionId),
       fecha,
-      instalacion_id: entero(d.instalacion_id),
+      dependencia_id: entero(d.dependencia_id),
       guardia_1_id: g1,
       guardia_2_id: g2,
       notas: limpio(d.notas, 300),
@@ -240,28 +368,28 @@ export async function guardarSemana(env, quien, rotacionId, cuerpo) {
 
   // Las tres revisiones son lecturas y van juntas: en fila son tres viajes más
   // a la base, y esto se guarda con la semana entera en pantalla esperando.
-  const [choque, faltaParque, faltaGuardia] = await Promise.all([
+  const [choque, faltaDep, faltaGuardia] = await Promise.all([
     choquesDeGuardias(env, Number(rotacionId), filas),
-    revisarParques(env, Number(rotacionId), filas, avisos),
+    revisarDependencias(env, rotacion, filas, avisos),
     revisarGuardias(env, filas, avisos),
   ]);
   // El choque va primero aunque lleguen los tres: es el que cuenta, y el que
   // la persona tiene que leer para arreglar la semana.
-  const noVa = choque || faltaParque || faltaGuardia;
+  const noVa = choque || faltaDep || faltaGuardia;
   if (noVa) return { error: noVa, status: 400 };
 
   // Se borra y se vuelve a escribir la semana: un upsert por `on_conflict`
   // pediría mandar todas las columnas de todas formas, y así el día que quedó
-  // libre —sin parque y sin nadie— se guarda como libre en vez de quedar con
-  // lo de la semana pasada.
+  // libre —sin dependencia y sin nadie— se guarda como libre en vez de quedar
+  // con lo de la semana pasada.
   await borrar(env, `rotacion_dias?rotacion_id=eq.${rotacionId}`
     + `&fecha=in.(${fechas.join(',')})`);
   try {
     await insertar(env, 'rotacion_dias', filas);
   } catch (e) {
     if (String(e.message || e).includes('rotacion_dias_unico')) {
-      return { error: 'Llegaron dos veces el mismo día. En esta rotación hay un '
-                    + 'parque por día.', status: 400 };
+      return { error: 'Llegaron dos veces el mismo día. En esta rotación hay una '
+                    + 'dependencia por día.', status: 400 };
     }
     throw e;
   }
@@ -272,8 +400,8 @@ export async function guardarSemana(env, quien, rotacionId, cuerpo) {
 }
 
 /**
- * Una persona no puede estar en dos parques el mismo día. Se mira contra las
- * otras rotaciones, no contra ésta: adentro de ésta ya hay un parque por día.
+ * Una persona no puede estar en dos partes el mismo día. Se mira contra las
+ * otras rotaciones, no contra ésta: adentro de ésta ya hay una por día.
  */
 async function choquesDeGuardias(env, rotacionId, filas) {
   const porFecha = new Map();
@@ -294,7 +422,7 @@ async function choquesDeGuardias(env, rotacionId, filas) {
       if (o.guardia_1_id === id || o.guardia_2_id === id) {
         const nombre = o.guardia_1_id === id ? o.guardia_1 : o.guardia_2;
         return `${nombre} ya está en la rotación «${o.rotacion}» el ${comoSeLee(o.fecha)}. `
-             + 'Una persona no puede estar en dos parques el mismo día.';
+             + 'Una persona no puede estar en dos partes el mismo día.';
       }
     }
   }
@@ -302,29 +430,35 @@ async function choquesDeGuardias(env, rotacionId, filas) {
 }
 
 /**
- * El parque que no es de la rotación se acepta: se avisa y se guarda. El que
- * no existe se rechaza acá, con su número, y no cuatro líneas más abajo con
- * el error de la llave foránea escrito en inglés dentro de la pantalla.
+ * La dependencia que no está en la rotación se acepta: se avisa y se guarda,
+ * porque un día hay que ir a otro lado. La que no existe, o la que es de otra
+ * instalación, se rechaza acá y no cuatro líneas más abajo con el error de la
+ * llave foránea escrito en inglés dentro de la pantalla.
  */
-async function revisarParques(env, rotacionId, filas, avisos) {
-  const usados = [...new Set(filas.map(f => f.instalacion_id).filter(Boolean))];
-  if (!usados.length) return null;
-  const [puntos, instalaciones] = await Promise.all([
-    buscar(env, `rotacion_puntos?select=instalacion_id&rotacion_id=eq.${rotacionId}`),
-    buscar(env, `instalaciones?select=id,nombre&id=in.(${usados.join(',')})`),
+async function revisarDependencias(env, rotacion, filas, avisos) {
+  const usadas = [...new Set(filas.map(f => f.dependencia_id).filter(Boolean))];
+  if (!usadas.length) return null;
+  const [puntos, deps] = await Promise.all([
+    buscar(env, `rotacion_puntos?select=dependencia_id&rotacion_id=eq.${rotacion.id}`),
+    buscar(env, `dependencias?select=id,nombre,activa,instalacion_id&id=in.(${usadas.join(',')})`),
   ]);
-  const dentro = new Set(puntos.map(p => p.instalacion_id));
-  const nombre = new Map(instalaciones.map(i => [i.id, i.nombre]));
-  const perdidos = usados.filter(id => !nombre.has(id));
-  if (perdidos.length) {
-    return 'Quedó elegida una instalación que ya no existe '
-         + `(N° ${perdidos.join(', ')}). Vuelva a cargar la pantalla.`;
+  const perdidas = usadas.filter(id => !deps.some(d => d.id === id));
+  if (perdidas.length) {
+    return 'Quedó elegida una dependencia que ya no existe. Vuelva a cargar la pantalla.';
   }
-  for (const id of usados) {
-    if (!dentro.has(id)) {
-      avisos.push(`${nombre.get(id) || 'Una instalación'} no está en la lista de parques `
-                + 'de esta rotación. Se guardó igual.');
+  const ajenas = deps.filter(d => d.instalacion_id !== rotacion.instalacion_id);
+  if (ajenas.length) {
+    return `${ajenas.map(d => d.nombre).join(', ')} no es de la instalación de esta `
+         + 'rotación. Si la patrulla de verdad va para allá, va con otra rotación.';
+  }
+
+  const dentro = new Set(puntos.map(p => p.dependencia_id));
+  for (const d of deps) {
+    if (!dentro.has(d.id)) {
+      avisos.push(`${d.nombre} no está en la lista de dependencias de esta rotación. `
+                + 'Se guardó igual.');
     }
+    if (!d.activa) avisos.push(`${d.nombre} está dada de baja. Se guardó igual.`);
   }
   return null;
 }

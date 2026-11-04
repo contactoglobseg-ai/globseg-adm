@@ -973,6 +973,90 @@ async function pintarServicios() {
  */
 let abrirFormInst = false;
 
+/**
+ * Las dependencias de una instalación: los lugares separados que hay dentro
+ * de un mismo contrato —los cuatro parques de Copec RM—, entre los que rota
+ * la patrulla.
+ *
+ * Viven acá y no en una pestaña propia porque son catálogo de la instalación,
+ * igual que su comuna: una pantalla más sería una pantalla que hay que
+ * acordarse de visitar. Lo que se cobra y lo que dice el contrato del guardia
+ * sigue siendo la instalación; la dependencia solo manda en la rotación.
+ */
+async function pintarDependencias(instalacionId, donde) {
+  donde.innerHTML = `<p class="cargando" style="padding:14px">Cargando…</p>`;
+  let lista;
+  try {
+    ({ dependencias: lista } = await pedir(`/dependencias?instalacion=${instalacionId}`));
+  } catch (e) {
+    donde.innerHTML = aviso("ojo", "No se pudieron leer las dependencias", e.message);
+    return;
+  }
+  donde.innerHTML = `
+    <div style="padding:14px">
+      ${lista.length ? `<div class="desliza"><table style="min-width:680px"><thead><tr>
+        <th>Dependencia</th><th>Dónde</th><th class="num">En rotaciones</th>
+        <th>Situación</th><th></th>
+      </tr></thead><tbody>
+        ${lista.map(d => `<tr${d.activa ? "" : ' style="opacity:.6"'}>
+          <td><b>${esc(d.nombre)}</b></td>
+          <td>${esc(d.direccion || "—")}
+            <span class="sub">${esc(d.comuna || "sin comuna")}</span></td>
+          <td class="num">${d.en_rotaciones || "—"}</td>
+          <td><span class="sello ${d.activa ? "e-cerrado" : "e-en_curso"}">${
+            d.activa ? "Activa" : "De baja"}</span></td>
+          <td class="nowrap"><button class="bt bt--fino bt--chico"
+            data-baja-dep="${d.id}" data-activa="${d.activa}">${
+            d.activa ? "Dar de baja" : "Reactivar"}</button></td>
+        </tr>`).join("")}
+      </tbody></table></div>`
+      : `<p class="vacio" style="margin:0 0 12px">Esta instalación todavía no tiene
+         dependencias. Si es un contrato con varios parques, cárguelos acá y la
+         rotación los va a repartir.</p>`}
+      <form data-dep-de="${instalacionId}" style="margin-top:12px">
+        <div class="rejilla">
+          <label class="campo"><span>Nombre</span>
+            <input name="nombre" required maxlength="120" autocomplete="off"
+                   placeholder="Ej: Parque 2"></label>
+          <label class="campo"><span>Comuna</span>
+            <input name="comuna" maxlength="80" placeholder="Dónde queda"></label>
+          <label class="campo" style="grid-column:1/-1"><span>Dirección</span>
+            <input name="direccion" maxlength="200"
+                   placeholder="Calle y número, si la tiene"></label>
+        </div>
+        <div class="pie-form">
+          <button class="bt bt--fino bt--chico" type="submit">Agregar dependencia</button>
+          <span class="mensaje"></span>
+        </div>
+      </form>
+    </div>`;
+
+  donde.querySelectorAll("[data-baja-dep]").forEach(b => {
+    b.onclick = async () => {
+      b.disabled = true;
+      try {
+        await pedir(`/dependencias/${b.dataset.bajaDep}`, { method: "PATCH",
+          body: JSON.stringify({ activa: b.dataset.activa !== "true" }) });
+        await pintarDependencias(instalacionId, donde);
+      } catch (e) { b.disabled = false; recado(e.message, "mal"); }
+    };
+  });
+
+  const f = donde.querySelector("form[data-dep-de]");
+  f.onsubmit = async ev => {
+    ev.preventDefault();
+    const msj = f.querySelector(".mensaje");
+    decir(msj, "Guardando…");
+    try {
+      await pedir("/dependencias", { method: "POST", body: JSON.stringify({
+        instalacion_id: Number(instalacionId),
+        nombre: f.nombre.value, comuna: f.comuna.value, direccion: f.direccion.value }) });
+      recado("Dependencia agregada");
+      await pintarDependencias(instalacionId, donde);
+    } catch (e) { decir(msj, e.message, "error"); }
+  };
+}
+
 async function pintarInstalaciones() {
   $("#app").innerHTML = `<p class="cargando">Cargando…</p>`;
   const { instalaciones } = await pedir("/instalaciones");
@@ -1047,11 +1131,13 @@ async function pintarInstalaciones() {
           <td class="num">${i.extras || "—"}</td>
           <td><span class="sello ${i.activa ? "e-cerrado" : "e-en_curso"}">${
             i.activa ? "En las listas" : "De baja"}</span></td>
-          <td class="nowrap"><button class="bt bt--fino bt--chico" data-editar-inst="${i.id}">Editar</button></td>
+          <td class="nowrap"><button class="bt bt--fino bt--chico" data-editar-inst="${i.id}">Editar</button>
+            <button class="bt bt--fino bt--chico" data-deps-inst="${i.id}">Dependencias</button></td>
         </tr>
         <tr hidden data-form-inst="${i.id}"><td colspan="8" style="background:var(--sup-2);padding:0">
           ${formInstalacion(i)}
-        </td></tr>`).join("")}
+        </td></tr>
+        <tr hidden data-deps-de="${i.id}"><td colspan="8" style="background:var(--sup-2);padding:0"></td></tr>`).join("")}
       </tbody></table></div>`
       : `<p class="vacio">Todavía no hay instalaciones. Agregue la primera con el botón de arriba, o escriba el nombre del parque al cargar un servicio y se crea sola.</p>`}
     </section>`;
@@ -1079,6 +1165,16 @@ async function pintarInstalaciones() {
       await pintarInstalaciones();
     } catch (e) { decir(msj, e.message, "error"); }
   };
+
+  // Se piden al abrir y no con la tabla: son decenas de filas que solo se
+  // miran cuando alguien va a armar una rotación.
+  document.querySelectorAll("[data-deps-inst]").forEach(b => {
+    b.onclick = async () => {
+      const fila = $(`[data-deps-de="${b.dataset.depsInst}"]`);
+      fila.hidden = !fila.hidden;
+      if (!fila.hidden) await pintarDependencias(b.dataset.depsInst, fila.querySelector("td"));
+    };
+  });
 
   document.querySelectorAll("[data-editar-inst]").forEach(b => {
     b.onclick = () => {
@@ -3984,10 +4080,13 @@ function conectarUsuarios() {
 /* ===================================================================
  * Rotación de patrullas
  *
- * A qué parque va la patrulla cada día. La pantalla es una semana de
- * siete filas, de lunes a domingo, porque así se arma de verdad: se
- * mira la semana entera y se reparten los parques, no se decide día
- * por día. Por eso se guarda toda de una vez.
+ * A qué dependencia va la patrulla cada día. Una rotación es de una
+ * instalación —Copec RM— y reparte sus dependencias —los cuatro
+ * parques—, que es como está armado el contrato de verdad.
+ *
+ * La pantalla es una semana de siete filas, de lunes a domingo,
+ * porque así se arma: se mira la semana entera y se reparten los
+ * parques, no se decide día por día. Por eso se guarda toda junta.
  *
  * Lo que la pantalla dice y no se puede dejar de decir: esto es lo que
  * se planeó, no lo que pasó. Lo que pasó son las marcas del libro de
@@ -4020,11 +4119,11 @@ const correrSemana = (lunes, semanas) => {
  * El azar propone, la persona manda, que es lo que pidió el gerente.
  *
  * Dos reglas, y las dos son para que el orden siga sirviendo:
- *  · **No sale el mismo parque dos días seguidos.** Dos noches corridas en el
- *    mismo lugar es justo lo que el sorteo existe para evitar.
- *  · **Ningún parque queda sin visita.** Se reparte por vueltas completas: se
- *    barajan los parques, se reparte la vuelta entera, y recién ahí empieza
- *    otra. Con cuatro parques y siete días, cada uno sale una o dos veces.
+ *  · **No sale la misma dependencia dos días seguidos.** Dos noches corridas
+ *    en el mismo parque es justo lo que el sorteo existe para evitar.
+ *  · **Ninguna queda sin visita.** Se reparte por vueltas completas: se
+ *    barajan, se reparte la vuelta entera, y recién ahí empieza otra. Con
+ *    cuatro parques y siete días, cada uno sale una o dos veces.
  * Lo que NO sortea son los guardias: quién forma la patrulla lo decide la
  * oficina, y repartir personas al azar es otra cosa que nadie pidió.
  */
@@ -4040,8 +4139,8 @@ function ordenAlAzar(parques, cuantos) {
   const salida = [];
   while (salida.length < cuantos) {
     let vuelta = barajar(parques);
-    // Si la vuelta nueva empieza con el mismo parque con que terminó la
-    // anterior, se corre uno: así el empalme entre vueltas tampoco repite.
+    // Si la vuelta nueva empieza con la misma con que terminó la anterior, se
+    // corre una: así el empalme entre vueltas tampoco repite.
     if (salida.length && vuelta[0] === salida[salida.length - 1] && vuelta.length > 1) {
       vuelta = [vuelta[1], vuelta[0], ...vuelta.slice(2)];
     }
@@ -4062,43 +4161,51 @@ async function pintarRotacion() {
       + aviso("ojo", "Falta aplicar la migración en Supabase", e.message);
     return;
   }
-  const { rotaciones, instalaciones } = datos;
+  const { rotaciones, dependencias, instalaciones } = datos;
   const activas = rotaciones.filter(r => r.activa);
   if (!ROT.id || !rotaciones.some(r => r.id === ROT.id)) {
     ROT.id = activas[0]?.id || rotaciones[0]?.id || null;
   }
+  // Solo tiene sentido ofrecer las instalaciones que ya tienen dependencias
+  // cargadas: una rotación sin nada que repartir no se puede armar, y el
+  // aviso manda a cargarlas donde se cargan.
+  const conDeps = instalaciones.filter(i =>
+    i.activa && dependencias.some(d => d.instalacion_id === i.id && d.activa));
 
   const cabeza = `
     <div style="display:flex;align-items:center;gap:14px;margin-bottom:18px;flex-wrap:wrap">
       <h2 style="font-size:1.5rem">Rotación</h2>
       <span class="nota" style="color:var(--texto-2);font-size:.85rem">
         ${activas.length} ${activas.length === 1 ? "rotación" : "rotaciones"}</span>
-      <button class="bt" id="nueva-rot" style="margin-left:auto">
-        ${ROT.abrirNueva ? "Ocultar formulario" : "Nueva rotación"}</button>
+      ${conDeps.length ? `<button class="bt" id="nueva-rot" style="margin-left:auto">
+        ${ROT.abrirNueva ? "Ocultar formulario" : "Nueva rotación"}</button>` : ""}
     </div>
     ${aviso("ojo", "Esto es lo que se planeó, no lo que pasó",
-      "Acá se reparte a qué parque va la patrulla cada día. Quién estuvo de verdad en el "
-      + "turno sale del libro de asistencia, en la pestaña Asistencia: son dos cosas "
+      "Acá se reparte a qué dependencia va la patrulla cada día. Quién estuvo de verdad en "
+      + "el turno sale del libro de asistencia, en la pestaña Asistencia: son dos cosas "
       + "distintas y esta planilla no sirve para respaldar horas trabajadas.")}
-    <section class="caja" style="max-width:720px"${ROT.abrirNueva ? "" : " hidden"}>
+    ${conDeps.length ? "" : aviso("ojo", "Todavía no hay dependencias cargadas",
+      "Una rotación reparte las dependencias de una instalación: los parques que hay dentro "
+      + "de un mismo contrato. Se cargan en Instalaciones, con el botón «Dependencias» de "
+      + "cada una.")}
+    <section class="caja" style="max-width:720px"${ROT.abrirNueva && conDeps.length ? "" : " hidden"}>
       <div class="caja__tit"><h2>Nueva rotación</h2>
-        <span class="nota">Un conjunto de parques que cubre una patrulla</span></div>
+        <span class="nota">Reparte las dependencias de una instalación</span></div>
       <form id="f-rot">
         <div class="rejilla">
-          <label class="campo" style="grid-column:1/-1"><span>Nombre</span>
+          <label class="campo" style="grid-column:1/-1"><span>Instalación</span>
+            <select name="instalacion_id" required>
+              ${conDeps.map(i => `<option value="${i.id}">${esc(i.nombre)}</option>`).join("")}
+            </select>
+            <div class="sub">Es lo que se factura y lo que dice el contrato del guardia.</div></label>
+          <label class="campo" style="grid-column:1/-1"><span>Nombre de la rotación</span>
             <input name="nombre" required autocomplete="off" maxlength="120"
                    placeholder="Ej: Copec RM"></label>
           <fieldset class="campo" style="grid-column:1/-1;border:0;padding:0;margin:0">
-            <span>Parques que entran en la rotación</span>
-            <div style="display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:6px">
-              ${instalaciones.filter(i => i.activa).map(i => `
-                <label style="display:flex;align-items:center;gap:6px;font-weight:400">
-                  <input type="checkbox" name="parque" value="${i.id}"
-                         style="width:1.05rem;height:1.05rem;padding:0;flex:none">
-                  ${esc(i.nombre)}</label>`).join("")}
-            </div>
-            <div class="sub">Son los que la pantalla va a proponer cada día. Igual se
-              puede mandar la patrulla a otro lado: se guarda y se avisa.</div>
+            <span>Dependencias que entran</span>
+            <div id="deps-rot" style="display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:6px"></div>
+            <div class="sub">Son las que la pantalla va a proponer cada día. Igual se puede
+              mandar la patrulla a otra de la misma instalación: se guarda y se avisa.</div>
           </fieldset>
         </div>
         <div class="pie-form">
@@ -4109,34 +4216,33 @@ async function pintarRotacion() {
     </section>`;
 
   if (!rotaciones.length) {
-    $("#app").innerHTML = cabeza
-      + `<p class="vacio">Todavía no hay ninguna rotación. Cree una con los parques
-         que cubre una misma patrulla.</p>`;
-    enganchesRotacion();
+    $("#app").innerHTML = cabeza + (conDeps.length
+      ? `<p class="vacio">Todavía no hay ninguna rotación. Cree una con las dependencias
+         que cubre una misma patrulla.</p>` : "");
+    enganchesRotacion(dependencias, conDeps);
     return;
   }
 
   const rot = rotaciones.find(r => r.id === ROT.id);
-  ROT.lunes = ROT.lunes || null;
   let semana;
   try {
     semana = await pedir(`/rotaciones/${ROT.id}/semana`
       + (ROT.lunes ? `?fecha=${ROT.lunes}` : ""));
   } catch (e) {
     $("#app").innerHTML = cabeza + aviso("ojo", "No se pudo leer la semana", e.message);
-    enganchesRotacion();
+    enganchesRotacion(dependencias, conDeps);
     return;
   }
   ROT.lunes = semana.lunes;
 
-  // Los parques de la rotación se ofrecen primero; el resto queda abajo,
-  // porque mandar la patrulla a otro lado pasa y no hay que esconderlo.
-  const idsRot = new Set(rot.parques.map(p => p.id));
+  // Las de la rotación se ofrecen primero; el resto de la instalación queda
+  // abajo, porque mandar la patrulla a otra pasa y no hay que esconderlo.
+  const idsRot = new Set(rot.dependencias.map(p => p.id));
   const opciones = (elegido) => `
     <option value="">— libre —</option>
-    ${rot.parques.map(p => `<option value="${p.id}"${p.id === elegido ? " selected" : ""}>
+    ${rot.dependencias.map(p => `<option value="${p.id}"${p.id === elegido ? " selected" : ""}>
       ${esc(p.nombre)}</option>`).join("")}
-    ${instalaciones.filter(i => !idsRot.has(i.id) && (i.activa || i.id === elegido))
+    ${semana.dependencias.filter(i => !idsRot.has(i.id) && (i.activa || i.id === elegido))
       .map(i => `<option value="${i.id}"${i.id === elegido ? " selected" : ""}>
         ${esc(i.nombre)} (fuera de la rotación)</option>`).join("")}`;
 
@@ -4157,9 +4263,11 @@ async function pintarRotacion() {
     <section class="caja">
       <div class="caja__tit" style="flex-wrap:wrap;gap:10px">
         <h2>${esc(rot.nombre)}</h2>
-        <span class="nota">${rot.parques.length
-          ? rot.parques.map(p => esc(p.nombre)).join(" · ")
-          : "Sin parques cargados todavía"}</span>
+        <span class="nota">${rot.instalacion
+          ? `${esc(rot.instalacion)} · ${rot.dependencias.length
+              ? rot.dependencias.map(p => esc(p.nombre)).join(" · ")
+              : "sin dependencias cargadas"}`
+          : '<span class="sello e-solicitar_oc">Falta decir de qué instalación es</span>'}</span>
       </div>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px">
         ${rotaciones.length > 1 ? `<select id="sel-rot" style="max-width:240px">
@@ -4170,14 +4278,14 @@ async function pintarRotacion() {
         <b style="min-width:13rem;text-align:center">${rotuloSemana(semana.lunes)}</b>
         <button class="bt bt--fino bt--chico" id="sem-despues">Semana siguiente ›</button>
         <button class="bt bt--fino bt--chico" id="sem-hoy">Esta semana</button>
-        ${rot.parques.length > 1
+        ${rot.dependencias.length > 1
           ? `<button type="button" class="bt bt--fino bt--chico" id="sem-azar"
                      style="margin-left:auto">Proponer un orden</button>` : ""}
       </div>
       <div id="avisos-rot"></div>
       <form id="f-semana">
       <div class="desliza"><table style="min-width:820px"><thead><tr>
-        <th style="width:9rem">Día</th><th>Parque</th>
+        <th style="width:9rem">Día</th><th>Dependencia</th>
         <th>Guardia 1</th><th>Guardia 2</th><th>Nota del día</th>
       </tr></thead><tbody>
         ${semana.dias.map(d => `<tr data-fecha="${d.fecha}"${
@@ -4185,7 +4293,7 @@ async function pintarRotacion() {
           <td><b style="text-transform:capitalize">${d.dia}</b>
             <span class="sub">${d.fecha.slice(8)}-${d.fecha.slice(5, 7)}${
               d.fecha === hoy ? " · hoy" : ""}</span></td>
-          <td><select name="instalacion_id">${opciones(d.instalacion_id)}</select></td>
+          <td><select name="dependencia_id">${opciones(d.dependencia_id)}</select></td>
           <td>${guardias("guardia_1_id", d.guardia_1_id)}</td>
           <td>${guardias("guardia_2_id", d.guardia_2_id)}</td>
           <td><input name="notas" maxlength="300" value="${esc(d.notas || "")}"
@@ -4199,7 +4307,7 @@ async function pintarRotacion() {
       </form>
     </section>`;
 
-  enganchesRotacion();
+  enganchesRotacion(dependencias, conDeps);
 
   $("#sel-rot") && ($("#sel-rot").onchange = ev => {
     ROT.id = Number(ev.target.value); pintarRotacion();
@@ -4212,14 +4320,14 @@ async function pintarRotacion() {
   // entero antes de apretar Guardar.
   $("#sem-azar") && ($("#sem-azar").onclick = () => {
     const filas = [...document.querySelectorAll("#f-semana tbody tr")];
-    const escritos = filas.filter(tr => tr.querySelector("[name=instalacion_id]").value);
+    const escritos = filas.filter(tr => tr.querySelector("[name=dependencia_id]").value);
     if (escritos.length && !confirm(
       `Esta semana ya tiene ${escritos.length} día${escritos.length === 1 ? "" : "s"} con `
-      + "parque asignado. Proponer un orden nuevo los reemplaza todos en la pantalla. "
+      + "dependencia asignada. Proponer un orden nuevo los reemplaza todos en la pantalla. "
       + "Todavía no se guarda nada: si no le gusta, cambie de semana sin guardar.")) return;
 
-    const orden = ordenAlAzar(rot.parques.map(p => String(p.id)), filas.length);
-    filas.forEach((tr, i) => { tr.querySelector("[name=instalacion_id]").value = orden[i]; });
+    const orden = ordenAlAzar(rot.dependencias.map(p => String(p.id)), filas.length);
+    filas.forEach((tr, i) => { tr.querySelector("[name=dependencia_id]").value = orden[i]; });
     decir($("#f-semana").querySelector(".mensaje"),
           "Orden propuesto. Corrija lo que quiera y apriete Guardar la semana.");
   });
@@ -4229,7 +4337,7 @@ async function pintarRotacion() {
     const msj = ev.target.querySelector(".mensaje");
     const dias = [...document.querySelectorAll("#f-semana tbody tr")].map(tr => ({
       fecha: tr.dataset.fecha,
-      instalacion_id: tr.querySelector("[name=instalacion_id]").value || null,
+      dependencia_id: tr.querySelector("[name=dependencia_id]").value || null,
       guardia_1_id: tr.querySelector("[name=guardia_1_id]").value || null,
       guardia_2_id: tr.querySelector("[name=guardia_2_id]").value || null,
       notas: tr.querySelector("[name=notas]").value,
@@ -4249,18 +4357,37 @@ async function pintarRotacion() {
   };
 }
 
-function enganchesRotacion() {
-  $("#nueva-rot").onclick = () => { ROT.abrirNueva = !ROT.abrirNueva; pintarRotacion(); };
+function enganchesRotacion(dependencias, conDeps) {
+  $("#nueva-rot") && ($("#nueva-rot").onclick = () => {
+    ROT.abrirNueva = !ROT.abrirNueva; pintarRotacion();
+  });
   const f = $("#f-rot");
   if (!f) return;
+
+  // Las casillas siguen a la instalación elegida: las dependencias de un
+  // contrato no se mezclan con las de otro, y el servidor lo rechaza igual.
+  const pintarDeps = () => {
+    const inst = Number(f.instalacion_id.value);
+    const suyas = dependencias.filter(d => d.instalacion_id === inst && d.activa);
+    $("#deps-rot").innerHTML = suyas.map(d => `
+      <label style="display:flex;align-items:center;gap:6px;font-weight:400">
+        <input type="checkbox" name="dep" value="${d.id}" checked
+               style="width:1.05rem;height:1.05rem;padding:0;flex:none">
+        ${esc(d.nombre)}</label>`).join("")
+      || '<span class="sub">Esa instalación no tiene dependencias activas.</span>';
+  };
+  f.instalacion_id.onchange = pintarDeps;
+  pintarDeps();
+
   f.onsubmit = async ev => {
     ev.preventDefault();
     const msj = f.querySelector(".mensaje");
-    const parques = [...f.querySelectorAll("[name=parque]:checked")].map(c => Number(c.value));
+    const deps = [...f.querySelectorAll("[name=dep]:checked")].map(c => Number(c.value));
     decir(msj, "Creando…");
     try {
-      const r = await pedir("/rotaciones",
-        { method: "POST", body: JSON.stringify({ nombre: f.nombre.value, parques }) });
+      const r = await pedir("/rotaciones", { method: "POST", body: JSON.stringify({
+        nombre: f.nombre.value, instalacion_id: Number(f.instalacion_id.value),
+        dependencias: deps }) });
       ROT.id = r.rotacion.id;
       ROT.abrirNueva = false;
       recado("Rotación creada");

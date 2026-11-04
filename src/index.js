@@ -1198,6 +1198,43 @@ async function api(request, env, url, usuario) {
   }
 
   /**
+   * Dependencias: los lugares separados que cuelgan de una instalación.
+   *
+   * Dos puertas, como Documentos: las carga quien mantiene el catálogo de
+   * instalaciones (`facturacion`) y las necesita quien arma los turnos
+   * (`personal`). Con una sola, el que cargó los parques no podría verlos o
+   * el que reparte el turno no podría agregar uno.
+   */
+  if (ruta === '/dependencias' || ruta.startsWith('/dependencias/')) {
+    if (!puede(usuario, 'facturacion') && !puede(usuario, 'personal')) {
+      return error('Sin acceso a este módulo', 403);
+    }
+    const sub = ruta.replace(/^\/dependencias/, '') || '/';
+
+    if (!(await rotaciones.tablasListas(env))) {
+      return json({ sin_migracion: true, aviso: rotaciones.avisoMigracion(),
+                    migracion: rotaciones.MIGRACION }, 503);
+    }
+
+    if (sub === '/' && metodo === 'GET') {
+      return json({ dependencias: await rotaciones.listarDependencias(
+        env, url.searchParams.get('instalacion')) });
+    }
+    if (sub === '/' && metodo === 'POST') {
+      const r = await rotaciones.crearDependencia(env, usuario.usuario, cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r, 201);
+    }
+    const mD = sub.match(/^\/(\d+)$/);
+    if (mD && metodo === 'PATCH') {
+      const r = await rotaciones.editarDependencia(env, usuario.usuario, Number(mD[1]), cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+    return error('Ruta no encontrada', 404);
+  }
+
+  /**
    * Rotación de patrullas. La puerta es `personal`, que hoy tienen exactamente
    * gerencia y operaciones —José y Joaquín—, que es quien arma los turnos. No
    * se inventó un módulo propio para no dejar a nadie afuera esperando que
@@ -1331,6 +1368,14 @@ async function api(request, env, url, usuario) {
         personas: puedeLaboral
           ? await buscar(env, 'v_personal?select=id,nombre,rut,cargo&activo=is.true&order=nombre.asc')
           : [],
+        // Para el anexo: a qué instalación se traslada. Van las activas, que
+        // son a las que se puede mandar a alguien; una dada de baja sigue
+        // nombrada en los contratos viejos y no tiene por qué ofrecerse.
+        migracion_anexo: docs.MIGRACION_ANEXO,
+        instalaciones: puedeLaboral
+          ? await buscar(env, 'instalaciones?select=id,nombre,direccion,comuna,region'
+                              + '&activa=is.true&order=nombre.asc')
+          : [],
       });
     }
 
@@ -1346,6 +1391,20 @@ async function api(request, env, url, usuario) {
       const r = await docs.guardarEmpresa(env, usuario.usuario, cuerpo);
       if (r.error) return error(r.error, r.status);
       return json(r);
+    }
+
+    // El contrato vigente de una persona, que es contra lo que se arma un
+    // anexo: la pantalla necesita mostrar qué dice hoy al lado de cada cosa
+    // que se va a cambiar. Pide `rrhh` porque trae el sueldo.
+    if (sub === '/contrato' && metodo === 'GET') {
+      if (!puedeLaboral) {
+        return error('El contrato lo ve Recursos Humanos', 403);
+      }
+      const id = Number(url.searchParams.get('trabajador_id'));
+      if (!id) return error('Falta la persona', 400);
+      const contrato = await primero(env,
+        `contratos?select=*&trabajador_id=eq.${id}&estado=eq.vigente&order=fecha_inicio.desc`);
+      return json({ contrato: contrato || null });
     }
 
     if (sub === '/' && metodo === 'GET') {
@@ -1550,6 +1609,18 @@ async function api(request, env, url, usuario) {
         const r = await docs.archivar(env, usuario.usuario, id);
         if (r.error) return error(r.error, r.status);
         return json(r, 201);
+      }
+
+      // Lleva al contrato lo que el anexo modifica. Exige `rrhh` y no basta
+      // con `documentos`: acá se está escribiendo el sueldo y el lugar de
+      // trabajo de una persona, no generando un papel.
+      if (accion === '/aplicar' && metodo === 'POST') {
+        if (!puedeLaboral) {
+          return error('Modificar un contrato es de Recursos Humanos', 403);
+        }
+        const r = await docs.aplicarCambios(env, usuario.usuario, id);
+        if (r.error) return error(r.error, r.status);
+        return json(r);
       }
     }
 
@@ -2248,6 +2319,7 @@ const RELACIONES = [
   'v_envios_prevencion',
   'documentos_prevencion', 'v_documentos_prevencion',
   'rotaciones', 'rotacion_puntos', 'rotacion_dias', 'v_rotacion_dias',
+  'dependencias', 'v_dependencias',
 ];
 
 const COLUMNAS = [
@@ -2264,6 +2336,8 @@ const COLUMNAS = [
   ['documentos_desde_archivo',     'documentos_generados',   ['archivo_ruta', 'envio_id', 'tipo_documento']],
   ['instalaciones_con_direccion',  'instalaciones',          ['direccion']],
   ['permiso_de_borrar',            'usuarios',               ['puede_borrar']],
+  ['anexo_con_cambios',            'plantillas_documento',   ['cambia_contrato']],
+  ['anexo_aplicado',               'documentos_generados',   ['aplicado_en', 'aplicado_por']],
 ];
 
 /**
