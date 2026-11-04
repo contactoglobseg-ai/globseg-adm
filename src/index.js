@@ -25,6 +25,7 @@ import * as ing from './ingreso.js';
 import * as docs from './documentos.js';
 import * as prev from './prevencion.js';
 import * as activos from './activos.js';
+import * as rotaciones from './rotaciones.js';
 import * as pagos from './pagos.js';
 import * as usr from './usuarios.js';
 import { redireccionHttps, cabecerasSeguridad, conCabeceras, soloHttps }
@@ -1196,6 +1197,53 @@ async function api(request, env, url, usuario) {
     return error('Ruta no encontrada', 404);
   }
 
+  /**
+   * Rotación de patrullas. La puerta es `personal`, que hoy tienen exactamente
+   * gerencia y operaciones —José y Joaquín—, que es quien arma los turnos. No
+   * se inventó un módulo propio para no dejar a nadie afuera esperando que
+   * alguien edite los permisos en la pantalla de Usuarios.
+   */
+  if (ruta === '/rotaciones' || ruta.startsWith('/rotaciones/')) {
+    if (!puede(usuario, 'personal')) return error('Sin acceso a este módulo', 403);
+    const sub = ruta.replace(/^\/rotaciones/, '') || '/';
+
+    if (!(await rotaciones.tablasListas(env))) {
+      return json({ sin_migracion: true, aviso: rotaciones.avisoMigracion(),
+                    migracion: rotaciones.MIGRACION }, 503);
+    }
+
+    if (sub === '/' && metodo === 'GET') {
+      return json(await rotaciones.listarRotaciones(env));
+    }
+
+    if (sub === '/' && metodo === 'POST') {
+      const r = await rotaciones.crearRotacion(env, usuario.usuario, cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r, 201);
+    }
+
+    let mR = sub.match(/^\/(\d+)$/);
+    if (mR && metodo === 'PATCH') {
+      const r = await rotaciones.editarRotacion(env, usuario.usuario, Number(mR[1]), cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+
+    mR = sub.match(/^\/(\d+)\/semana$/);
+    if (mR && metodo === 'GET') {
+      const r = await rotaciones.verSemana(env, Number(mR[1]), url.searchParams.get('fecha'));
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+    if (mR && metodo === 'PUT') {
+      const r = await rotaciones.guardarSemana(env, usuario.usuario, Number(mR[1]), cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+
+    return error('Ruta no encontrada', 404);
+  }
+
   if (ruta === '/activos' || ruta.startsWith('/activos/')) {
     if (!puede(usuario, 'documentos') && !puede(usuario, 'rrhh')) {
       return error('Sin acceso a este módulo', 403);
@@ -2199,6 +2247,7 @@ const RELACIONES = [
   'v_personal', 'v_documentos', 'v_documentos_generados', 'v_estados_pago',
   'v_envios_prevencion',
   'documentos_prevencion', 'v_documentos_prevencion',
+  'rotaciones', 'rotacion_puntos', 'rotacion_dias', 'v_rotacion_dias',
 ];
 
 const COLUMNAS = [
