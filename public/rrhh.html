@@ -2277,7 +2277,7 @@ async function pintarSueldos() {
           base: f?.base.value || null };
         const r = await pedir("/rrhh/finiquito", { method: "POST", body: JSON.stringify(cuerpo) });
         destino.innerHTML = htmlFiniquito(r, cuerpo);
-        conectarFiniquito(cuerpo, calcular);
+        conectarFiniquito(r, cuerpo, calcular);
       }
     } catch (e) {
       destino.innerHTML = aviso("mal", "No se pudo calcular", e.message);
@@ -2447,15 +2447,37 @@ function htmlFiniquito(r, cuerpo) {
       ${f.notas.length ? `<div style="padding:12px 16px;font-size:.84rem;color:var(--texto-3)">
         ${f.notas.map(n => `<div style="margin-bottom:6px">· ${esc(n)}</div>`).join("")}</div>` : ""}
       <div class="pie-form">
+        <button class="bt bt--fino" type="button" id="bt-finiquito-pdf">Descargar en PDF</button>
+        <button class="bt bt--fino" type="button" id="bt-finiquito-guardar">Guardar en su ficha</button>
         <button class="bt" type="button" id="bt-registrar-termino">Registrar el término del contrato</button>
-        <span class="sub" style="margin:0">Cierra el contrato en el sistema con esta causal y esta
-          fecha. No emite el finiquito ni paga nada.</span>
         <span class="mensaje" id="m-termino"></span>
+      </div>
+      <div style="padding:0 16px 14px;font-size:.82rem;color:var(--texto-3)">
+        <div style="margin-bottom:5px">· <b style="color:var(--texto-2)">Descargar</b> baja el
+          cálculo en PDF, con el desglose, la causal y las fechas. No guarda nada.</div>
+        <div style="margin-bottom:5px">· <b style="color:var(--texto-2)">Guardar en su ficha</b>
+          deja ese mismo PDF entre los documentos de la persona, bajo Término, como
+          <b style="color:var(--texto-2)">cálculo de finiquito</b>. Desde ahí se vuelve a abrir
+          cuando haga falta. No es el finiquito firmado ante ministro de fe, así que
+          <b style="color:var(--texto-2)">no bloquea el contrato</b> y se puede guardar más de
+          uno, con causales distintas.</div>
+        <div>· <b style="color:var(--texto-2)">Registrar el término</b> cierra el contrato en el
+          sistema con esta causal y esta fecha. No emite el finiquito ni paga nada.</div>
       </div>
     </section>`;
 }
 
-function conectarFiniquito(cuerpo, recalcular) {
+function conectarFiniquito(r, cuerpo, recalcular) {
+  const m = $("#m-termino");
+  if ($("#bt-finiquito-pdf")) {
+    $("#bt-finiquito-pdf").onclick = () => pdfFiniquito(r, cuerpo)
+      .catch(e => decir(m, e.message, "error"));
+  }
+  if ($("#bt-finiquito-guardar")) {
+    $("#bt-finiquito-guardar").onclick = () => guardarFiniquito(r, cuerpo)
+      .catch(e => decir(m, e.message, "error"));
+  }
+
   const bt = $("#bt-registrar-termino");
   if (!bt) return;
   bt.onclick = async () => {
@@ -2478,6 +2500,208 @@ function conectarFiniquito(cuerpo, recalcular) {
       setTimeout(() => { RRHH.verFicha = Number(cuerpo.trabajador_id); ir("personal"); }, 600);
     } catch (e) { decir(m, e.message, "error"); bt.disabled = false; }
   };
+}
+
+/**
+ * El PDF del finiquito.
+ *
+ * Existe porque el cálculo vivía solo en la pantalla: se miraba, se cerraba la
+ * pestaña y no quedaba nada. Lo que la oficina necesita es un papel que
+ * mandarle al contador, adjuntar a la carpeta del trabajador y tener a mano
+ * cuando lo pida la Inspección.
+ *
+ * **Dice lo que es y no más.** El encabezado y el pie repiten que es un
+ * cálculo estimado y que el finiquito de verdad se ratifica ante ministro de
+ * fe (art. 177). Un PDF con membrete y el total en grande se parece
+ * demasiado al documento que se firma, y alguien lo va a usar como si lo
+ * fuera: decirlo adentro es lo único que lo impide.
+ */
+function nombreArchivoFiniquito(r) {
+  return `Finiquito ${r.trabajador.nombre} ${r.finiquito.termino}.pdf`
+    .replace(/[\\/:*?"<>|]/g, "-");
+}
+
+async function pdfFiniquito(r, cuerpo, op = {}) {
+  const f = r.finiquito, t = r.trabajador, e = r.empresa || {}, c = r.contrato || {};
+  await cargarScript(JSPDF);
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const A = 210, H = 297, M = 20, ancho = A - M * 2;
+  const tinta = [19, 0, 82], gris = [110, 110, 134], ambar = [146, 84, 0];
+  let y = M;
+
+  const pie = () => {
+    doc.setFont("helvetica", "normal").setFontSize(7.5).setTextColor(...gris);
+    doc.text(`Cálculo estimado de finiquito · ${t.nombre}`, M, H - 10, { maxWidth: ancho - 20 });
+    doc.text(String(doc.getNumberOfPages()), A - M, H - 10, { align: "right" });
+  };
+  const saltar = (alto) => {
+    if (y + alto <= H - 18) return;
+    pie();
+    doc.addPage();
+    y = M;
+  };
+  const parrafo = (texto, { tam = 8.5, color = gris, salto = 3.6, negrita = false } = {}) => {
+    doc.setFont("helvetica", negrita ? "bold" : "normal").setFontSize(tam).setTextColor(...color);
+    for (const linea of doc.splitTextToSize(texto, ancho)) {
+      saltar(salto + 2);
+      doc.text(linea, M, y);
+      y += salto;
+    }
+  };
+  const dato = (rotulo, valor) => {
+    saltar(6);
+    doc.setFont("helvetica", "normal").setFontSize(8).setTextColor(...gris);
+    doc.text(rotulo, M, y);
+    doc.setFont("helvetica", "bold").setFontSize(9).setTextColor(...tinta);
+    doc.text(String(valor ?? "-"), M + 52, y, { maxWidth: ancho - 52 });
+    y += 5.4;
+  };
+  const titulo = (txt) => {
+    saltar(12);
+    y += 3;
+    doc.setFont("helvetica", "bold").setFontSize(10).setTextColor(...tinta);
+    doc.text(txt, M, y);
+    y += 2.5;
+    doc.setDrawColor(222, 222, 232).line(M, y, A - M, y);
+    y += 5.5;
+  };
+
+  // Encabezado
+  doc.setFont("helvetica", "bold").setFontSize(15).setTextColor(...tinta);
+  doc.text("FINIQUITO", M, y);
+  doc.setFont("helvetica", "normal").setFontSize(9).setTextColor(...ambar);
+  // Sin rayas largas ni flechas: la Helvetica de jsPDF no las sabe escribir y
+  // salen como un hueco o, peor, como una fila de letras separadas. Se vio
+  // leyendo el PDF que salió, no el código.
+  doc.text("CÁLCULO ESTIMADO · NO ES EL DOCUMENTO QUE SE FIRMA", M + 36, y);
+  y += 6;
+  doc.setFont("helvetica", "normal").setFontSize(8.5).setTextColor(...gris);
+  doc.text([e.razon_social, e.rut && `RUT ${e.rut}`, e.domicilio].filter(Boolean).join(" · "),
+    M, y, { maxWidth: ancho });
+  y += 4;
+  doc.text(`Emitido el ${fecha(hoyISO())}`, M, y);
+  y += 4;
+
+  if (e.por_confirmar?.length) {
+    doc.setTextColor(...ambar);
+    doc.text(`Datos de la empresa sin confirmar: ${e.por_confirmar.join(" · ")}`, M, y,
+      { maxWidth: ancho });
+    y += 4;
+  }
+
+  titulo("El trabajador");
+  dato("Nombre", t.nombre);
+  dato("RUT", rutLindoSeguro(t.rut));
+  if (c.cargo) dato("Cargo", rotCargo(c.cargo));
+  if (c.instalacion) dato("Lugar de trabajo", c.instalacion);
+
+  titulo("El contrato y su término");
+  dato("Fecha de ingreso", fecha(f.ingreso));
+  dato("Fecha de término", fecha(f.termino));
+  dato("Causal", f.causal_glosa);
+  dato("Antigüedad", `${f.meses_servicio} meses · ${f.anios_cobrables} `
+    + `${f.anios_cobrables === 1 ? "año cobrable" : "años cobrables"}`);
+  dato("Base de cálculo", clp(f.base_topada)
+    + (f.tope_pesos && f.base > f.tope_pesos ? ` (topada desde ${clp(f.base)} por el límite de 90 UF)` : ""));
+
+  titulo("Desglose");
+  for (const l of f.lineas) {
+    saltar(6);
+    doc.setFont("helvetica", "normal").setFontSize(9)
+       .setTextColor(...(l.aplica ? tinta : gris));
+    doc.text(l.glosa + (l.aplica ? "" : "  (no corresponde con esta causal)"), M, y,
+      { maxWidth: ancho - 38 });
+    doc.text(l.aplica ? clp(l.monto) : "-", A - M, y, { align: "right" });
+    y += 5.6;
+  }
+  saltar(10);
+  doc.setDrawColor(222, 222, 232).line(M, y - 1, A - M, y - 1);
+  y += 4;
+  doc.setFont("helvetica", "bold").setFontSize(11).setTextColor(...tinta);
+  doc.text("Total estimado", M, y);
+  doc.text(clp(f.total), A - M, y, { align: "right" });
+  y += 8;
+
+  if (f.notas.length) {
+    titulo("Tenga presente");
+    for (const n of f.notas) parrafo("· " + n);
+  }
+  if (f.por_confirmar.length) {
+    titulo("Parámetros sin confirmar en este cálculo");
+    parrafo(f.por_confirmar.map(x => `${x.glosa || x.codigo} = ${x.valor}`).join(" · "),
+      { color: ambar });
+    parrafo("Se confirman en Sueldos, pestaña Parámetros. Mientras estén así, las cifras "
+      + "de arriba pueden cambiar.", { color: ambar });
+  }
+
+  titulo("Qué es este documento");
+  parrafo(f.advertencia);
+  parrafo("Lo emitió el sistema de Seguridad Garridos con los datos de la ficha y del contrato "
+    + "vigentes al día de hoy. Sirve para saber cuánto da antes de comprometerlo; el finiquito "
+    + "que se firma lo emite quien corresponda, se ratifica ante ministro de fe y es el que "
+    + "obliga a las partes.");
+  pie();
+
+  if (op.descargar === false) return doc.output("blob");
+  doc.save(nombreArchivoFiniquito(r));
+  return null;
+}
+
+/**
+ * Deja el PDF entre los documentos de la persona.
+ *
+ * Usa las dos rutas que ya existen —crear el documento y subirle el archivo—,
+ * así que el finiquito queda donde están todos los demás papeles de esa
+ * persona y no en un almacén aparte. El efecto que hay que avisar antes es
+ * que **un finiquito cargado deja el contrato sin poder corregirse**: eso ya
+ * era así desde el 20-10 y es a propósito, porque lo que se firmó ahí son
+ * esas condiciones.
+ */
+async function guardarFiniquito(r, cuerpo) {
+  const f = r.finiquito, t = r.trabajador;
+  if (!confirm(`Se va a guardar este cálculo en la ficha de ${t.nombre}, bajo Término, como `
+      + "«Cálculo de finiquito (estimado)».\n\nNo es el finiquito firmado ante ministro de "
+      + "fe: no cierra el contrato ni paga nada.\n\n¿Lo guardo?")) {
+    return;
+  }
+  const m = $("#m-termino");
+  decir(m, "Armando el PDF…");
+  const blob = await pdfFiniquito(r, cuerpo, { descargar: false });
+
+  decir(m, "Guardándolo en su ficha…");
+  /* El tipo es `finiquito_calculo` y no `finiquito` a propósito. El catálogo
+     llama al segundo «Finiquito firmado y ratificado», así que guardar acá un
+     cálculo estimado dejaría en la ficha una fila que afirma lo contrario de
+     lo que el PDF dice adentro; y además el tipo `finiquito` bloquea la
+     edición del contrato, que un cálculo no tiene por qué hacer. */
+  const { documento } = await pedir("/rrhh/documentos", { method: "POST", body: JSON.stringify({
+    trabajador_id: t.id,
+    contrato_id: r.contrato?.id || null,
+    tipo: "finiquito_calculo",
+    glosa: `${f.causal_glosa} al ${fecha(f.termino)} · total estimado ${clp(f.total)}`,
+    fecha_emision: f.termino,
+    observacion: "Generado en Sueldos, pestaña Finiquito. Es el cálculo estimado, no el "
+      + "documento ratificado ante ministro de fe.",
+  }) }).catch(e => {
+    // Si la migración no se pegó, el tipo no existe. Se dice con el nombre del
+    // archivo en vez de dejar el error de la base en pantalla; descargar el
+    // PDF sigue andando igual.
+    if (/tipo de documento no existe/i.test(e.message)) {
+      throw new Error("Falta aplicar la migración 20261104190000_finiquito_calculo.sql en el "
+        + "SQL Editor de Supabase. Mientras tanto el PDF se puede descargar, pero no "
+        + "guardarse en la ficha.");
+    }
+    throw e;
+  });
+
+  await subirArchivo(documento.id,
+    new File([blob], nombreArchivoFiniquito(r), { type: "application/pdf" }));
+
+  // La ficha cambió y el contrato pasó a estar bloqueado para edición: lo que
+  // la pantalla tuviera guardado de esa persona ya no vale.
+  RRHH.panel = null;
+  decir(m, "Guardado en su ficha", "ok");
 }
 
 // ------------------------------------------------------------- parámetros

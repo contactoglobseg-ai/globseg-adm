@@ -797,8 +797,41 @@ async function api(request, env, url, usuario) {
       const ausencias = await buscar(env,
         `ausencias?select=tipo,desde,dias_habiles,estado&trabajador_id=eq.${t.id}`);
 
+      // Con qué se imprime. El cálculo se mira en pantalla, pero el papel que
+      // sale de acá va a la carpeta del trabajador y al contador, así que
+      // tiene que decir de qué empresa y de qué contrato habla. Se leen acá y
+      // no en la pantalla porque `datos_empresa` cuelga del módulo Documentos,
+      // y a Sueldos entra gente que no tiene esa puerta.
+      const [empresa, instalacion] = await Promise.all([
+        buscar(env, 'datos_empresa?select=codigo,valor,por_confirmar'),
+        contrato.instalacion_id
+          ? primero(env, `instalaciones?select=nombre,comuna&id=eq.${contrato.instalacion_id}`)
+          : null,
+      ]);
+      const dato = (c) => empresa.find((e) => e.codigo === c) || null;
+
       return json({
         trabajador: { id: t.id, nombre: t.nombre, rut: t.rut },
+        empresa: {
+          razon_social: dato('razon_social')?.valor || null,
+          rut: dato('rut')?.valor || null,
+          domicilio: dato('domicilio')?.valor || null,
+          representante: dato('representante')?.valor || null,
+          ciudad: dato('ciudad_contrato')?.valor || null,
+          // Lo que nadie ha confirmado se dice, como en los contratos: un
+          // finiquito firmado con la razón social equivocada no sirve.
+          por_confirmar: empresa.filter((e) => e.por_confirmar
+            && ['razon_social', 'rut', 'domicilio', 'representante'].includes(e.codigo))
+            .map((e) => e.glosa || e.codigo),
+        },
+        contrato: {
+          id: contrato.id,
+          cargo: contrato.cargo,
+          tipo: contrato.tipo,
+          fecha_inicio: contrato.fecha_inicio,
+          estado: contrato.estado,
+          instalacion: instalacion?.nombre || null,
+        },
         finiquito: rrhh.calcularFiniquito({
           trabajador: t, contrato,
           causal: cuerpo.causal, fechaTermino,
