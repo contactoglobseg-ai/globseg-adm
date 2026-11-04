@@ -514,6 +514,14 @@ async function api(request, env, url, usuario) {
     if (!puede(usuario, 'rrhh')) return error('Sin acceso a este módulo', 403);
     const sub = ruta.replace(/^\/rrhh/, '') || '/';
 
+    // La segunda puerta, como en /pagos y como la laboral de Documentos:
+    // `rrhh` abre las fichas y lo que vence; lo que calcula o carga sueldos
+    // pide además `remuneraciones`. Esconder la pestaña no cierra la ruta, y
+    // es la ruta la que tiene el dato.
+    const conSueldos = puede(usuario, 'remuneraciones');
+    const sinSueldos = () => error('Esta parte lleva sueldos adentro y pide el módulo de '
+      + 'sueldos y pagos', 403);
+
     if (sub === '/panel' && metodo === 'GET') {
       // Las fichas que llegaron por enlace se agregan acá y no dentro de
       // `panelRrhh` para no hacer que rrhh.js y ingreso.js se importen el uno
@@ -721,10 +729,12 @@ async function api(request, env, url, usuario) {
 
     // ------------------------------------------------------------ parámetros
     if (sub === '/parametros' && metodo === 'GET') {
+      if (!conSueldos) return sinSueldos();
       const todos = await buscar(env, 'parametros_rrhh?select=*&order=codigo.asc,vigente_desde.desc');
       return json({ parametros: todos, vigentes: await rrhh.parametros(env) });
     }
     if (sub === '/parametros' && metodo === 'PATCH') {
+      if (!conSueldos) return sinSueldos();
       const r = await rrhh.editarParametro(env, usuario.usuario, cuerpo);
       if (r.error) return error(r.error, r.status);
       return json(r);
@@ -734,6 +744,7 @@ async function api(request, env, url, usuario) {
     // Calcula y devuelve; no guarda nada. Es una estimación para saber, antes
     // de comprometer un turno o un sueldo, cuánto da y cuánto cuesta.
     if (sub === '/liquidacion' && metodo === 'POST') {
+      if (!conSueldos) return sinSueldos();
       const t = await primero(env, `trabajadores?select=*&id=eq.${entero(cuerpo.trabajador_id)}`);
       if (!t) return error('Esa persona no está en el registro', 404);
       const contrato = entero(cuerpo.contrato_id)
@@ -772,6 +783,7 @@ async function api(request, env, url, usuario) {
 
     // ------------------------------------------------------------ finiquito
     if (sub === '/finiquito' && metodo === 'POST') {
+      if (!conSueldos) return sinSueldos();
       const t = await primero(env, `trabajadores?select=*&id=eq.${entero(cuerpo.trabajador_id)}`);
       if (!t) return error('Esa persona no está en el registro', 404);
       const contrato = await primero(env,
@@ -924,6 +936,7 @@ async function api(request, env, url, usuario) {
     }
 
     if (sub === '/carga' && metodo === 'POST') {
+      if (!conSueldos) return sinSueldos();
       const r = await carga.cargar(env, usuario.usuario, cuerpo);
       if (r.error) return error(r.error, r.status);
       return json(r);
@@ -963,9 +976,13 @@ async function api(request, env, url, usuario) {
       return error('Sin acceso a este módulo', 403);
     }
     const sub = ruta.replace(/^\/pagos/, '') || '/';
-    const conSueldos = puede(usuario, 'rrhh');
+    // Desde el 03-11-2026 la segunda puerta es `remuneraciones` y no `rrhh`:
+    // armar la carpeta del mandante es cobranza, pero calcular el mes y la
+    // nómina de pago es otra cosa, y hay quien necesita lo primero sin lo
+    // segundo. Ver supabase/migrations/20261103170000_modulo_remuneraciones.sql.
+    const conSueldos = puede(usuario, 'remuneraciones');
     const sinSueldos = () => error('Esta parte lleva sueldos adentro y pide el módulo de '
-      + 'recursos humanos', 403);
+      + 'sueldos y pagos', 403);
 
     const listo = await pagos.tablasListas(env);
     if (!listo.ok) {

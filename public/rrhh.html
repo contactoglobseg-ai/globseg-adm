@@ -300,11 +300,13 @@ const VISTAS = {
      entrega los elementos de protección y operaciones las radios. */
   activos:    { rotulo: "Activos y EPP", pintar: pintarActivos,
                 modulo: ["rrhh", "documentos"] },
-  sueldos:    { rotulo: "Sueldos",      pintar: pintarSueldos,    modulo: "rrhh" },
-  carga:      { rotulo: "Carga masiva", pintar: pintarCarga,      modulo: "rrhh" },
-  /* El formato de transferencias masivas con que se pagan las remuneraciones.
-     Pide `rrhh` y nada más: el monto de cada fila es el líquido de alguien. */
-  transferencias: { rotulo: "Transferencias", pintar: pintarTransferencias, modulo: "rrhh" },
+  /* Las tres que calculan o mueven plata piden `remuneraciones`, que se
+     separó de `rrhh` el 03-11-2026 para poder dar las fichas sin dar los
+     sueldos. La prevencionista es la única que tiene lo uno y no lo otro. */
+  sueldos:    { rotulo: "Sueldos",      pintar: pintarSueldos,    modulo: "remuneraciones" },
+  carga:      { rotulo: "Carga masiva", pintar: pintarCarga,      modulo: "remuneraciones" },
+  transferencias: { rotulo: "Transferencias", pintar: pintarTransferencias,
+                    modulo: "remuneraciones" },
 };
 
 /* Un solo grupo, el mismo que tenía en el panel. Se deja el título igual que
@@ -3188,24 +3190,27 @@ async function pintarPrevencion() {
               ${t.codigo === P.tipo ? " selected" : ""}>${esc(t.nombre)}</option>`).join("")}
           </select></label>
         <label class="campo" style="grid-column:span 2"><span>El archivo, en PDF</span>
-          <input type="file" id="p-archivo" accept="application/pdf,.pdf"></label>
+          <span class="bt bt--fino" style="align-self:flex-start">${P.archivo
+            ? "Elegir otro archivo…" : "Elegir el PDF…"}</span>
+          <input type="file" id="p-archivo" accept="application/pdf,.pdf" hidden></label>
       </div>
 
       ${tipo && tipo.base_legal
-        ? `<p class="sub">${esc(tipo.base_legal)}</p>` : ""}
+        ? `<p class="sub" style="padding:0 16px 12px">${esc(tipo.base_legal)}</p>` : ""}
       ${tipo && tipo.vence && tipo.meses_validez ? aviso("bien",
         "Vuelve a pedirse solo. ",
         `Al guardarlo en la ficha de cada uno queda venciendo a los ${tipo.meses_validez} `
         + "meses, así que RRHH vuelve a verlo en la lista de lo que está por vencer.") : ""}
 
       ${P.archivo ? `
-      <p class="sub"><b>${esc(P.archivo.name)}</b> · ${pesoArchivo(P.archivo.size)}<span
+      <p class="sub" style="padding:0 16px 12px"><b>${esc(P.archivo.name)}</b> · ${pesoArchivo(P.archivo.size)}<span
         id="p-hojas">${P.paginas ? ` · ${P.paginas} ${P.paginas === 1 ? "hoja" : "hojas"}`
         : ""}</span>
         · <button class="bt bt--fino bt--chico" type="button" id="p-quitar">Quitar</button></p>
       <div id="p-visor"></div>
-      <p class="sub">La firma de cada persona va al pie de todas las hojas, como se
-        visa en papel, más una hoja al final con el registro de la firma.</p>` : ""}
+      <p class="sub" style="padding:0 16px 12px">La firma de cada persona va al pie de todas las
+        hojas, como se visa en papel, más una hoja al final con el registro de la
+        firma.</p>` : ""}
 
       <div class="caja__tit" style="padding-left:0"><h3 style="font-size:.95rem;margin:0">
         A quiénes</h3>
@@ -3228,7 +3233,7 @@ async function pintarPrevencion() {
         </div>
       </div>
 
-      ${visibles.length ? `<div style="max-height:320px;overflow:auto;border:1px solid var(--borde);
+      ${visibles.length ? `<div style="margin:0 16px;max-height:320px;overflow:auto;border:1px solid var(--borde);
         border-radius:var(--r-s);padding:8px 10px;display:grid;
         grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:4px 14px">
         ${visibles.map(x => `<label style="display:flex;gap:9px;align-items:center;
@@ -3240,11 +3245,13 @@ async function pintarPrevencion() {
               x.cargo ? " · " + esc(x.cargo) : ""}${
               !P.instalacion && x.instalacion ? " · " + esc(x.instalacion) : ""}</span></span>
         </label>`).join("")}
-      </div>` : `<p class="sub">No hay nadie activo en esa instalación.</p>`}
+      </div>` : `<p class="sub" style="padding:0 16px 12px">No hay nadie activo en esa instalación.</p>`}
 
-      <label class="campo" style="margin-top:12px"><span>Nota (opcional)</span>
-        <input id="p-nota" value="${esc(P.nota)}"
-          placeholder="Por ejemplo: charla del 2 de noviembre en Puelche"></label>
+      <div class="rejilla" style="padding-top:4px">
+        <label class="campo" style="grid-column:span 2"><span>Nota (opcional)</span>
+          <input id="p-nota" value="${esc(P.nota)}"
+            placeholder="Por ejemplo: charla del 2 de noviembre en Puelche"></label>
+      </div>
 
       ${P.resultado ? avisoResultado(P.resultado) : ""}
 
@@ -3272,7 +3279,7 @@ async function pintarPrevencion() {
               Ver quiénes</button></td>
         </tr>`).join("")}
       </tbody></table></div>`
-      : `<p class="sub">Todavía no se ha mandado ninguno.</p>`}
+      : `<p class="sub" style="padding:0 16px 12px">Todavía no se ha mandado ninguno.</p>`}
     </section>
 
     <div id="d-envio"></div>
@@ -3382,8 +3389,8 @@ function seccionVence(v) {
         <td class="nowrap">${sello(d)}</td>
       </tr>`).join("")}
       </tbody></table></div>
-    <p class="sub">Lo de cada persona se corrige en su ficha; lo de la empresa, en la
-      carpeta de más abajo.</p>
+    <p class="sub" style="padding:0 16px 12px">Lo de cada persona se corrige en su ficha; lo de
+      la empresa, en la carpeta de más abajo.</p>
   </section>`;
 }
 
@@ -3424,24 +3431,26 @@ function seccionCarpeta(P) {
           ${d.instalaciones.map(i => `<option value="${i.id}"
             ${String(i.id) === String(C.instalacion) ? " selected" : ""}>${esc(i.nombre)}</option>`).join("")}
         </select></label>
-      <label class="campo" style="grid-column:span 4"><span>Qué dice</span>
+      <label class="campo" style="grid-column:span 2"><span>Qué dice</span>
         <input id="c-titulo" value="${esc(C.titulo)}"
           placeholder="Por ejemplo: Matriz de riesgos 2026 — puesto de guardia"></label>
       <label class="campo"><span>Emitido el</span>
         <input id="c-emision" type="date" value="${esc(C.emision)}"></label>
       <label class="campo"><span>Vence el (si vence)</span>
         <input id="c-vence" type="date" value="${esc(C.vence)}"></label>
-      <label class="campo" style="grid-column:span 2"><span>El archivo</span>
-        <input type="file" id="c-archivo" accept="application/pdf,.pdf,image/*"></label>
-      <label class="campo" style="grid-column:span 4"><span>Observación (opcional)</span>
+      <label class="campo" style="grid-column:span 2"><span>El archivo (PDF o foto)</span>
+        <span class="bt bt--fino" style="align-self:flex-start">${C.archivo
+          ? "Elegir otro archivo…" : "Elegir el archivo…"}</span>
+        <input type="file" id="c-archivo" accept="application/pdf,.pdf,image/*" hidden></label>
+      <label class="campo" style="grid-column:span 2"><span>Observación (opcional)</span>
         <input id="c-obs" value="${esc(C.obs)}"></label>
     </div>
-    ${clase && clase.nota ? `<p class="sub">${esc(clase.nota)}</p>` : ""}
+    ${clase && clase.nota ? `<p class="sub" style="padding:0 16px 12px">${esc(clase.nota)}</p>` : ""}
     ${clase && clase.vence && !C.vence ? aviso("ojo",
       "Este documento suele vencer. ",
       "Escriba hasta cuándo vale y va a aparecer arriba, en «Lo que está venciendo», "
       + "antes de que se pase.") : ""}
-    ${C.archivo ? `<p class="sub"><b>${esc(C.archivo.name)}</b> ·
+    ${C.archivo ? `<p class="sub" style="padding:0 16px 12px"><b>${esc(C.archivo.name)}</b> ·
       ${pesoArchivo(C.archivo.size)} ·
       <button class="bt bt--fino bt--chico" type="button" id="c-quitar">Quitar</button></p>` : ""}
     <div class="pie-form">
@@ -3491,7 +3500,7 @@ function seccionCarpeta(P) {
         </td>
       </tr>`).join("")}
     </tbody></table></div>`
-    : `<p class="sub">Todavía no hay nada guardado acá.</p>`}
+    : `<p class="sub" style="padding:0 16px 12px">Todavía no hay nada guardado acá.</p>`}
   </section>`;
 }
 

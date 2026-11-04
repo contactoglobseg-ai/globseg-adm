@@ -44,7 +44,9 @@ export const MODULOS = [
   { codigo: 'documentos', rotulo: 'Documentos que se firman', corto: 'Documentos',
     abre: 'Generar y firmar contratos, anexos, entregas de EPP y actas. Los laborales piden además Personas.' },
   { codigo: 'rrhh', rotulo: 'Personas', corto: 'Personas',
-    abre: 'Fichas, contratos, sueldos, liquidaciones, finiquitos, RUT, previsión y cuenta bancaria de cada trabajador.' },
+    abre: 'Fichas, contratos, documentos y vencimientos de cada persona. Incluye su RUT, su previsión y el sueldo escrito en el contrato.' },
+  { codigo: 'remuneraciones', rotulo: 'Sueldos y pagos', corto: 'Sueldos',
+    abre: 'Sueldos (liquidación, finiquito y los parámetros de la ley), Transferencias y Carga masiva. Se separó de Personas el 03-11-2026 para poder dar las fichas sin dar las remuneraciones.' },
   { codigo: 'usuarios', rotulo: 'Usuarios y permisos', corto: 'Usuarios',
     abre: 'Esta pantalla: crear cuentas, restablecer contraseñas y repartir estos mismos permisos.' },
 ];
@@ -66,9 +68,12 @@ export const ROLES = [
  * el 28-10-2026 y la pantalla lo dice con el nombre del archivo.
  */
 const RESPALDO_ROLES = {
-  gerencia:    ['facturacion', 'cotizaciones', 'personal', 'documentos', 'rrhh', 'usuarios'],
-  operaciones: ['facturacion', 'personal', 'documentos', 'rrhh'],
-  rrhh:        ['rrhh'],
+  gerencia:    ['facturacion', 'cotizaciones', 'personal', 'documentos', 'rrhh',
+                'remuneraciones', 'usuarios'],
+  operaciones: ['facturacion', 'personal', 'documentos', 'rrhh', 'remuneraciones'],
+  rrhh:        ['rrhh', 'remuneraciones'],
+  // Prevención es la única que no lleva `remuneraciones`: es el cambio del
+  // 03-11-2026. Ver supabase/migrations/20261103170000_modulo_remuneraciones.sql.
   prevencion:  ['documentos', 'rrhh'],
 };
 const RESPALDO_PERSONA = { jgarridob: ['cotizaciones'] };
@@ -117,11 +122,25 @@ async function rolesVigentes(env) {
  * —Joaquín y sus cotizaciones— dice exactamente lo mismo.
  */
 export async function permisosDe(env, u) {
-  const { mapa, enLaBase } = await rolesVigentes(env);
+  const { mapa, enLaBase, filas } = await rolesVigentes(env);
   const propios = Array.isArray(u.permisos_extra) && enLaBase
     ? u.permisos_extra
     : (RESPALDO_PERSONA[u.usuario] || []);
-  return [...new Set([...(mapa[u.rol] || []), ...propios])].filter((p) => CODIGOS.includes(p));
+  const lista = [...new Set([...(mapa[u.rol] || []), ...propios])]
+    .filter((p) => CODIGOS.includes(p));
+
+  // El puente de `remuneraciones`, que se separó de `rrhh` el 03-11-2026.
+  //
+  // Mientras la tabla no lo conozca —porque su migración no se pegó— se le da
+  // a quien tenga `rrhh`, que es el reparto que había antes. Sin esto,
+  // gerencia y RRHH se quedarían sin Sueldos el día que se despliegue el
+  // Worker y antes de que alguien corra el SQL, que en este proyecto son días.
+  // Cuando la tabla lo traiga, manda la tabla y prevención deja de tenerlo.
+  if (lista.includes('rrhh') && !lista.includes('remuneraciones')
+      && !filas.some((f) => (f.permisos || []).includes('remuneraciones'))) {
+    lista.push('remuneraciones');
+  }
+  return lista;
 }
 
 /** Si esto es false, la pantalla avisa que falta pegar la migración. */
