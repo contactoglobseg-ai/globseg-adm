@@ -26,11 +26,17 @@
 import { buscar, primero, insertar, actualizar, anotar } from './datos.js';
 import { hoyISO, esFecha, sumarMeses } from './fechas.js';
 import { armar, faltantes, explicarFaltantes, hash,
-         datosLaborales, datosArriendo } from './plantillas.js';
+         datosLaborales, datosArriendo, datosAnexo } from './plantillas.js';
+import { editarContrato } from './rrhh.js';
 import { ipDe, huellaDe } from './limite.js';
 import { formatearRut } from './rut.js';
 
 export const MIGRACION = '20261020180000_documentos_firma.sql';
+/** La del anexo que dice qué cambia. Si falta, el anexo sigue andando como
+ *  antes del 04-11-2026 —repitiendo lo que el contrato ya decía— y la pantalla
+ *  lo dice con el nombre del archivo en vez de ofrecer un formulario que el
+ *  servidor va a ignorar. */
+export const MIGRACION_ANEXO = '20261104180000_anexo_cambios.sql';
 
 /** Una firma pesa unos pocos kB. 400 kB es diez veces un trazo largo en un
  *  teléfono grande, y corta de raíz que alguien mande una foto como «firma». */
@@ -165,6 +171,219 @@ const empresaPorCodigo = async (env) => {
   return Object.fromEntries(filas.map((f) => [f.codigo, f]));
 };
 
+// ------------------------------------------------------------- qué cambia
+/**
+ * Las condiciones del contrato que un anexo puede modificar.
+ *
+ * Son cuatro y no todas las columnas del contrato a propósito. Lo que un anexo
+ * modifica de verdad en esta empresa es dónde trabaja la persona, qué hace,
+ * cuánto gana y en qué turno; el resto —el tipo de contrato, la causal de
+ * término, la resolución de la Dirección del Trabajo— o es otro documento o es
+ * una corrección de lo que estaba mal escrito, que se hace con «Corregir» en
+ * la ficha y queda en la bitácora. Mezclar las dos cosas haría que una errata
+ * se arreglara con un papel firmado por el trabajador.
+ *
+ * Lo que no esté acá se escribe en la cláusula libre, que no toca la base.
+ */
+export const CAMBIOS_ANEXO = {
+  instalacion_id: 'instalación',
+  cargo: 'cargo',
+  sueldo_base: 'sueldo base',
+  turno: 'turno',
+};
+
+/**
+ * Comprueba lo que la oficina dice que cambia, contra lo que el contrato dice
+ * hoy. Devuelve solo lo que de verdad cambia.
+ *
+ * La regla que se niega a saltarse: **un anexo que no modifica nada se
+ * rechaza**. Un documento que el trabajador firma diciendo que a contar de tal
+ * fecha pasa al mismo parque, con el mismo cargo y el mismo sueldo, no es un
+ * papel inútil: es un papel que parece decir algo y no dice nada, y dentro de
+ * dos años nadie va a saber qué se acordó ese día.
+ */
+async function revisarCambios(env, contrato, campos) {
+  if (!contrato) {
+    return { error: 'Un anexo modifica un contrato, y esta persona no tiene ninguno '
+                    + 'cargado. Cárguelo primero en Personas → Fichas.', status: 409 };
+  }
+  if (contrato.estado !== 'vigente') {
+    return { error: 'Ese contrato ya no está vigente: no se modifica con un anexo. '
+                    + 'Lo que corresponde es cargar un contrato nuevo.', status: 409 };
+  }
+
+  const rige = esFecha(campos.rige_desde) ? campos.rige_desde : null;
+  if (!rige) {
+    return { error: 'Falta desde cuándo rige el cambio. Es la fecha que el anexo repite '
+                    + 'en cada cláusula, y no es la de hoy: puede ser el lunes que viene.',
+             status: 400 };
+  }
+  if (rige < contrato.fecha_inicio) {
+    return { error: `El cambio no puede regir antes del ${contrato.fecha_inicio}, que es `
+                    + 'cuando empieza el contrato que se modifica.', status: 400 };
+  }
+
+  const cambios = { rige_desde: rige };
+  let nueva = null;
+  const avisos = [];
+
+  const puesto = (k) => campos[k] !== undefined && campos[k] !== null && campos[k] !== '';
+
+  if (puesto('instalacion_id')) {
+    const id = entero(campos.instalacion_id);
+    nueva = id ? await primero(env, `instalaciones?select=*&id=eq.${id}`) : null;
+    if (!nueva) return { error: 'Esa instalación no está en el catálogo', status: 404 };
+    if (id === contrato.instalacion_id) {
+      return { error: `El contrato ya dice ${nueva.nombre}. Un anexo que deja el lugar de `
+                      + 'trabajo como estaba no modifica nada.', status: 409 };
+    }
+    cambios.instalacion_id = id;
+    // La calle de cada instalación la mantiene operaciones y hoy muchas están
+    // vacías. El anexo sale igual, con la comuna y la región, y se dice: un
+    // documento firmado que no se puede generar es peor que uno que nombra el
+    // lugar con menos detalle del que uno quisiera.
+    if (!nueva.direccion) {
+      avisos.push(`${nueva.nombre} no tiene calle y número cargados, así que el anexo `
+        + 'nombra el lugar con la comuna y la región. Se completa en Instalaciones.');
+    }
+  }
+
+  if (puesto('cargo')) {
+    const cargo = limpio(campos.cargo, 60);
+    if (!cargo) return { error: 'El cargo nuevo quedó vacío', status: 400 };
+    if (cargo === contrato.cargo) {
+      return { error: `El contrato ya dice «${cargo}»: eso no es un cambio de cargo.`,
+               status: 409 };
+    }
+    cambios.cargo = cargo;
+  }
+
+  if (puesto('sueldo_base')) {
+    // Los puntos se sacan antes: un sueldo se teclea «553.553» y `entero`
+    // leería eso como un decimal y devolvería null. Es el mismo tropiezo del
+    // precio unitario de las cotizaciones, donde «3.500.000» quedaba en 3,5.
+    const sueldo = entero(String(campos.sueldo_base).replace(/\./g, ''));
+    if (sueldo === null || sueldo <= 0) {
+      return { error: 'El sueldo base nuevo tiene que ser un monto en pesos', status: 400 };
+    }
+    if (sueldo === contrato.sueldo_base) {
+      return { error: 'El sueldo base nuevo es el mismo que ya tiene el contrato', status: 409 };
+    }
+    cambios.sueldo_base = sueldo;
+  }
+
+  if (puesto('turno')) {
+    const turno = limpio(campos.turno, 80);
+    if (!turno) return { error: 'El turno nuevo quedó vacío', status: 400 };
+    if (turno === contrato.turno) {
+      return { error: `El contrato ya dice «${turno}»: eso no es un cambio de turno.`,
+               status: 409 };
+    }
+    cambios.turno = turno;
+  }
+
+  const otra = limpio(campos.otra_glosa, 800);
+  if (otra) cambios.otra_glosa = otra;
+
+  if (!Object.keys(cambios).some((k) => k in CAMBIOS_ANEXO) && !otra) {
+    return { error: 'Marque al menos una cosa que cambia. Un anexo que no modifica nada '
+                    + 'es un documento firmado que no dice nada.', status: 400 };
+  }
+
+  return { cambios, rige, nueva, aviso: avisos.join(' ') || null };
+}
+
+/** Lo que modifica un anexo, en palabras, para la pantalla y la bitácora. */
+export const resumirCambios = (cambios) => {
+  const partes = Object.keys(CAMBIOS_ANEXO).filter((k) => k in (cambios || {}))
+    .map((k) => CAMBIOS_ANEXO[k]);
+  if (cambios?.otra_glosa) partes.push('una cláusula escrita a mano');
+  return partes.join(', ');
+};
+
+/**
+ * Lleva al contrato lo que el anexo modifica.
+ *
+ * Por qué es un botón y no algo que pase solo al generar: el anexo puede
+ * quedarse sin firmar, puede anularse, y sobre todo **puede regir desde el
+ * lunes que viene**. Quien decide cuándo el sistema da por hecho el traslado
+ * es la oficina, no el papel.
+ *
+ * Por qué existe: un anexo firmado dice que desde el día tal la persona
+ * trabaja en otro parque. Si eso no llega al contrato, el estado de pago de
+ * ese mes, el recorte del F30-1 y la rotación de patrullas la siguen contando
+ * donde ya no está, y nadie se entera hasta que el mandante reclama. Antes de
+ * esto el único camino era acordarse de ir a «Corregir» el contrato a mano.
+ *
+ * No escribe la fecha desde la que rige en ninguna parte del contrato, porque
+ * el contrato no guarda historia: guarda cómo están las cosas hoy. La historia
+ * es el anexo, que queda con su texto congelado y sus firmas, y la bitácora,
+ * que anota qué decía antes cada campo.
+ */
+export async function aplicarCambios(env, quien, id) {
+  const d = await primero(env, `documentos_generados?select=*&id=eq.${entero(id)}`);
+  if (!d) return { error: 'Ese documento no existe', status: 404 };
+  if (d.estado === 'anulado') {
+    return { error: 'Ese anexo está anulado: no se lleva al contrato', status: 409 };
+  }
+
+  const cambios = d.datos?.cambios;
+  if (!cambios || !Object.keys(cambios).some((k) => k in CAMBIOS_ANEXO)) {
+    return { error: 'Este documento no modifica condiciones del contrato', status: 409 };
+  }
+  if (d.aplicado_en) {
+    return { ok: true, ya_estaba: true, aplicado_en: d.aplicado_en,
+             aplicado_por: d.aplicado_por };
+  }
+  if (!d.contrato_id) {
+    return { error: 'Este anexo no quedó amarrado a un contrato', status: 409 };
+  }
+
+  // Solo las cuatro condiciones. `otra_glosa` y `rige_desde` viven en el texto
+  // del anexo y no son columnas del contrato: meterlas acá escribiría en la
+  // ficha una frase que nadie va a volver a mirar.
+  const patch = {};
+  for (const campo of Object.keys(CAMBIOS_ANEXO)) {
+    if (campo in cambios) patch[campo] = cambios[campo];
+  }
+
+  // Pasa por la misma puerta que «Corregir» en la ficha: revisa la ley, deja
+  // cada campo en la bitácora con lo que decía antes, y pone al día el cargo y
+  // la instalación de la persona. Escribir el `update` acá habría sido una
+  // segunda forma de modificar un contrato, que se separa de la primera el día
+  // que una de las dos cambie.
+  const r = await editarContrato(env, quien, d.contrato_id, patch);
+  if (r.error) return { error: r.error, status: r.status || 409 };
+
+  // La instalación cambia de id y así es como queda escrita: «instalación:
+  // 2 → 1», que no se lo puede leer nadie. Esto lo lee la oficina en la
+  // pantalla y, sobre todo, queda en la bitácora, que es donde dentro de un
+  // año alguien va a buscar de dónde a dónde se movió esta persona.
+  const quedaron = r.cambios || [];
+  const dosIds = quedaron.filter((x) => x.campo === 'instalacion_id');
+  if (dosIds.length) {
+    const ids = dosIds.flatMap((x) => [x.antes, x.despues])
+      .map((v) => Number(v)).filter((v) => Number.isFinite(v) && v > 0);
+    const filas = ids.length
+      ? await buscar(env, `instalaciones?select=id,nombre&id=in.(${ids.join(',')})`) : [];
+    const nombre = new Map(filas.map((f) => [String(f.id), f.nombre]));
+    for (const x of dosIds) {
+      x.antes = nombre.get(String(x.antes)) || x.antes;
+      x.despues = nombre.get(String(x.despues)) || x.despues;
+    }
+  }
+
+  await actualizar(env, `documentos_generados?id=eq.${d.id}`, {
+    aplicado_en: new Date().toISOString(), aplicado_por: quien,
+  });
+  await anotar(env, quien, 'documento_generado', d.id,
+    'llevó el anexo al contrato',
+    `${d.numero} · ` + quedaron.map((x) => `${x.rotulo}: ${x.antes} → ${x.despues}`)
+      .join(' · ').slice(0, 900));
+
+  return { ok: true, cambios: quedaron, avisos: r.avisos || [] };
+}
+
 // ------------------------------------------------------------------ armado
 /**
  * Arma el documento. Con `guardar` en false es la vista previa, que no escribe
@@ -193,6 +412,11 @@ export async function generar(env, quien, cuerpo,
   let contrato = null;
   let bloque = '';
   let titulo = p.titulo;
+  // Lo que este documento modifica del contrato, ya comprobado. Queda guardado
+  // dentro de `datos` para que después se pueda llevar al contrato sin volver
+  // a preguntarle nada a nadie: lo que se firmó es lo que se aplica.
+  let cambios = null;
+  let avisoCambio = null;
 
   if (p.clase === 'laboral') {
     trabajador = await primero(env,
@@ -221,6 +445,22 @@ export async function generar(env, quien, cuerpo,
       : null;
 
     datos = datosLaborales({ trabajador, contrato, instalacion, empresa, hoy });
+
+    // Un anexo no se arma con lo que el contrato dice hoy: se arma con lo que
+    // cambia. Por eso acá se reemplazan el cargo, el sueldo y el lugar de
+    // trabajo por los nuevos, y las cláusulas que no cambian desaparecen del
+    // texto. Hasta el 04-11-2026 el anexo repetía lo que el contrato ya decía,
+    // con la fecha de inicio del contrato en vez de la del cambio, así que el
+    // de un traslado salía afirmando un reajuste de sueldo que no existió.
+    if (p.cambia_contrato) {
+      const r = await revisarCambios(env, contrato, cuerpo.campos || {});
+      if (r.error) return r;
+      cambios = r.cambios;
+      avisoCambio = r.aviso;
+      datos = { ...datos, ...datosAnexo({
+        contrato, anterior: instalacion, nueva: r.nueva, cambios, rigeDesde: r.rige }) };
+      datos.cambios = cambios;
+    }
 
     // El bloque de funciones. Es lo único que distingue el contrato de un
     // guardia del de un supervisor, y por eso es un bloque y no dos plantillas.
@@ -255,6 +495,7 @@ export async function generar(env, quien, cuerpo,
   // acuerde de la pantalla donde lo leyó.
   const porConfirmar = [
     p.por_confirmar,
+    avisoCambio,
     ...Object.values(empresa).filter((e) => e.por_confirmar).map((e) => e.glosa || e.codigo),
   ].filter(Boolean).join(' ');
 
@@ -271,6 +512,10 @@ export async function generar(env, quien, cuerpo,
     // buscarlos a ojo entre la ficha, el contrato y las instalaciones.
     faltan_campos: explicarFaltantes(sinLlenar),
     por_confirmar: porConfirmar || null,
+    // Qué modifica, en palabras, para que la pantalla lo diga antes de generar
+    // y el que abre el documento el año que viene no tenga que leerlo entero.
+    cambios: cambios || null,
+    cambios_resumen: cambios ? resumirCambios(cambios) : null,
   };
   if (!guardar) return { vista_previa: armado };
 
@@ -354,6 +599,10 @@ export async function ver(env, id) {
     tiene_archivo: !!archivo_ruta,
     plantilla_nombre: p?.nombre ?? d.plantilla,
     clase: p?.clase ?? 'general',
+    // Qué modifica del contrato, si es un anexo. La pantalla lo usa para
+    // ofrecer llevarlo al contrato y para decir si eso ya se hizo.
+    cambios: d.datos?.cambios || null,
+    cambios_resumen: d.datos?.cambios ? resumirCambios(d.datos.cambios) : null,
     fuente: p?.fuente ?? 'texto',
     firmantes: (p?.firmantes || '').split(',').map((s) => s.trim()).filter(Boolean),
     firmas,

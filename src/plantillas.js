@@ -116,7 +116,22 @@ export const pesos = (n) =>
 //   {{campo}}             el valor; si falta, una línea de guiones a completar
 //   {{#campo}}…{{/campo}} el trozo entero solo si el campo tiene valor
 //   {{=bloque}}           el bloque intercambiable que se eligió
+//   {{n}}                 el ordinal de la cláusula: PRIMERO, SEGUNDO, TERCERO…
 const FALTA = '_______________';
+
+/**
+ * Los ordinales de las cláusulas.
+ *
+ * Existen porque un anexo tiene las cláusulas que tenga: el que solo mueve de
+ * instalación lleva dos y el que cambia tres cosas lleva cuatro. Con los
+ * números escritos adentro de la plantilla, el primer anexo corto habría
+ * salido saltando de PRIMERO a TERCERO —que es exactamente el error que traían
+ * los contratos del gerente, donde CUARTO era seguido de SEXTO— y eso en un
+ * documento que se firma no es una fealdad, es una cláusula que parece faltar.
+ */
+const ORDINALES = ['PRIMERO', 'SEGUNDO', 'TERCERO', 'CUARTO', 'QUINTO', 'SEXTO',
+                   'SÉPTIMO', 'OCTAVO', 'NOVENO', 'DÉCIMO', 'UNDÉCIMO',
+                   'DUODÉCIMO', 'DÉCIMO TERCERO', 'DÉCIMO CUARTO'];
 
 /** Lo que cuenta como «sin valor»: null, vacío y el cero de un monto. Un
  *  contrato no lleva una línea que diga «Asignación de Colación: $ 0». */
@@ -142,6 +157,12 @@ export function armar(cuerpo, datos, bloque = '', faltan = null) {
     t = t.replace(/\{\{#([a-z_0-9]+)\}\}([\s\S]*?)\{\{\/\1\}\}/g,
       (_, campo, dentro) => (vacio(datos[campo]) ? '' : dentro));
   }
+
+  // Los ordinales van después de los condicionales y antes de los campos: se
+  // numeran las cláusulas que quedaron, no las que la plantilla traía escritas.
+  let clausula = 0;
+  t = t.replace(/\{\{n\}\}/g,
+    () => ORDINALES[clausula++] || `CLÁUSULA ${clausula}`);
 
   t = t.replace(/\{\{=([a-z_0-9]+)\}\}/g, (_, campo) => {
     if (bloque) return bloque;
@@ -235,6 +256,11 @@ export const CAMPOS = {
   // La instalación — su dirección de calle la mantiene operaciones.
   lugar_trabajo: ['instalacion', 'Dirección del lugar de trabajo'],
 
+  // El anexo: lo que cambia lo escribe quien lo genera, en el mismo formulario.
+  rige_desde:        ['documento', 'Desde cuándo rige el cambio'],
+  instalacion_nueva: ['documento', 'Instalación nueva'],
+  turno:             ['documento', 'Turno nuevo'],
+
   // El arriendo: nada de esto vive en una tabla, lo escribe quien lo genera.
   arrendador:           ['documento', 'Arrendador'],
   arrendador_rut:       ['documento', 'RUT del arrendador'],
@@ -296,14 +322,18 @@ export async function hash(texto) {
 // una sola parte —la ficha, el contrato o `datos_empresa`— y ninguno se escribe
 // a mano en la pantalla: lo que el contrato dice del trabajador tiene que ser
 // lo mismo que dice su ficha, o la liquidación del mes siguiente no va a cuadrar.
+export function lugarDe(instalacion) {
+  if (!instalacion) return null;
+  return [instalacion.direccion,
+          instalacion.comuna && `comuna de ${instalacion.comuna}`,
+          instalacion.region && `Región ${instalacion.region}`]
+    .filter(Boolean).join(', ') || instalacion.nombre;
+}
+
 export function datosLaborales({ trabajador, contrato, instalacion, empresa, hoy }) {
   const e = (codigo) => empresa[codigo]?.valor || '';
 
-  const lugar = instalacion
-    ? [instalacion.direccion, instalacion.comuna && `comuna de ${instalacion.comuna}`,
-       instalacion.region && `Región ${instalacion.region}`]
-      .filter(Boolean).join(', ') || instalacion.nombre
-    : null;
+  const lugar = lugarDe(instalacion);
 
   const d = {
     // La empresa
@@ -450,6 +480,65 @@ export function datosArriendo({ empresa, hoy, campos }) {
       + 'siguientes a la restitución del vehículo, deducido lo que corresponda por daños '
       + 'o multas pendientes.'
     : 'Las partes no han pactado garantía.';
+
+  return d;
+}
+
+// --------------------------------------------------------- datos de un anexo
+/**
+ * Lo que el anexo agrega encima de `datosLaborales`: qué cambia, desde cuándo,
+ * y qué decía antes.
+ *
+ * Va encima y no en vez de: el encabezado del anexo nombra a la empresa, al
+ * trabajador y su RUT, que salen de los mismos lados de siempre. Lo que esta
+ * función reemplaza son `cargo`, `sueldo` y `lugar_trabajo`, que en el anexo
+ * **no son los del contrato sino los nuevos**. Esa sustitución es todo el
+ * asunto: un anexo que repite lo que el contrato ya decía no modifica nada.
+ *
+ * `cambios` trae solo las llaves que de verdad cambian, ya comprobadas contra
+ * el contrato por quien lo llamó. Cada una enciende su cláusula.
+ */
+export function datosAnexo({ contrato, anterior, nueva, cambios, rigeDesde }) {
+  const d = {
+    contrato_desde: fechaLarga(contrato?.fecha_inicio),
+    rige_desde: fechaLarga(rigeDesde),
+  };
+
+  if ('instalacion_id' in cambios) {
+    d.cambia_instalacion = true;
+    d.instalacion_nueva = nueva?.nombre || null;
+    d.lugar_trabajo = lugarDe(nueva);
+    // Si el contrato no tenía instalación asignada, la frase «en reemplazo de»
+    // se cae sola: no hay nada que reemplazar y decirlo sería inventar un
+    // lugar de trabajo anterior que nunca estuvo escrito.
+    d.instalacion_anterior = anterior?.nombre || null;
+  }
+
+  if ('cargo' in cambios) {
+    d.cambia_cargo = true;
+    d.cargo = cambios.cargo;
+    d.cargo_anterior = contrato?.cargo || null;
+  }
+
+  if ('sueldo_base' in cambios) {
+    d.cambia_sueldo = true;
+    d.sueldo = pesos(cambios.sueldo_base);
+    d.sueldo_palabras = enPalabras(cambios.sueldo_base);
+    d.sueldo_anterior = contrato?.sueldo_base ? pesos(contrato.sueldo_base) : null;
+    d.sueldo_anterior_palabras = contrato?.sueldo_base
+      ? enPalabras(contrato.sueldo_base) : null;
+  }
+
+  if ('turno' in cambios) {
+    d.cambia_turno = true;
+    d.turno = cambios.turno;
+    d.turno_anterior = contrato?.turno || null;
+  }
+
+  // La cláusula que escribe la oficina. Existe porque lo que se modifica no
+  // siempre es una de las cuatro de arriba —un pacto de horas extraordinarias,
+  // un cambio de jornada— y la salida de antes era volver al Word.
+  if (cambios.otra_glosa) d.otra_glosa = cambios.otra_glosa;
 
   return d;
 }

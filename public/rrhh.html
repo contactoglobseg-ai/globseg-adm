@@ -1277,6 +1277,15 @@ function seccionContratos(contratos, cv, c) {
         </div>
       </form>
     </details>
+
+    ${cv ? `<div class="pie-form">
+      <button class="bt bt--fino" type="button" data-doc="anexo_contrato">Generar un anexo</button>
+      <button class="bt bt--fino" type="button" data-doc="contrato_trabajo">Generar el contrato</button>
+      <span class="sub" style="margin:0">Lo de arriba es la ficha del contrato: lo que el
+        sistema sabe de él. El papel que se firma se arma en Documentos con estos mismos
+        datos. El anexo sirve para un cambio de instalación, de cargo, de sueldo o de
+        turno, y pregunta desde cuándo rige.</span>
+    </div>` : ""}
   </section>`;
 }
 
@@ -1913,6 +1922,27 @@ function conectarFicha(datos) {
     b.onclick = () => {
       RRHH.editaContrato = Number(b.dataset.editarContrato);
       pintarFicha(id);
+    };
+  });
+
+  /* Generar el contrato o un anexo de esta persona. Va desde acá y no solo
+     desde Documentos porque el que necesita el papel está mirando la ficha:
+     mandarlo a otra pestaña a buscar su nombre en un desplegable de cien es
+     el paso donde se abandona. Deja el formulario de allá listo y se cambia
+     de sección; no genera nada, que eso se mira antes. */
+  document.querySelectorAll("[data-doc]").forEach(b => {
+    b.onclick = () => {
+      DOCS.plantilla = b.dataset.doc;
+      DOCS.trabajador = String(id);
+      DOCS.previa = null;
+      DOCS.abierto = null;
+      DOCS.contrato = null;
+      DOCS.contratoDe = null;
+      DOCS.cambia = { instalacion: false, cargo: false, sueldo: false,
+                      turno: false, otra: false };
+      DOCS.cambios = { rige_desde: "", instalacion_id: "", cargo: "",
+                       sueldo_base: "", turno: "", otra_glosa: "" };
+      ir("documentos");
     };
   });
   const fec = $("#f-editar-contrato");
@@ -2964,6 +2994,18 @@ const DOCS = {
   campos: {},
   previa: null,
   abierto: null,
+  /* Lo del anexo. `contrato` es el contrato vigente de la persona elegida, que
+     es contra lo que se arma: la pantalla tiene que poder mostrar qué dice hoy
+     al lado de cada cosa que se va a cambiar. `contratoDe` evita volver a
+     pedirlo en cada repintado, que acá son muchos: marcar una casilla repinta.
+     `cambia` es qué casillas están marcadas y `cambios` lo tecleado; van
+     separados porque desmarcar y volver a marcar no tiene por qué borrar lo
+     que ya se había escrito. */
+  contrato: null,
+  contratoDe: null,
+  cambia: { instalacion: false, cargo: false, sueldo: false, turno: false, otra: false },
+  cambios: { rige_desde: "", instalacion_id: "", cargo: "", sueldo_base: "",
+             turno: "", otra_glosa: "" },
   /* Lo de prevención. El archivo vive acá y no en el `<input type=file>`
      porque la pantalla se repinta entera al marcar a alguien, y un input de
      archivo no se puede volver a llenar desde JavaScript: el PDF elegido se
@@ -3000,6 +3042,101 @@ const CAMPOS_ARRIENDO = [
 
 const catalogosDocs = async () => (DOCS.catalogos ||= await pedir("/documentos/catalogos"));
 
+/**
+ * El bloque de «qué cambia» del anexo.
+ *
+ * Existe porque un anexo no se arma con lo que el contrato dice hoy, sino con
+ * lo que cambia. Hasta el 04-11-2026 esta pantalla no preguntaba nada: el
+ * anexo salía repitiendo el cargo y el sueldo que la persona ya tenía, con la
+ * fecha de inicio del contrato en vez de la del traslado, así que el anexo por
+ * cambio de instalación —que es el que la empresa necesitaba— habría salido
+ * afirmando un reajuste de sueldo que nunca ocurrió.
+ *
+ * Cada casilla marcada enciende su cláusula en el documento. Las que no se
+ * marcan no aparecen, y el armador numera las que quedaron.
+ */
+function bloqueAnexo(c) {
+  const k = DOCS.cambios, m = DOCS.cambia, ct = DOCS.contrato;
+
+  if (!DOCS.trabajador) {
+    return `<p class="sub" style="padding:0 16px 12px">Elija a la persona y acá aparece
+      lo que dice su contrato hoy, para marcar qué cambia.</p>`;
+  }
+  if (!ct) {
+    return aviso("ojo", "Esta persona no tiene contrato vigente cargado. ",
+      "Un anexo modifica un contrato, así que primero hay que cargarlo en Fichas. "
+      + "Si lo que hubo fue un contrato nuevo, eso es un contrato y no un anexo.");
+  }
+
+  const hoyDice = (v) => `<small style="color:var(--texto-3);font-size:.75rem">Hoy: ${
+    esc(v || "sin dato")}</small>`;
+  const casilla = (llave, rotulo) =>
+    `<label style="display:flex;gap:8px;align-items:center;font-size:.84rem;
+                   color:var(--texto);font-weight:500;cursor:pointer">
+      <input type="checkbox" data-cambia="${llave}" style="${ESTILO_CASILLA}"${
+        m[llave] ? " checked" : ""}><span>${esc(rotulo)}</span></label>`;
+  const caja = (llave, rotulo, dentro, hoy) =>
+    `<div style="display:flex;flex-direction:column;gap:6px;min-width:0;grid-column:span 2">
+      ${casilla(llave, rotulo)}
+      ${m[llave] ? dentro : ""}
+      ${hoy ? hoyDice(hoy) : ""}
+    </div>`;
+
+  const inst = c.instalaciones || [];
+  const laDeHoy = inst.find(i => i.id === ct.instalacion_id);
+
+  return `
+    <div class="rejilla" style="padding-top:0">
+      <label class="campo" style="grid-column:span 2"><span>Desde cuándo rige el cambio *</span>
+        <input type="date" id="x-rige" value="${esc(k.rige_desde)}">
+        <small style="color:var(--texto-3);font-size:.75rem">Es la fecha que el anexo
+          repite en cada cláusula. No tiene por qué ser hoy.</small></label>
+    </div>
+
+    <p class="sub" style="padding:0 16px 10px"><b style="color:var(--texto)">Qué cambia.</b>
+      Lo que no se marque no aparece en el anexo, y el documento dice
+      que todo lo demás del contrato sigue igual.</p>
+
+    <div class="rejilla" style="padding-top:0">
+      ${caja("instalacion", "Pasa a otra instalación",
+        `<select id="x-instalacion">
+          <option value="">Elija la instalación nueva…</option>
+          ${inst.filter(i => i.id !== ct.instalacion_id).map(i =>
+            `<option value="${i.id}"${String(i.id) === String(k.instalacion_id)
+              ? " selected" : ""}>${esc(i.nombre)}</option>`).join("")}
+        </select>`,
+        laDeHoy ? laDeHoy.nombre : (ct.instalacion_id ? "otra instalación" : "sin asignar"))}
+
+      ${caja("cargo", "Cambia de cargo",
+        `<select id="x-cargo">
+          <option value="">Elija el cargo nuevo…</option>
+          ${CARGOS.filter(x => x !== ct.cargo).map(x =>
+            `<option value="${esc(x)}"${x === k.cargo ? " selected" : ""}>${
+              rotCargo(x)}</option>`).join("")}
+        </select>`, rotCargo(ct.cargo))}
+
+      ${caja("sueldo", "Cambia el sueldo base",
+        `<input id="x-sueldo" inputmode="numeric" autocomplete="off"
+                placeholder="553553" value="${esc(k.sueldo_base)}">`,
+        clp(ct.sueldo_base))}
+
+      ${caja("turno", "Cambia el turno",
+        `<input id="x-turno" autocomplete="off" placeholder="4x4 de 12 horas"
+                value="${esc(k.turno)}">`, ct.turno)}
+
+      ${caja("otra", "Otra cosa que se modifica",
+        `<textarea id="x-otra" rows="3" placeholder="Queda redactado tal cual en una cláusula del anexo."
+           style="width:100%;padding:9px 11px;border:1px solid var(--borde);border-radius:var(--r-s);
+                  background:var(--sup-2);color:var(--texto);font:inherit;font-size:.86rem"
+           >${esc(k.otra_glosa)}</textarea>`, null)}
+    </div>
+
+    ${aviso("ojo", "Esto no mueve a la persona en el sistema todavía. ",
+      "El anexo es el papel. Cuando esté generado, en el documento mismo hay un botón para "
+      + "llevar el cambio al contrato, y recién ahí el estado de pago, el F30-1 y la rotación "
+      + "la cuentan en el lugar nuevo.")}`;
+}
+
 async function pintarDocumentos() {
   let c;
   try {
@@ -3024,6 +3161,33 @@ async function pintarDocumentos() {
   const p = c.plantillas.find(x => x.codigo === DOCS.plantilla);
   const laboral = p && p.clase === "laboral";
   const bloques = c.bloques.filter(b => b.grupo === "funciones");
+
+  /* El anexo se arma contra el contrato vigente de la persona, así que hay que
+     tenerlo a la vista. Se pide una vez por persona y no en cada repintado:
+     acá se repinta al marcar cada casilla, y pedirlo cada vez sería una vuelta
+     a la base por clic. */
+  /* El bloque de funciones se propone con el primero. Estaba solo en el
+     `onchange` del desplegable de plantillas, así que llegando acá por otro
+     camino —desde la ficha, por ejemplo— el contrato salía con las funciones
+     en blanco y el armado se negaba a generarlo. */
+  if (p && p.codigo === "contrato_trabajo" && !DOCS.bloque && bloques.length) {
+    DOCS.bloque = bloques[0].codigo;
+  }
+
+  const anexo = !!(p && laboral && p.cambia_contrato);
+  /* La fecha se propone en el estado y no solo en el `value` del campo: si se
+     dejara solo ahí, quien no la toca mandaría una fecha vacía y el servidor
+     rechazaría un formulario que en pantalla se veía completo. */
+  if (anexo && !DOCS.cambios.rige_desde) DOCS.cambios.rige_desde = hoyISO();
+  if (!DOCS.trabajador) {
+    DOCS.contrato = null;
+    DOCS.contratoDe = null;
+  } else if (anexo && String(DOCS.contratoDe) !== String(DOCS.trabajador)) {
+    DOCS.contrato = await pedir(
+      `/documentos/contrato?trabajador_id=${Number(DOCS.trabajador)}`)
+      .then(r => r.contrato).catch(() => null);
+    DOCS.contratoDe = DOCS.trabajador;
+  }
 
   $("#app").innerHTML = `
     <section class="caja">
@@ -3062,6 +3226,13 @@ async function pintarDocumentos() {
           <input id="d-c-${f.k}" type="${f.tipo || "text"}"
                  value="${esc(DOCS.campos[f.k] ?? "")}"></label>`).join("") : ""}
       </div>
+      ${anexo ? bloqueAnexo(c) : ""}
+      ${p && p.codigo === "anexo_contrato" && !p.cambia_contrato ? aviso("ojo",
+        "El anexo todavía no pregunta qué cambia. ",
+        "Falta aplicar la migración " + esc(c.migracion_anexo || "") + " en el SQL Editor "
+        + "de Supabase. Mientras tanto el anexo sale repitiendo lo que el contrato ya dice, "
+        + "con la fecha de inicio del contrato en vez de la del cambio, así que conviene "
+        + "leerlo entero antes de mandarlo a firmar.") : ""}
       ${p && p.por_confirmar ? aviso("ojo", "Esta plantilla tiene cosas por confirmar. ",
         p.por_confirmar) : ""}
       <div class="pie-form">
@@ -3107,8 +3278,35 @@ async function pintarDocumentos() {
     }
     pintarDocumentos();
   };
-  if ($("#d-trabajador")) $("#d-trabajador").onchange = e => { DOCS.trabajador = e.target.value; };
+  if ($("#d-trabajador")) {
+    $("#d-trabajador").onchange = e => {
+      DOCS.trabajador = e.target.value;
+      // El anexo sí repinta: hay que ir a buscar el contrato de esta persona y
+      // mostrar qué dice hoy. El contrato y el arriendo no necesitan nada.
+      if (anexo) { DOCS.previa = null; pintarDocumentos(); }
+    };
+  }
   if ($("#d-bloque")) $("#d-bloque").onchange = e => { DOCS.bloque = e.target.value; };
+
+  for (const b of document.querySelectorAll("[data-cambia]")) {
+    b.onchange = () => {
+      DOCS.cambia[b.dataset.cambia] = b.checked;
+      DOCS.previa = null;
+      pintarDocumentos();
+    };
+  }
+  /* Lo tecleado se guarda sin repintar: repintar en cada tecla devolvería el
+     cursor al principio del campo. */
+  const atar = (sel, llave) => { const el = $(sel); if (el) el.oninput = e => {
+    DOCS.cambios[llave] = e.target.value; DOCS.previa = null; }; };
+  atar("#x-rige", "rige_desde");
+  atar("#x-sueldo", "sueldo_base");
+  atar("#x-turno", "turno");
+  atar("#x-otra", "otra_glosa");
+  for (const [sel, llave] of [["#x-instalacion", "instalacion_id"], ["#x-cargo", "cargo"]]) {
+    const el = $(sel);
+    if (el) el.onchange = e => { DOCS.cambios[llave] = e.target.value; DOCS.previa = null; };
+  }
   for (const f of CAMPOS_ARRIENDO) {
     const el = $(`#d-c-${f.k}`);
     if (el) el.oninput = ev => { DOCS.campos[f.k] = ev.target.value; };
@@ -3875,6 +4073,33 @@ function listaFaltantes(campos) {
      <span>${rotulos.map(esc).join(" · ")}</span></div>`).join("")}</div>`;
 }
 
+/**
+ * Lo que cambia el anexo, tal como se manda al servidor.
+ *
+ * Solo lo marcado. Los rechazos se escriben acá además de en el servidor
+ * porque el que falta es un campo de esta pantalla y el mensaje tiene que
+ * decir cuál, no «faltan datos».
+ */
+function camposAnexo() {
+  const k = DOCS.cambios, m = DOCS.cambia;
+  const campos = { rige_desde: k.rige_desde };
+  const pedir_ = (llave, valor, falta) => {
+    if (!String(valor ?? "").trim()) throw new Error(falta);
+    campos[llave] = valor;
+  };
+  if (m.instalacion) pedir_("instalacion_id", k.instalacion_id, "Elija la instalación nueva.");
+  if (m.cargo) pedir_("cargo", k.cargo, "Elija el cargo nuevo.");
+  if (m.sueldo) pedir_("sueldo_base", k.sueldo_base, "Escriba el sueldo base nuevo.");
+  if (m.turno) pedir_("turno", k.turno, "Escriba el turno nuevo.");
+  if (m.otra) pedir_("otra_glosa", k.otra_glosa, "Escriba la cláusula que se agrega.");
+  if (!Object.keys(campos).some(x => x !== "rige_desde")) {
+    throw new Error("Marque al menos una cosa que cambia: un anexo que no modifica nada "
+      + "es un documento firmado que no dice nada.");
+  }
+  if (!k.rige_desde) throw new Error("Falta desde cuándo rige el cambio.");
+  return campos;
+}
+
 /** Lo que se manda al servidor para armar el documento. */
 function cuerpoDocumento() {
   const base = { plantilla: DOCS.plantilla };
@@ -3883,6 +4108,7 @@ function cuerpoDocumento() {
     if (!DOCS.trabajador) throw new Error("Elija a la persona.");
     base.trabajador_id = Number(DOCS.trabajador);
     if (DOCS.plantilla === "contrato_trabajo") base.bloque = DOCS.bloque;
+    if (p.cambia_contrato) base.campos = camposAnexo();
   } else {
     base.campos = DOCS.campos;
   }
@@ -3935,6 +4161,11 @@ async function generarDocumento() {
   });
   DOCS.previa = null;
   DOCS.abierto = r.documento.id;
+  // El formulario del anexo se vacía: el siguiente es de otra persona y otro
+  // cambio, y dejarlo lleno invita a generar dos veces lo mismo.
+  DOCS.cambia = { instalacion: false, cargo: false, sueldo: false, turno: false, otra: false };
+  DOCS.cambios = { rige_desde: "", instalacion_id: "", cargo: "", sueldo_base: "",
+                   turno: "", otra_glosa: "" };
   await repintarDocs();
 }
 
@@ -3960,6 +4191,12 @@ async function pintarAbierto() {
         + "sirve de respaldo: anúlelo y genere otro.") : ""}
       ${d.estado === "anulado" ? aviso("ojo", "Anulado. ", d.anulado_motivo || "") : ""}
       ${d.por_confirmar ? aviso("ojo", "Por confirmar. ", d.por_confirmar) : ""}
+      ${d.cambios && !d.aplicado_en && d.estado !== "anulado" ? aviso("ojo",
+        "Esto todavía no está en el contrato. ",
+        `Lo que el anexo modifica — ${esc(d.cambios_resumen || "el contrato")} — todavía `
+        + "no está en el sistema: el estado de pago, el F30-1 y la rotación siguen contando "
+        + "a la persona como estaba. Con el botón de abajo se lleva al contrato y queda "
+        + "anotado en la bitácora.") : ""}
       ${d.estado === "por_firmar" && faltan.includes("trabajador") ? aviso("ojo",
         "Falta que firme el trabajador. ",
         "Lo ve al entrar a asistencia.seggarridos.com con su propia cuenta, la misma "
@@ -4002,6 +4239,12 @@ async function pintarAbierto() {
         <button class="bt bt--fino" type="button" id="d-pdf">${d.tiene_archivo
           ? (d.firmas.length ? "Descargar firmado" : "Descargar el PDF")
           : "Descargar en PDF"}</button>
+        ${d.cambios && d.contrato_id && !d.aplicado_en && d.estado !== "anulado"
+          ? '<button class="bt bt--fino" type="button" id="d-aplicar">Llevar el cambio al contrato</button>'
+          : ""}
+        ${d.aplicado_en ? `<span class="sub" style="margin:0">Ya está en el contrato${
+          d.aplicado_por ? ` · lo aplicó ${esc(d.aplicado_por)}` : ""} · ${
+          esc(cuando(d.aplicado_en))}</span>` : ""}
         ${d.estado === "firmado" && d.trabajador_id && !d.documento_id
           ? '<button class="bt bt--fino" type="button" id="d-archivar">Guardar en su ficha</button>'
           : ""}
@@ -4025,6 +4268,10 @@ async function pintarAbierto() {
   }
   $("#d-pdf").onclick = () => pdfDocumento(d)
     .catch(e => decir($("#m-abierto"), e.message, "error"));
+  if ($("#d-aplicar")) {
+    $("#d-aplicar").onclick = () => aplicarAlContrato(d)
+      .catch(e => decir($("#m-abierto"), e.message, "error"));
+  }
   if ($("#d-archivar")) {
     $("#d-archivar").onclick = () => archivarDocumento(d)
       .catch(e => decir($("#m-abierto"), e.message, "error"));
@@ -4051,6 +4298,38 @@ const cuando = iso => {
   return isNaN(d) ? String(iso).slice(0, 16).replace("T", " ")
     : d.toLocaleString("es-CL", { dateStyle: "short", timeStyle: "short" });
 };
+
+/**
+ * Lleva al contrato lo que el anexo modifica.
+ *
+ * Se pregunta antes porque escribe en el contrato de una persona: el sueldo,
+ * el cargo o el lugar de trabajo. Lo que se hace acá es lo mismo que
+ * «Corregir» en la ficha, con la diferencia de que los valores salen de un
+ * documento firmado en vez de un formulario, y queda dicho de qué anexo vino.
+ */
+async function aplicarAlContrato(d) {
+  if (!confirm("En el contrato vigente de esta persona se va a cambiar lo que dice el "
+      + "anexo: " + (d.cambios_resumen || "sus condiciones") + ".\n\n"
+      + "Queda anotado en la bitácora a su nombre, con lo que decía antes cada cosa. "
+      + "¿Lo aplico?")) return;
+  decir($("#m-abierto"), "Llevándolo al contrato…");
+  const r = await pedir(`/documentos/${d.id}/aplicar`, { method: "POST" });
+  if (r.ya_estaba) {
+    decir($("#m-abierto"), "Ya estaba aplicado", "ok");
+  } else {
+    alert("Listo. En el contrato quedó:\n\n· "
+      + (r.cambios || []).map(x => `${x.rotulo}: ${x.antes} → ${x.despues}`).join("\n· ")
+      + (r.avisos?.length ? "\n\nTenga presente:\n\n· " + r.avisos.join("\n· ") : ""));
+  }
+  // La ficha de la persona cambió, así que lo que haya guardado de RRHH deja
+  // de valer: el cargo y la instalación de arriba ya no son los mismos. Y el
+  // contrato que el formulario del anexo tiene a la vista quedó viejo: sin
+  // esto, el «Hoy: Puelche» del siguiente anexo seguiría diciendo lo de antes.
+  RRHH.panel = null;
+  DOCS.contrato = null;
+  DOCS.contratoDe = null;
+  await pintarAbierto();
+}
 
 async function firmarComoEmpresa(d, lienzo) {
   if (lienzo.vacio()) throw new Error("Falta firmar en el recuadro.");

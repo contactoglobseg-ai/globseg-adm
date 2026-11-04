@@ -1368,10 +1368,10 @@ async function api(request, env, url, usuario) {
         personas: puedeLaboral
           ? await buscar(env, 'v_personal?select=id,nombre,rut,cargo&activo=is.true&order=nombre.asc')
           : [],
+        migracion_anexo: docs.MIGRACION_ANEXO,
         // Para el anexo: a qué instalación se traslada. Van las activas, que
         // son a las que se puede mandar a alguien; una dada de baja sigue
         // nombrada en los contratos viejos y no tiene por qué ofrecerse.
-        migracion_anexo: docs.MIGRACION_ANEXO,
         instalaciones: puedeLaboral
           ? await buscar(env, 'instalaciones?select=id,nombre,direccion,comuna,region'
                               + '&activa=is.true&order=nombre.asc')
