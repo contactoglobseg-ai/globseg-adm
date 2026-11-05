@@ -550,9 +550,18 @@ export async function generar(env, quien, cuerpo,
     // oficina registra el término y después hace el papel. Buscar solo el
     // vigente dejaba el documento imposible de generar justo en el caso
     // normal, que es el que el gerente se encontró el 04-11-2026.
+    //
+    // El desempate por `id` no es un adorno. Cargar un contrato nuevo cierra
+    // el anterior poniéndole de término **el día antes de que empiece el
+    // nuevo**, así que los dos quedan con la MISMA fecha de inicio cuando el
+    // nuevo se cargó para corregir al viejo. Sin `id.desc` cuál vuelve lo
+    // decide Postgres, y el finiquito podía salir con el sueldo y la jornada
+    // del contrato equivocado. Se vio en la ficha de un trabajador real el
+    // 05-11-2026: dos contratos, los dos desde el 07-08-2026.
     if (!contrato && p.usa_finiquito) {
       contrato = await primero(env,
-        `contratos?select=*&trabajador_id=eq.${trabajador.id}&order=fecha_inicio.desc`);
+        `contratos?select=*&trabajador_id=eq.${trabajador.id}`
+        + '&order=fecha_inicio.desc,id.desc');
     }
     if (p.requiere_contrato && !contrato) {
       return { error: 'Esa persona no tiene contrato cargado. Cárguelo primero en '

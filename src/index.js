@@ -794,7 +794,7 @@ async function api(request, env, url, usuario) {
       const t = await primero(env, `trabajadores?select=*&id=eq.${entero(cuerpo.trabajador_id)}`);
       if (!t) return error('Esa persona no está en el registro', 404);
       const contrato = await primero(env,
-        `contratos?select=*&trabajador_id=eq.${t.id}&order=fecha_inicio.desc`);
+        `contratos?select=*&trabajador_id=eq.${t.id}&order=fecha_inicio.desc,id.desc`);
       if (!contrato) return error('Esa persona no tiene contrato cargado', 409);
       if (!rrhh.CAUSALES[cuerpo.causal]) return error('Falta la causal de término', 400);
       const fechaTermino = esFecha(cuerpo.fecha_termino) ? cuerpo.fecha_termino : hoyISO();
@@ -1461,7 +1461,7 @@ async function api(request, env, url, usuario) {
         `contratos?select=*&trabajador_id=eq.${id}&estado=eq.vigente&order=fecha_inicio.desc`);
       if (!contrato && cualquiera) {
         contrato = await primero(env,
-          `contratos?select=*&trabajador_id=eq.${id}&order=fecha_inicio.desc`);
+          `contratos?select=*&trabajador_id=eq.${id}&order=fecha_inicio.desc,id.desc`);
       }
       return json({ contrato: contrato || null });
     }

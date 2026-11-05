@@ -394,7 +394,8 @@ async function finiquitoDe(env, contrato) {
   const sueltos = docs.filter((d) => d.contrato_id === null);
   if (!sueltos.length) return null;
   const ultimo = await primero(env,
-    `contratos?select=id&trabajador_id=eq.${contrato.trabajador_id}&order=fecha_inicio.desc`);
+    `contratos?select=id&trabajador_id=eq.${contrato.trabajador_id}`
+    + '&order=fecha_inicio.desc,id.desc');
   return ultimo && ultimo.id === contrato.id ? sueltos[0] : null;
 }
 
