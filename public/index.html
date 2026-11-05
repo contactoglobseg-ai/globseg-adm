@@ -4149,6 +4149,141 @@ function ordenAlAzar(parques, cuantos) {
   return salida.slice(0, cuantos);
 }
 
+/**
+ * Lo que hay en los desplegables, en una línea de texto. Sirve para saber si
+ * la semana en pantalla es la misma que se cargó: el PDF se baja, se imprime
+ * y se pega en la garita, así que no puede decir algo que el sistema no sabe.
+ */
+function huellaSemana() {
+  return [...document.querySelectorAll("#f-semana tbody tr")].map(tr => [
+    tr.dataset.fecha,
+    tr.querySelector("[name=dependencia_id]").value,
+    tr.querySelector("[name=guardia_1_id]").value,
+    tr.querySelector("[name=guardia_2_id]").value,
+    tr.querySelector("[name=notas]").value,
+  ].join("|")).join("\n");
+}
+
+/**
+ * La semana en PDF, para imprimirla y pegarla donde la gente la lee.
+ *
+ * Sale del PDF y no de Excel porque esto no se manipula: se mira. Se imprime
+ * en la oficina, se pega en la garita y se manda por teléfono, y en un PDF se
+ * ve igual en los tres lados.
+ *
+ * **Se niega si hay cambios sin guardar**, como el PDF de la cotización: un
+ * papel pegado en la garita que dice algo distinto de lo que tiene el sistema
+ * es peor que no tener papel. La comparación es contra la huella que se tomó
+ * al cargar la semana.
+ */
+async function bajarSemanaPDF(rot, semana, msj) {
+  if (huellaSemana() !== ROT.comoSeCargo) {
+    return decir(msj, "Hay cambios sin guardar: guarde la semana antes de descargarla.", "error");
+  }
+  decir(msj, "Armando el PDF…");
+  try {
+    await cargarScript(JSPDF);
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: "mm", format: "a4" });
+    const A = 210, M = 16, der = A - M;
+    const gris = [110, 110, 134], tinta = [19, 0, 82];
+    let y = 16;
+
+    const logo = await cargarLogo("logo.png");
+    if (logo) doc.addImage(logo, "PNG", M, y - 2, 20, 20);
+    doc.setFont("helvetica", "bold").setFontSize(15).setTextColor(...tinta);
+    doc.text("SEGURIDAD GARRIDOS", M + (logo ? 24 : 0), y + 5);
+    doc.setFont("helvetica", "normal").setFontSize(8.5).setTextColor(...gris);
+    doc.text("GLOBSEG SPA · RUT 78.095.104-4", M + (logo ? 24 : 0), y + 10);
+
+    doc.setFont("helvetica", "bold").setFontSize(13).setTextColor(...tinta);
+    doc.text("PLANIFICACIÓN DE TURNOS", der, y + 4, { align: "right" });
+    doc.setFont("helvetica", "normal").setFontSize(10).setTextColor(...gris);
+    doc.text(rotuloSemana(semana.lunes), der, y + 10, { align: "right" });
+
+    y += 25;
+    doc.setDrawColor(...tinta).setLineWidth(0.5).line(M, y, der, y);
+    y += 7;
+
+    doc.setFont("helvetica", "bold").setFontSize(8).setTextColor(...gris);
+    doc.text("ROTACIÓN", M, y);
+    y += 5;
+    doc.setFont("helvetica", "bold").setFontSize(12).setTextColor(...tinta);
+    doc.text(rot.nombre, M, y);
+    if (rot.instalacion) {
+      doc.setFont("helvetica", "normal").setFontSize(9).setTextColor(60, 60, 80);
+      y += 5;
+      doc.text("Instalación: " + rot.instalacion, M, y);
+    }
+
+    // --- la tabla
+    y += 9;
+    const COL = { dia: M + 2, dep: M + 34, g1: M + 86, g2: M + 134 };
+    doc.setFillColor(231, 235, 227).rect(M, y, der - M, 8, "F");
+    doc.setFont("helvetica", "bold").setFontSize(8).setTextColor(...tinta);
+    doc.text("DÍA", COL.dia, y + 5.5);
+    doc.text("DEPENDENCIA", COL.dep, y + 5.5);
+    doc.text("GUARDIA 1", COL.g1, y + 5.5);
+    doc.text("GUARDIA 2", COL.g2, y + 5.5);
+    y += 8;
+
+    const filas = [...document.querySelectorAll("#f-semana tbody tr")];
+    semana.dias.forEach((d, i) => {
+      const tr = filas[i];
+      const elegido = sel => {
+        const o = tr.querySelector(`[name=${sel}]`).selectedOptions[0];
+        const t = (o?.text || "").trim();
+        return (t === "—" || t === "— libre —") ? "" : t.replace(" (fuera de la rotación)", "");
+      };
+      const dep = elegido("dependencia_id");
+      const nota = tr.querySelector("[name=notas]").value.trim();
+      const alto = nota ? 13 : 9;
+
+      if (i % 2) doc.setFillColor(248, 248, 250).rect(M, y, der - M, alto, "F");
+      doc.setFont("helvetica", "bold").setFontSize(9).setTextColor(...tinta);
+      doc.text(d.dia.charAt(0).toUpperCase() + d.dia.slice(1), COL.dia, y + 6);
+      doc.setFont("helvetica", "normal").setFontSize(7.5).setTextColor(...gris);
+      doc.text(d.fecha.slice(8) + "-" + d.fecha.slice(5, 7), COL.dia + 20, y + 6);
+
+      doc.setFont("helvetica", dep ? "bold" : "normal").setFontSize(9)
+         .setTextColor(...(dep ? tinta : gris));
+      doc.text(doc.splitTextToSize(dep || "Libre", 50)[0], COL.dep, y + 6);
+
+      doc.setFont("helvetica", "normal").setFontSize(8.5).setTextColor(60, 60, 80);
+      doc.text(doc.splitTextToSize(elegido("guardia_1_id") || "—", 46)[0], COL.g1, y + 6);
+      doc.text(doc.splitTextToSize(elegido("guardia_2_id") || "—", 46)[0], COL.g2, y + 6);
+
+      if (nota) {
+        doc.setFont("helvetica", "italic").setFontSize(7.5).setTextColor(...gris);
+        doc.text(doc.splitTextToSize(nota, der - COL.dep - 4)[0], COL.dep, y + 11);
+      }
+      y += alto;
+      doc.setDrawColor(226, 226, 234).setLineWidth(0.2).line(M, y, der, y);
+    });
+
+    // --- el pie, que es lo que impide que esto se use como lo que no es
+    y += 10;
+    doc.setFont("helvetica", "bold").setFontSize(8).setTextColor(...tinta);
+    doc.text("Esto es la planificación, no el registro de asistencia.", M, y);
+    y += 4.5;
+    doc.setFont("helvetica", "normal").setFontSize(7.5).setTextColor(...gris);
+    doc.text(doc.splitTextToSize(
+      "Las horas efectivamente trabajadas salen del libro de asistencia, donde cada guardia "
+      + "marca su entrada y su salida. Este papel sirve para saber a dónde va cada patrulla, "
+      + "y puede cambiar durante la semana.", der - M), M, y);
+    y += 11;
+    doc.setFontSize(7);
+    // Sin punto final: `toLocaleString` en español ya termina en «p. m.» y
+    // quedaban dos puntos seguidos.
+    doc.text(`Descargado por ${estado.usuario?.usuario || "—"} el ${
+      new Date().toLocaleString("es-CL")}`, M, y);
+
+    doc.save(`Turnos ${rot.nombre} ${semana.lunes}.pdf`);
+    decir(msj, "");
+    recado("Planificación descargada");
+  } catch (e) { decir(msj, e.message, "error"); }
+}
+
 async function pintarRotacion() {
   $("#app").innerHTML = `<p class="cargando">Cargando…</p>`;
   let datos;
@@ -4281,6 +4416,9 @@ async function pintarRotacion() {
         ${rot.dependencias.length > 1
           ? `<button type="button" class="bt bt--fino bt--chico" id="sem-azar"
                      style="margin-left:auto">Proponer un orden</button>` : ""}
+        <button type="button" class="bt bt--fino bt--chico" id="sem-pdf"${
+          rot.dependencias.length > 1 ? "" : ' style="margin-left:auto"'
+        }>Descargar la semana</button>
       </div>
       <div id="avisos-rot"></div>
       <form id="f-semana">
@@ -4316,6 +4454,13 @@ async function pintarRotacion() {
   $("#sem-despues").onclick = () => { ROT.lunes = correrSemana(ROT.lunes, 1); pintarRotacion(); };
   $("#sem-hoy").onclick = () => { ROT.lunes = null; pintarRotacion(); };
 
+  // La huella de cómo quedó la semana al cargarla: con ella el PDF sabe si lo
+  // que se ve en pantalla es lo que el sistema tiene guardado.
+  ROT.comoSeCargo = huellaSemana();
+
+  $("#sem-pdf").onclick = () =>
+    bajarSemanaPDF(rot, semana, $("#f-semana").querySelector(".mensaje"));
+
   // Propone y no guarda: lo que queda en pantalla todavía se puede corregir
   // entero antes de apretar Guardar.
   $("#sem-azar") && ($("#sem-azar").onclick = () => {
@@ -4348,6 +4493,9 @@ async function pintarRotacion() {
         { method: "PUT", body: JSON.stringify({ dias }) });
       decir(msj, "");
       recado("Semana guardada");
+      // Lo que se acaba de guardar es ahora lo que el sistema tiene, así que
+      // el PDF deja de quejarse de cambios sin guardar.
+      ROT.comoSeCargo = huellaSemana();
       // Los avisos quedan arriba y no en el recado, que se borra a los cuatro
       // segundos: es el único lugar donde se dice que algo quedó raro.
       $("#avisos-rot").innerHTML = (r.avisos || []).length
