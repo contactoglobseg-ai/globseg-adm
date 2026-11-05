@@ -442,6 +442,91 @@ export async function crearContrato(env, quien, cuerpo) {
            reemplazo: vigente ? vigente.id : null };
 }
 
+/**
+ * Deshacer un término puesto por equivocación.
+ *
+ * Existe porque el camino de ida no tenía vuelta: «Registrar el término»
+ * cierra el contrato y da de baja a la persona, y si se apretó antes de
+ * tiempo —el caso real: creyendo que eso emitía el finiquito— no había cómo
+ * devolverlo. La única salida era cargar un contrato nuevo, que es otra cosa:
+ * parte un periodo distinto y corre la antigüedad.
+ *
+ * **Esto no es «corregir el término»**: no cambia la causal ni la fecha, las
+ * borra. Un término mal puesto no es un hecho que haya que anotar distinto,
+ * es un hecho que no ocurrió. Si de verdad terminó y lo que está mal es la
+ * causal, se reabre y se vuelve a terminar, y la bitácora muestra las dos
+ * cosas en orden.
+ */
+export async function reabrirContrato(env, quien, id, cuerpo = {}) {
+  const actual = await primero(env, `contratos?select=*,trabajadores(nombre,activo)&id=eq.${id}`);
+  if (!actual) return { error: 'Ese contrato no existe', status: 404 };
+  const nombre = actual.trabajadores?.nombre || '';
+
+  if (actual.estado === 'vigente') {
+    return { error: 'Ese contrato ya está vigente: no hay término que deshacer', status: 409 };
+  }
+
+  // Lo cerró el sistema al cargar uno nuevo, no una persona. Reabrirlo no
+  // arregla nada: lo que está mal entonces es el contrato nuevo, y eso se
+  // resuelve borrándolo o corrigiéndolo, no resucitando al viejo.
+  if (actual.termino_causal === 'reemplazado') {
+    return { error: 'Este contrato no lo terminó nadie: lo cerró el sistema al cargar uno '
+                    + 'nuevo que empieza al día siguiente. Si el equivocado es el nuevo, '
+                    + 'corríjalo o bórrelo; al hacerlo este no vuelve solo.', status: 409 };
+  }
+
+  // Dos contratos vigentes a la vez es lo que todo el módulo evita: la
+  // liquidación, el estado de pago y la rotación preguntan «el vigente» y
+  // recibirían dos.
+  const vigente = await primero(env,
+    `contratos?select=id,fecha_inicio&trabajador_id=eq.${actual.trabajador_id}&estado=eq.vigente`);
+  if (vigente) {
+    return { error: `${nombre} ya tiene un contrato vigente desde el ${vigente.fecha_inicio}. `
+                    + 'Dos vigentes a la vez no se puede: termine o borre ese primero.',
+             status: 409 };
+  }
+
+  // Si hay finiquito, lo que se firmó dice que la relación terminó ese día.
+  // Reabrir el contrato dejaría al sistema contradiciendo un documento
+  // ratificado ante ministro de fe, y el que vale es el documento.
+  const finiquito = await finiquitoDe(env, actual);
+  if (finiquito) {
+    return { error: 'Este contrato tiene un finiquito cargado'
+               + (finiquito.fecha_emision ? ` (${finiquito.fecha_emision})` : '')
+               + '. No se reabre: ahí está firmado que la relación terminó. Si el finiquito '
+               + 'quedó mal, anúlelo primero desde los documentos de la persona.',
+             status: 409 };
+  }
+
+  const motivo = limpio(cuerpo.motivo, 500);
+  if (!motivo) {
+    return { error: 'Escriba por qué se deshace el término. Queda en la bitácora: es lo '
+                    + 'único que explica después por qué un contrato terminado volvió a '
+                    + 'estar vigente.', status: 400 };
+  }
+
+  await actualizar(env, `contratos?id=eq.${actual.id}`, {
+    estado: 'vigente', termino_causal: null, termino_fecha: null, termino_detalle: null,
+  });
+
+  // La cuenta del libro de asistencia. «Registrar el término» ofrece dar de
+  // baja, así que la vuelta tiene que poder reactivar: un contrato vigente de
+  // alguien inactivo es el estado descuadrado que deja a la persona fuera de
+  // las listas y sin poder marcar turno, sin que nada lo diga.
+  let reactivado = false;
+  if (siNo(cuerpo.reactivar) && actual.trabajadores && actual.trabajadores.activo === false) {
+    await actualizar(env, `trabajadores?id=eq.${actual.trabajador_id}`, { activo: true });
+    reactivado = true;
+  }
+
+  const decia = `${CAUSALES[actual.termino_causal]?.glosa || actual.termino_causal || 'sin causal'}`
+    + ` al ${actual.termino_fecha || 'sin fecha'}`;
+  await anotar(env, quien, 'contrato', actual.id, 'deshizo el término del contrato',
+    `${nombre} · decía ${decia}${reactivado ? ' · se reactivó su cuenta' : ''} · ${motivo}`);
+
+  return { ok: true, decia, reactivado };
+}
+
 export async function editarContrato(env, quien, id, cuerpo) {
   const actual = await primero(env, `contratos?select=*,trabajadores(nombre)&id=eq.${id}`);
   if (!actual) return { error: 'Ese contrato no existe', status: 404 };

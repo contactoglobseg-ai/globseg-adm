@@ -1243,7 +1243,15 @@ function seccionContratos(contratos, cv, c) {
         <td class="celda-acciones">${x.estado === "vigente"
           ? `<button class="bt bt--fino bt--chico" data-editar-contrato="${x.id}">Corregir</button>
              <button class="bt bt--fino bt--chico" data-terminar="${x.id}">Terminar</button>`
-          : '<span class="sub" style="margin:0">No se edita</span>'}</td>
+          /* Un contrato cerrado por el sistema al cargar uno nuevo no se
+             reabre: lo que está mal entonces es el nuevo. Se dice en vez de
+             ofrecer un botón que siempre va a fallar. */
+          : x.termino_causal === "reemplazado"
+            ? `<span class="sub" style="margin:0">No se edita<span class="sub"
+                 >lo cerró el contrato siguiente</span></span>`
+            : `<span class="sub" style="margin:0 0 4px">No se edita</span>
+               <button class="bt bt--fino bt--chico" data-reabrir="${x.id}"
+                 >Deshacer el término</button>`}</td>
       </tr>`).join("")}
     </tbody></table></div>` : `<p class="vacio">Sin contratos cargados.</p>`}
 
@@ -2080,6 +2088,33 @@ function conectarFicha(datos) {
     b.onclick = () => {
       RRHH.sueldos = { trabajador: String(id), mes: hoyISO().slice(0, 7), vista: "finiquito" };
       ir("sueldos");
+    };
+  });
+
+  /* Deshacer un término puesto por equivocación —el caso real: apretarlo
+     creyendo que eso emitía el finiquito—. No corrige la causal: la borra y
+     deja el contrato como estaba. Si de verdad terminó y lo que está mal es
+     la causal, se deshace y se vuelve a terminar. */
+  document.querySelectorAll("[data-reabrir]").forEach(b => {
+    b.onclick = async () => {
+      const c = (datos.contratos || []).find(x => x.id === Number(b.dataset.reabrir));
+      const baja = datos.ficha && datos.ficha.activo === false;
+      const motivo = prompt("¿Por qué se deshace el término?\n\n"
+        + "El contrato vuelve a quedar vigente y se le borran la causal y la fecha"
+        + (baja ? ", y se vuelve a activar su cuenta del libro de asistencia" : "")
+        + ". Queda anotado en la bitácora con lo que decía antes."
+        + (c && c.termino_fecha ? "\n\nHoy dice: terminado el " + fecha(c.termino_fecha) : ""));
+      if (motivo === null) return;
+      try {
+        const r = await pedir(`/rrhh/contratos/${Number(b.dataset.reabrir)}/reabrir`, {
+          method: "POST", body: JSON.stringify({ motivo, reactivar: true }),
+        });
+        recado("Listo. El contrato quedó vigente otra vez"
+          + (r.reactivado ? ", y su cuenta volvió a quedar activa" : "") + ".");
+        pintarFicha(id);
+      } catch (e) {
+        alert(e.message);
+      }
     };
   });
 

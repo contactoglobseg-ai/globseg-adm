@@ -900,12 +900,24 @@ export async function anular(env, quien, id, motivo) {
     estado: 'anulado', anulado_por: quien, anulado_en: new Date().toISOString(),
     anulado_motivo: razon,
   });
+  // La copia archivada en la ficha también. Sin esto, anular dejaba la fila de
+  // `documentos_trabajador` vigente: la persona seguía apareciendo con un
+  // finiquito válido que ya no existe, el contrato seguía bloqueado para
+  // corregirlo o para deshacer su término, y la pantalla decía «anúlelo
+  // primero» sobre algo que ya estaba anulado. Se vio el 05-11-2026 probando
+  // justamente ese camino.
+  let archivado = false;
+  if (d.documento_id) {
+    await actualizar(env, `documentos_trabajador?id=eq.${d.documento_id}`, { vigente: false });
+    archivado = true;
+  }
+
   // El documento no se borra y las firmas tampoco. Un documento firmado que se
   // anula es información: hubo un acto y después se dejó sin efecto, y las dos
   // cosas tienen que poder mirarse.
   await anotar(env, quien, 'documento_generado', d.id, 'anuló un documento',
-    `${d.numero} · ${razon}`);
-  return { ok: true };
+    `${d.numero} · ${razon}${archivado ? ' · también se anuló su copia en la ficha' : ''}`);
+  return { ok: true, archivado };
 }
 
 // ----------------------------------------------------------------- archivar

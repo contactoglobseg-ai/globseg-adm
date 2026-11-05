@@ -635,6 +635,15 @@ async function api(request, env, url, usuario) {
       if (r.error) return error(r.error, r.status);
       return json(r);
     }
+    // Deshacer un término puesto por equivocación. Ruta propia y no una
+    // bandera del PATCH: el PATCH se niega a tocar un contrato terminado, que
+    // es justo el estado en el que esto tiene que entrar.
+    m = sub.match(/^\/contratos\/(\d+)\/reabrir$/);
+    if (m && metodo === 'POST') {
+      const r = await rrhh.reabrirContrato(env, usuario.usuario, Number(m[1]), cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
 
     // ------------------------------------------------- fichas de ingreso
     if (sub === '/fichas-ingreso' && metodo === 'GET') {
