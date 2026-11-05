@@ -336,7 +336,13 @@ async function api(request, env, url, usuario) {
         || /^\/pagos\/estados\/\d+\/archivo$/.test(ruta)
         || /^\/documentos\/prevencion(\/carpeta)?$/.test(ruta));
 
-  const cuerpo = (metodo === 'POST' || metodo === 'PATCH') && !esSubidaDeArchivo
+  // PUT entra desde el 04-11-2026: la semana de la rotación se manda entera y
+  // reemplaza lo que había, que es exactamente lo que significa PUT. Era la
+  // única ruta del sistema con ese método, así que no estaba en esta lista y
+  // el cuerpo llegaba vacío: la pantalla guardaba y el servidor contestaba
+  // «No llegó ningún día que guardar», sin que nada estuviera mal del otro
+  // lado. Si mañana se agrega otro método, se agrega acá o pasa lo mismo.
+  const cuerpo = ['POST', 'PATCH', 'PUT'].includes(metodo) && !esSubidaDeArchivo
     ? await request.json().catch(() => ({}))
     : {};
 
