@@ -1942,6 +1942,11 @@ function conectarFicha(datos) {
                       turno: false, otra: false };
       DOCS.cambios = { rige_desde: "", instalacion_id: "", cargo: "",
                        sueldo_base: "", turno: "", otra_glosa: "" };
+      // Lo del finiquito también: si quedó lo de otra persona y acá se cambia
+      // de plantilla, el formulario saldría con la causal de un contrato ajeno.
+      DOCS.fin = { causal: "", fecha_termino: "", aviso_dado: "false", base: "",
+                   causal_detalle: "", cotizaciones_hasta: "", forma_pago: "transferencia",
+                   reserva: "", otros: [], descuentos: [] };
       ir("documentos");
     };
   });
@@ -2216,7 +2221,14 @@ async function pintarSueldos() {
   const c = await catalogosRrhh();
   if (!RRHH.personal) RRHH.personal = (await pedir("/rrhh/personal")).personal;
   const s = RRHH.sueldos;
-  const gente = RRHH.personal.filter(t => t.activo || String(t.id) === String(s.trabajador));
+  /* En Finiquito salen también las de baja. Registrar el término del contrato
+     ofrece dar de baja a la persona, así que a los cinco minutos de hacerlo ya
+     no aparecía en el desplegable y no se podía volver al cálculo ni armar el
+     papel: justo el camino que el gerente se encontró cortado el 04-11-2026.
+     En Liquidación se quedan fuera, que ahí la lista es de quién está
+     trabajando este mes. */
+  const gente = RRHH.personal.filter(t =>
+    t.activo || s.vista === "finiquito" || String(t.id) === String(s.trabajador));
 
   const cabecera = `
     <div class="caja" style="padding:14px 16px;margin-bottom:18px;display:flex;gap:14px;
@@ -2449,6 +2461,7 @@ function htmlFiniquito(r, cuerpo) {
       <div class="pie-form">
         <button class="bt bt--fino" type="button" id="bt-finiquito-pdf">Descargar en PDF</button>
         <button class="bt bt--fino" type="button" id="bt-finiquito-guardar">Guardar en su ficha</button>
+        <button class="bt bt--fino" type="button" id="bt-finiquito-doc">Armar el finiquito para firmar</button>
         <button class="bt" type="button" id="bt-registrar-termino">Registrar el término del contrato</button>
         <span class="mensaje" id="m-termino"></span>
       </div>
@@ -2461,6 +2474,11 @@ function htmlFiniquito(r, cuerpo) {
           cuando haga falta. No es el finiquito firmado ante ministro de fe, así que
           <b style="color:var(--texto-2)">no bloquea el contrato</b> y se puede guardar más de
           uno, con causales distintas.</div>
+        <div style="margin-bottom:5px">· <b style="color:var(--texto-2)">Armar el finiquito
+          para firmar</b> lleva esta causal y esta fecha al formulario de Documentos, donde
+          sale el finiquito de verdad —con sus cláusulas, la declaración de cotizaciones y la
+          ratificación ante ministro de fe— para firmarlo con el dedo. Eso sí es el documento
+          que se firma; este PDF no lo es.</div>
         <div>· <b style="color:var(--texto-2)">Registrar el término</b> cierra el contrato en el
           sistema con esta causal y esta fecha. No emite el finiquito ni paga nada.</div>
       </div>
@@ -2475,6 +2493,10 @@ function conectarFiniquito(r, cuerpo, recalcular) {
   }
   if ($("#bt-finiquito-guardar")) {
     $("#bt-finiquito-guardar").onclick = () => guardarFiniquito(r, cuerpo)
+      .catch(e => decir(m, e.message, "error"));
+  }
+  if ($("#bt-finiquito-doc")) {
+    $("#bt-finiquito-doc").onclick = () => armarFiniquitoDoc(r, cuerpo)
       .catch(e => decir(m, e.message, "error"));
   }
 
@@ -2658,6 +2680,47 @@ async function pdfFiniquito(r, cuerpo, op = {}) {
  * era así desde el 20-10 y es a propósito, porque lo que se firmó ahí son
  * esas condiciones.
  */
+/**
+ * Llevar este cálculo al formulario del finiquito que se firma.
+ *
+ * Va desde acá y no solo desde Documentos por lo mismo que «Generar un anexo»
+ * en la ficha: quien necesita el papel está mirando el cálculo, y mandarlo a
+ * otra pestaña a buscar el nombre en un desplegable de cien y a volver a
+ * escribir la causal es el paso donde se abandona —y donde la causal del
+ * documento termina siendo otra que la del cálculo—.
+ *
+ * No genera nada: deja el formulario listo y cambia de sección. El documento
+ * se mira entero antes de congelarlo, como todos los demás.
+ */
+async function armarFiniquitoDoc(r, cuerpo) {
+  const c = await catalogosDocs();
+  const p = (c.plantillas || []).find(x => x.usa_finiquito);
+  if (!p) {
+    throw new Error("Todavía no está la plantilla del finiquito. Falta aplicar la migración "
+      + (c.migracion_finiquito || "del finiquito") + " en el SQL Editor de Supabase. "
+      + "Mientras tanto se puede descargar el cálculo en PDF.");
+  }
+  if (!c.puede_laboral) {
+    throw new Error("El finiquito lo genera Recursos Humanos o gerencia.");
+  }
+
+  DOCS.plantilla = p.codigo;
+  DOCS.trabajador = String(r.trabajador.id);
+  DOCS.previa = null;
+  DOCS.abierto = null;
+  DOCS.contrato = null;
+  DOCS.contratoDe = null;
+  DOCS.fin = {
+    causal: cuerpo.causal || "",
+    fecha_termino: cuerpo.fecha_termino || r.finiquito.termino || "",
+    aviso_dado: cuerpo.aviso_dado ? "true" : "false",
+    base: cuerpo.base ? String(cuerpo.base) : "",
+    causal_detalle: "", cotizaciones_hasta: "", forma_pago: "transferencia",
+    reserva: "", otros: [], descuentos: [],
+  };
+  ir("documentos");
+}
+
 async function guardarFiniquito(r, cuerpo) {
   const f = r.finiquito, t = r.trabajador;
   if (!confirm(`Se va a guardar este cálculo en la ficha de ${t.nombre}, bajo Término, como `
@@ -3230,6 +3293,13 @@ const DOCS = {
   cambia: { instalacion: false, cargo: false, sueldo: false, turno: false, otra: false },
   cambios: { rige_desde: "", instalacion_id: "", cargo: "", sueldo_base: "",
              turno: "", otra_glosa: "" },
+  /* Lo del finiquito. `fin` es el formulario; los montos NO están acá a
+     propósito: los calcula el servidor con la causal y la fecha, y la
+     pantalla los ve recién en la vista previa. `otros` y `descuentos` son lo
+     único que la oficina agrega, porque el cálculo no los conoce. */
+  fin: { causal: "", fecha_termino: "", aviso_dado: "false", base: "",
+         causal_detalle: "", cotizaciones_hasta: "", forma_pago: "transferencia",
+         reserva: "", otros: [], descuentos: [] },
   /* Lo de prevención. El archivo vive acá y no en el `<input type=file>`
      porque la pantalla se repinta entera al marcar a alguien, y un input de
      archivo no se puede volver a llenar desde JavaScript: el PDF elegido se
@@ -3361,6 +3431,137 @@ function bloqueAnexo(c) {
       + "la cuentan en el lugar nuevo.")}`;
 }
 
+/* El estilo de las áreas de texto del formulario. Es el mismo que ya usaba la
+   cláusula a mano del anexo; se saca a una constante porque acá hay tres. */
+const ESTILO_AREA = "width:100%;padding:9px 11px;border:1px solid var(--borde);"
+  + "border-radius:var(--r-s);background:var(--sup-2);color:var(--texto);"
+  + "font:inherit;font-size:.86rem";
+
+/**
+ * El bloque de «cómo termina» del finiquito.
+ *
+ * Qué pregunta y qué no, que es toda la decisión:
+ *
+ *  · La causal y la fecha **se proponen desde el contrato** cuando el término
+ *    ya se registró, que es el caso normal: la oficina cierra el contrato y
+ *    después hace el papel. Si el documento dijera otra causal que el sistema,
+ *    una de las dos estaría mal.
+ *  · Las cotizaciones **no se proponen**. El sistema no sabe si están pagadas,
+ *    y proponer el mes anterior sería poner una declaración del empleador en
+ *    un papel firmado sin que nadie la haya hecho. Sin ese dato el documento
+ *    queda con un hueco y no se puede generar.
+ *  · Las otras sumas y los descuentos existen porque el cálculo conoce la
+ *    indemnización, el mes de aviso y el feriado, y no conoce la remuneración
+ *    de los días trabajados del último mes, las horas extra ni los anticipos.
+ *    Sin esto el finiquito le queda debiendo plata a la persona.
+ */
+function bloqueFiniquito(c) {
+  const k = DOCS.fin, ct = DOCS.contrato;
+
+  if (!DOCS.trabajador) {
+    return `<p class="sub" style="padding:0 16px 12px">Elija a la persona y acá aparece
+      cómo terminó su contrato, para revisarlo antes de armar el finiquito.</p>`;
+  }
+  if (!ct) {
+    return aviso("ojo", "Esta persona no tiene ningún contrato cargado. ",
+      "Un finiquito cierra un contrato, así que primero hay que cargarlo en Fichas.");
+  }
+
+  const sinFin = c.causales_sin_finiquito || {};
+  const cerrado = ct.estado === "terminado";
+
+  /* Una línea de «otras sumas» o de descuentos. Se muestran las escritas más
+     una vacía: así se agrega sin apretar nada, y el botón solo hace falta a
+     partir de la tercera. */
+  const lineas = (cual, rotulo, ayuda) => {
+    const xs = k[cual];
+    const ver = xs.length < 6 ? xs.concat([{ glosa: "", monto: "" }]) : xs;
+    return `
+      <p class="sub" style="padding:0 16px 8px"><b style="color:var(--texto)">${rotulo}</b>
+        ${ayuda}</p>
+      <div class="rejilla" style="padding-top:0">
+        ${ver.map((x, i) => `
+          <label class="campo"><span>Concepto</span>
+            <input data-fin-l="${cual}" data-fin-i="${i}" data-fin-k="glosa"
+                   autocomplete="off" value="${esc(x.glosa || "")}"></label>
+          <label class="campo"><span>Monto</span>
+            <input data-fin-l="${cual}" data-fin-i="${i}" data-fin-k="monto"
+                   inputmode="numeric" autocomplete="off" value="${esc(x.monto || "")}"></label>
+        `).join("")}
+      </div>`;
+  };
+
+  return `
+    <div class="rejilla" style="padding-top:0">
+      <label class="campo" style="grid-column:span 2"><span>Causal de término *</span>
+        <select id="x-fin-causal">
+          <option value="">Elija la causal…</option>
+          ${Object.entries(c.causales || {}).map(([cod, v]) =>
+            `<option value="${esc(cod)}"${cod === k.causal ? " selected" : ""}${
+              sinFin[cod] ? " disabled" : ""}>${esc(v.glosa)}${
+              sinFin[cod] ? " — no se arma desde acá" : ""}</option>`).join("")}
+        </select>
+        ${cerrado && ct.termino_causal ? `<small style="color:var(--texto-3);font-size:.75rem">
+          El contrato se cerró en el sistema con esta causal el
+          ${esc(fecha(ct.termino_fecha))}.</small>` : ""}</label>
+
+      <label class="campo"><span>Fecha de término *</span>
+        <input type="date" id="x-fin-fecha" value="${esc(k.fecha_termino)}"></label>
+
+      <label class="campo"><span>¿Se avisó con 30 días?</span>
+        <select id="x-fin-aviso">
+          <option value="false"${k.aviso_dado === "false" ? " selected" : ""}>No</option>
+          <option value="true"${k.aviso_dado === "true" ? " selected" : ""}>Sí</option>
+        </select>
+        <small style="color:var(--texto-3);font-size:.75rem">Si no se avisó, se paga el mes
+          de aviso (art. 162).</small></label>
+
+      <label class="campo"><span>Base de cálculo (opcional)</span>
+        <input id="x-fin-base" inputmode="numeric" autocomplete="off"
+               placeholder="se calcula del contrato" value="${esc(k.base)}"></label>
+
+      <label class="campo"><span>Cotizaciones pagadas hasta *</span>
+        <input type="month" id="x-fin-cotiz" value="${esc(k.cotizaciones_hasta)}">
+        <small style="color:var(--texto-3);font-size:.75rem">El finiquito lo declara (art. 162
+          inc. 5). El sistema no lo sabe: confírmelo antes de escribirlo.</small></label>
+
+      <label class="campo"><span>Forma de pago</span>
+        <select id="x-fin-pago">
+          ${[["transferencia", "Transferencia a su cuenta"], ["efectivo", "Efectivo"],
+             ["cheque", "Cheque nominativo"], ["vale_vista", "Vale vista"]].map(([v, r]) =>
+            `<option value="${v}"${k.forma_pago === v ? " selected" : ""}>${r}</option>`).join("")}
+        </select></label>
+
+      <label class="campo" style="grid-column:span 2">
+        <span>Hechos en que se funda la causal${k.causal === "160" ? " *" : " (opcional)"}</span>
+        <textarea id="x-fin-detalle" rows="2" style="${ESTILO_AREA}"
+          placeholder="Con una causal del artículo 160 hay que decir el numeral y qué pasó."
+          >${esc(k.causal_detalle)}</textarea></label>
+
+      <label class="campo" style="grid-column:span 2"><span>Reserva de derechos (opcional)</span>
+        <textarea id="x-fin-reserva" rows="2" style="${ESTILO_AREA}"
+          placeholder="Si el trabajador no reserva nada, déjelo en blanco: la cláusula no aparece."
+          >${esc(k.reserva)}</textarea></label>
+    </div>
+
+    ${lineas("otros", "Otras sumas que se pagan.",
+      "El cálculo sabe de indemnizaciones y feriado. No sabe de la remuneración de los días "
+      + "trabajados del último mes, de las horas extra ni de los bonos: van acá.")}
+
+    ${lineas("descuentos", "Descuentos.",
+      "Anticipos, préstamos y lo que se haya acordado por escrito. Se restan del total.")}
+
+    ${k.otros.length < 6 || k.descuentos.length < 6 ? `
+      <div style="padding:0 16px 12px;display:flex;gap:8px">
+        <button class="bt bt--fino" type="button" id="x-fin-mas">Agregar otra línea</button>
+      </div>` : ""}
+
+    ${aviso("ojo", "Esto es el papel, no el pago. ",
+      "El sistema no transfiere nada y no cierra el contrato: si todavía no registró el "
+      + "término, hágalo en Sueldos → Finiquito. El finiquito se ratifica ante ministro de fe "
+      + "y se paga dentro de los diez días hábiles siguientes a la separación (art. 177).")}`;
+}
+
 async function pintarDocumentos() {
   let c;
   try {
@@ -3399,6 +3600,7 @@ async function pintarDocumentos() {
   }
 
   const anexo = !!(p && laboral && p.cambia_contrato);
+  const fini = !!(p && laboral && p.usa_finiquito);
   /* La fecha se propone en el estado y no solo en el `value` del campo: si se
      dejara solo ahí, quien no la toca mandaría una fecha vacía y el servidor
      rechazaría un formulario que en pantalla se veía completo. */
@@ -3406,11 +3608,27 @@ async function pintarDocumentos() {
   if (!DOCS.trabajador) {
     DOCS.contrato = null;
     DOCS.contratoDe = null;
-  } else if (anexo && String(DOCS.contratoDe) !== String(DOCS.trabajador)) {
+  } else if ((anexo || fini) && DOCS.contratoDe !== `${DOCS.trabajador}:${fini ? "f" : "a"}`) {
+    /* El finiquito pide `cualquiera=1`: casi siempre el término ya se
+       registró, así que el contrato está cerrado y el vigente no existe. El
+       anexo no, que un anexo no modifica un contrato cerrado. */
     DOCS.contrato = await pedir(
-      `/documentos/contrato?trabajador_id=${Number(DOCS.trabajador)}`)
+      `/documentos/contrato?trabajador_id=${Number(DOCS.trabajador)}${fini ? "&cualquiera=1" : ""}`)
       .then(r => r.contrato).catch(() => null);
-    DOCS.contratoDe = DOCS.trabajador;
+    DOCS.contratoDe = `${DOCS.trabajador}:${fini ? "f" : "a"}`;
+  }
+
+  /* La causal y la fecha se proponen con las que quedaron registradas al
+     cerrar el contrato. Se escriben en el estado y no solo en el `value` del
+     campo: si fuera solo el campo, quien no los toca mandaría vacío y el
+     servidor rechazaría un formulario que en pantalla se veía completo. */
+  if (fini && DOCS.contrato) {
+    if (!DOCS.fin.causal && DOCS.contrato.termino_causal) {
+      DOCS.fin.causal = DOCS.contrato.termino_causal;
+    }
+    if (!DOCS.fin.fecha_termino) {
+      DOCS.fin.fecha_termino = DOCS.contrato.termino_fecha || hoyISO();
+    }
   }
 
   $("#app").innerHTML = `
@@ -3435,8 +3653,14 @@ async function pintarDocumentos() {
         <label class="campo" style="grid-column:span 2"><span>Persona</span>
           <select id="d-trabajador">
             <option value="">Elija una…</option>
-            ${c.personas.map(x => `<option value="${x.id}"${String(x.id) === String(DOCS.trabajador)
-              ? " selected" : ""}>${esc(x.nombre)} — ${esc(rutLindoSeguro(x.rut))}</option>`).join("")}
+            ${/* El finiquito se le hace justamente a quien ya se dio de baja, así que
+                  acá sí salen. En el contrato y el anexo no: ofrecer a alguien que ya no
+                  trabaja para firmarle un contrato nuevo es un error esperando. */ ""}
+            ${c.personas.concat(fini ? (c.personas_bajas || []) : [])
+              .map(x => `<option value="${x.id}"${String(x.id) === String(DOCS.trabajador)
+              ? " selected" : ""}>${esc(x.nombre)} — ${esc(rutLindoSeguro(x.rut))}${
+              (c.personas_bajas || []).some(b2 => b2.id === x.id) ? " (de baja)" : ""
+              }</option>`).join("")}
           </select></label>` : ""}
         ${laboral && DOCS.plantilla === "contrato_trabajo" ? `
         <label class="campo" style="grid-column:span 2"><span>Funciones del cargo</span>
@@ -3451,6 +3675,7 @@ async function pintarDocumentos() {
                  value="${esc(DOCS.campos[f.k] ?? "")}"></label>`).join("") : ""}
       </div>
       ${anexo ? bloqueAnexo(c) : ""}
+      ${fini ? bloqueFiniquito(c) : ""}
       ${p && p.codigo === "anexo_contrato" && !p.cambia_contrato ? aviso("ojo",
         "El anexo todavía no pregunta qué cambia. ",
         "Falta aplicar la migración " + esc(c.migracion_anexo || "") + " en el SQL Editor "
@@ -3505,9 +3730,16 @@ async function pintarDocumentos() {
   if ($("#d-trabajador")) {
     $("#d-trabajador").onchange = e => {
       DOCS.trabajador = e.target.value;
-      // El anexo sí repinta: hay que ir a buscar el contrato de esta persona y
-      // mostrar qué dice hoy. El contrato y el arriendo no necesitan nada.
-      if (anexo) { DOCS.previa = null; pintarDocumentos(); }
+      // El anexo y el finiquito sí repintan: hay que ir a buscar el contrato
+      // de esta persona y mostrar qué dice. El contrato de trabajo y el
+      // arriendo no necesitan nada.
+      if (anexo || fini) {
+        DOCS.previa = null;
+        // La causal y la fecha propuestas son de la persona anterior.
+        DOCS.fin.causal = "";
+        DOCS.fin.fecha_termino = "";
+        pintarDocumentos();
+      }
     };
   }
   if ($("#d-bloque")) $("#d-bloque").onchange = e => { DOCS.bloque = e.target.value; };
@@ -3534,6 +3766,47 @@ async function pintarDocumentos() {
   for (const f of CAMPOS_ARRIENDO) {
     const el = $(`#d-c-${f.k}`);
     if (el) el.oninput = ev => { DOCS.campos[f.k] = ev.target.value; };
+  }
+
+  /* El finiquito. Igual que el anexo: lo tecleado se guarda sin repintar, o
+     el cursor se iría al principio del campo en cada letra. La causal sí
+     repinta, porque marca con un asterisco si los hechos son obligatorios. */
+  const atarFin = (sel, llave, evento = "oninput") => {
+    const el = $(sel);
+    if (el) el[evento] = e => { DOCS.fin[llave] = e.target.value; DOCS.previa = null; };
+  };
+  atarFin("#x-fin-fecha", "fecha_termino");
+  atarFin("#x-fin-base", "base");
+  atarFin("#x-fin-cotiz", "cotizaciones_hasta");
+  atarFin("#x-fin-detalle", "causal_detalle");
+  atarFin("#x-fin-reserva", "reserva");
+  atarFin("#x-fin-aviso", "aviso_dado", "onchange");
+  atarFin("#x-fin-pago", "forma_pago", "onchange");
+  if ($("#x-fin-causal")) {
+    $("#x-fin-causal").onchange = e => {
+      DOCS.fin.causal = e.target.value;
+      DOCS.previa = null;
+      pintarDocumentos();
+    };
+  }
+  for (const el of document.querySelectorAll("[data-fin-l]")) {
+    el.oninput = e => {
+      const cual = e.target.dataset.finL, i = Number(e.target.dataset.finI);
+      const xs = DOCS.fin[cual];
+      while (xs.length <= i) xs.push({ glosa: "", monto: "" });
+      xs[i][e.target.dataset.finK] = e.target.value;
+      DOCS.previa = null;
+    };
+  }
+  if ($("#x-fin-mas")) {
+    $("#x-fin-mas").onclick = () => {
+      // Se agrega donde todavía quepa. Una línea vacía de más no estorba: el
+      // servidor descarta las que no tengan concepto y monto.
+      for (const cual of ["otros", "descuentos"]) {
+        if (DOCS.fin[cual].length < 6) DOCS.fin[cual].push({ glosa: "", monto: "" });
+      }
+      pintarDocumentos();
+    };
   }
   $("#d-ver").onclick = () => verPrevia().catch(e => decir($("#m-docs"), e.message, "error"));
   if ($("#e-guardar")) {
@@ -4324,6 +4597,46 @@ function camposAnexo() {
   return campos;
 }
 
+/**
+ * Lo del finiquito, tal como se manda al servidor.
+ *
+ * **No van los montos.** Van la causal, la fecha y lo que la oficina agregó;
+ * las indemnizaciones y el feriado los calcula el servidor otra vez. Si los
+ * mandara la pantalla, cualquiera con sesión podría firmar un finiquito por
+ * la cifra que quisiera, y el documento dejaría de probar lo que dice.
+ *
+ * Los rechazos se escriben también acá porque el que falta es un campo de
+ * esta pantalla y el mensaje tiene que decir cuál.
+ */
+function camposFiniquito() {
+  const k = DOCS.fin;
+  if (!k.causal) throw new Error("Elija la causal de término.");
+  if (!k.fecha_termino) throw new Error("Falta la fecha de término.");
+  if (!k.cotizaciones_hasta) {
+    throw new Error("Falta hasta qué mes están pagadas las cotizaciones. El finiquito lo "
+      + "declara y el sistema no lo sabe: hay que confirmarlo antes de firmarlo.");
+  }
+  if (k.causal === "160" && !k.causal_detalle.trim()) {
+    throw new Error("Con una causal del artículo 160 hay que escribir el numeral y los hechos "
+      + "en que se funda.");
+  }
+  const limpias = xs => xs
+    .map(x => ({ glosa: String(x.glosa || "").trim(), monto: x.monto }))
+    .filter(x => x.glosa && Number(String(x.monto).replace(/[^\d-]/g, "")) > 0);
+  return {
+    causal: k.causal,
+    fecha_termino: k.fecha_termino,
+    aviso_dado: k.aviso_dado === "true",
+    base: k.base || null,
+    causal_detalle: k.causal_detalle.trim() || null,
+    reserva: k.reserva.trim() || null,
+    cotizaciones_hasta: k.cotizaciones_hasta,
+    forma_pago: k.forma_pago,
+    otros: limpias(k.otros),
+    descuentos: limpias(k.descuentos),
+  };
+}
+
 /** Lo que se manda al servidor para armar el documento. */
 function cuerpoDocumento() {
   const base = { plantilla: DOCS.plantilla };
@@ -4333,6 +4646,7 @@ function cuerpoDocumento() {
     base.trabajador_id = Number(DOCS.trabajador);
     if (DOCS.plantilla === "contrato_trabajo") base.bloque = DOCS.bloque;
     if (p.cambia_contrato) base.campos = camposAnexo();
+    if (p.usa_finiquito) base.campos = camposFiniquito();
   } else {
     base.campos = DOCS.campos;
   }

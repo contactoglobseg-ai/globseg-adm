@@ -261,6 +261,16 @@ export const CAMPOS = {
   instalacion_nueva: ['documento', 'Instalación nueva'],
   turno:             ['documento', 'Turno nuevo'],
 
+  // El finiquito: la causal y la fecha vienen del formulario, los montos del
+  // cálculo. `forma_pago` apunta a la ficha porque el caso normal es la
+  // transferencia y lo que falta entonces es el banco o la cuenta.
+  contrato_desde:     ['contrato', 'Fecha de inicio'],
+  fecha_termino:      ['documento', 'Fecha de término'],
+  causal_texto:       ['documento', 'Causal de término'],
+  detalle_pagos:      ['documento', 'Sumas que se pagan'],
+  cotizaciones_hasta: ['documento', 'Mes hasta el que están pagadas las cotizaciones'],
+  forma_pago:         ['ficha', 'Banco y número de cuenta'],
+
   // El arriendo: nada de esto vive en una tabla, lo escribe quien lo genera.
   arrendador:           ['documento', 'Arrendador'],
   arrendador_rut:       ['documento', 'RUT del arrendador'],
@@ -541,4 +551,169 @@ export function datosAnexo({ contrato, anterior, nueva, cambios, rigeDesde }) {
   if (cambios.otra_glosa) d.otra_glosa = cambios.otra_glosa;
 
   return d;
+}
+
+// ----------------------------------------------------- datos de un finiquito
+/**
+ * Cómo se dice cada causal dentro del documento.
+ *
+ * `CAUSALES` de src/rrhh.js tiene la glosa corta, que es la que sirve en una
+ * pantalla —«Necesidades de la empresa»—. Adentro de un finiquito eso no
+ * alcanza: lo que hace válida la invocación es el artículo y el numeral, y un
+ * finiquito que no los cita es el que después se objeta. Van acá y no allá
+ * porque es redacción de documento, no cálculo.
+ */
+const CAUSAL_TEXTO = {
+  '159-1': 'artículo 159 N° 1 del Código del Trabajo, esto es, mutuo acuerdo de las partes',
+  '159-2': 'artículo 159 N° 2 del Código del Trabajo, esto es, renuncia del trabajador',
+  '159-3': 'artículo 159 N° 3 del Código del Trabajo, esto es, muerte del trabajador',
+  '159-4': 'artículo 159 N° 4 del Código del Trabajo, esto es, vencimiento del plazo '
+           + 'convenido en el contrato',
+  '159-5': 'artículo 159 N° 5 del Código del Trabajo, esto es, conclusión del trabajo o '
+           + 'servicio que dio origen al contrato',
+  '159-6': 'artículo 159 N° 6 del Código del Trabajo, esto es, caso fortuito o fuerza mayor',
+  '160':   'artículo 160 del Código del Trabajo',
+  '161-1': 'artículo 161 inciso primero del Código del Trabajo, esto es, necesidades de la '
+           + 'empresa, establecimiento o servicio',
+  '161-2': 'artículo 161 inciso segundo del Código del Trabajo, esto es, desahucio escrito '
+           + 'del empleador',
+  '163-bis': 'artículo 163 bis del Código del Trabajo, esto es, sometimiento del empleador a '
+             + 'un procedimiento concursal de liquidación',
+};
+
+/** Las causales que esta plantilla no sabe redactar, con el motivo. Se rechaza
+ *  antes de armar: emitir un documento que nadie puede firmar es peor que
+ *  decir por qué no se puede. */
+export const CAUSALES_SIN_FINIQUITO = {
+  '159-3': 'Con la muerte del trabajador el finiquito no lo firma él sino sus herederos, con '
+           + 'las reglas del artículo 60 del Código del Trabajo, y esta plantilla la firman el '
+           + 'trabajador y el empleador. Ese finiquito se redacta aparte.',
+};
+
+/** «3 años y 2 meses». Es lo que se escribe en la cláusula de la relación
+ *  laboral, y sale de los mismos meses con que se calculó la indemnización:
+ *  si el documento dijera otra antigüedad que el cálculo, una de las dos
+ *  estaría mal y no habría forma de saber cuál. */
+export function antiguedadEnPalabras(meses) {
+  const n = Math.max(0, Math.round(Number(meses) || 0));
+  if (n === 0) return 'menos de un mes';
+  const anios = Math.floor(n / 12);
+  const resto = n % 12;
+  const partes = [];
+  if (anios) partes.push(`${anios} ${anios === 1 ? 'año' : 'años'}`);
+  if (resto) partes.push(`${resto} ${resto === 1 ? 'mes' : 'meses'}`);
+  return partes.join(' y ');
+}
+
+/**
+ * Lo que escribe la oficina queda dentro de una frase del documento, así que
+ * tiene que terminar en punto. Sin esto, la cláusula de reserva de derechos
+ * cerraba sin puntuación y se leía como si faltara algo.
+ */
+const frase = (t) => {
+  const x = String(t || '').trim();
+  if (!x) return null;
+  return /[.!?;:]$/.test(x) ? x : x + '.';
+};
+
+/** Una línea del desglose: «· Feriado proporcional (8 días hábiles): $ 147.600». */
+const linea = (glosa, monto) => `· ${glosa}: $ ${pesos(monto)}`;
+
+/**
+ * Lo que el finiquito agrega encima de `datosLaborales`.
+ *
+ * Los montos **no llegan desde la pantalla**: llegan de `calcularFiniquito`,
+ * que el servidor corre otra vez con la causal y la fecha que se pidieron. La
+ * pantalla muestra el mismo cálculo porque pide lo mismo, no porque se le
+ * crea. Es la misma regla que hace que el texto se congele una sola vez: si la
+ * pantalla mandara los montos, habría dos versiones del finiquito y ninguna
+ * forma de saber cuál se firmó.
+ *
+ * `otros` y `descuentos` sí los escribe la oficina, y tienen que existir: el
+ * cálculo conoce la indemnización, el mes de aviso y el feriado, y no conoce
+ * la remuneración de los días trabajados del último mes, las horas extra ni
+ * los anticipos. Un finiquito sin eso le queda debiendo plata a la persona o
+ * se la paga dos veces.
+ */
+export function datosFiniquito({ finiquito, contrato, trabajador, campos = {} }) {
+  const d = {
+    contrato_desde: fechaLarga(contrato?.fecha_inicio),
+    fecha_termino: fechaLarga(finiquito.termino),
+    causal_texto: CAUSAL_TEXTO[finiquito.causal] || null,
+    causal_detalle: frase(campos.causal_detalle),
+    antiguedad: antiguedadEnPalabras(finiquito.meses_servicio),
+    reserva: frase(campos.reserva),
+  };
+
+  // El desglose. Se imprimen las líneas que la causal hace aplicables y que
+  // tienen monto: una indemnización en cero no se escribe, se omite, porque
+  // una línea que dice «$ 0» dentro de un finiquito invita a preguntar si se
+  // olvidó de pagarla.
+  const pagos = finiquito.lineas
+    .filter((l) => l.aplica && Number(l.monto) > 0)
+    .map((l) => ({ glosa: l.glosa, monto: Math.round(Number(l.monto)) }));
+  for (const o of campos.otros || []) {
+    if (o && o.glosa && Number(o.monto) > 0) {
+      pagos.push({ glosa: String(o.glosa), monto: Math.round(Number(o.monto)) });
+    }
+  }
+
+  const descuentos = (campos.descuentos || [])
+    .filter((o) => o && o.glosa && Number(o.monto) > 0)
+    .map((o) => ({ glosa: String(o.glosa), monto: Math.round(Number(o.monto)) }));
+
+  const suman = (xs) => xs.reduce((a, x) => a + x.monto, 0);
+  const total = Math.max(0, suman(pagos) - suman(descuentos));
+
+  d.detalle_pagos = pagos.length
+    ? pagos.map((x) => linea(x.glosa, x.monto)).join('\n') : null;
+  d.detalle_descuentos = descuentos.length
+    ? descuentos.map((x) => linea(x.glosa, x.monto)).join('\n') : null;
+  d.total = pesos(total);
+  // `enPalabras` devuelve «Cero pesos» con mayúscula; acá va dentro de un
+  // paréntesis a media frase, así que la minúscula es la que corresponde.
+  d.total_palabras = enPalabras(total).charAt(0).toLowerCase() + enPalabras(total).slice(1);
+
+  // El mes hasta el que el empleador declara pagadas las cotizaciones. No se
+  // propone solo: el sistema no sabe si están pagadas, y proponer el mes
+  // anterior sería poner en un papel firmado una declaración que nadie hizo.
+  d.cotizaciones_hasta = /^\d{4}-\d{2}$/.test(String(campos.cotizaciones_hasta || ''))
+    ? fechaLarga(`${campos.cotizaciones_hasta}-01`).replace(/^01 de /, '')
+    : null;
+
+  d.forma_pago = formaDePago(campos.forma_pago, trabajador);
+
+  // Lo que hace falta para que el total se pueda revisar sin rehacer la
+  // cuenta, y para que la pantalla muestre lo mismo que el documento.
+  d.finiquito_pagos = pagos;
+  d.finiquito_descuentos = descuentos;
+  d.finiquito_total = total;
+
+  return d;
+}
+
+/** La cláusula de forma de pago. Con transferencia salen los datos de la
+ *  ficha: si faltan, se devuelve null y el documento queda con un hueco, que
+ *  es lo que impide generarlo. Un finiquito que dice «transferencia a la
+ *  cuenta _______» no se firma. */
+function formaDePago(forma, trabajador) {
+  if (forma === 'efectivo') {
+    return 'El pago se efectúa en dinero efectivo, en este mismo acto.';
+  }
+  if (forma === 'cheque' || forma === 'vale_vista') {
+    const que = forma === 'cheque' ? 'un cheque nominativo' : 'un vale vista bancario nominativo';
+    return `El pago se efectúa mediante ${que} extendido a nombre del/la trabajador/a, `
+      + 'que éste/a declara recibir en este acto.';
+  }
+  // Transferencia, que es como paga la empresa: la nómina del banco sale de
+  // estos mismos tres datos de la ficha.
+  if (!trabajador?.banco || !trabajador?.cuenta_numero) return null;
+  // «la cuenta Cuenta Vista» es lo que sale si se antepone la palabra sin
+  // mirar: en la ficha el tipo ya viene escrito «Cuenta Vista», «Cuenta
+  // Corriente», «Cuenta RUT». Se antepone solo cuando falta.
+  const t = String(trabajador.cuenta_tipo || '').trim();
+  const tipo = !t ? 'cuenta' : (/^cuenta\b/i.test(t) ? t : `cuenta ${t}`);
+  return `El pago se efectúa mediante transferencia electrónica a la ${tipo} `
+    + `N° ${trabajador.cuenta_numero} del ${trabajador.banco}, de titularidad del/la `
+    + 'trabajador/a.';
 }

@@ -980,9 +980,16 @@ export function calcularFiniquito({ trabajador, contrato, causal, fechaTermino, 
   const diasPendientes = Math.max(0, Number(saldo?.saldo) || 0);
   const diasCorridosFeriado = Math.round(diasPendientes * 7 / 5 * 100) / 100;
   const feriado = Math.round(base / 30 * diasCorridosFeriado);
+  // Con coma, no con punto. El saldo de feriado lleva decimales —son quince
+  // días al año prorrateados por mes— y «83.75 días» con punto, adentro de un
+  // finiquito que se lleva a un ministro de fe, se lee como un error de
+  // tipeo. La glosa de la línea es la misma que imprime el documento, así que
+  // se arregla acá y la pantalla y el papel siguen diciendo lo mismo.
+  const conComa = (n) => Number(n).toLocaleString('es-CL', { maximumFractionDigits: 2 });
   if (diasPendientes > 0) {
-    notas.push(`El feriado proporcional son ${diasPendientes} días hábiles pendientes, que se `
-      + `pagan como ${diasCorridosFeriado} días corridos (art. 73 inc. final).`);
+    notas.push(`El feriado proporcional son ${conComa(diasPendientes)} días hábiles `
+      + `pendientes, que se pagan como ${conComa(diasCorridosFeriado)} días corridos `
+      + '(art. 73 inc. final).');
   }
   if (saldo?.sin_fecha_ingreso) {
     notas.push('La ficha no tiene fecha de ingreso: el feriado proporcional no se pudo calcular.');
@@ -1000,7 +1007,8 @@ export function calcularFiniquito({ trabajador, contrato, causal, fechaTermino, 
       { glosa: `Indemnización por años de servicio (${aniosCobrables} ${aniosCobrables === 1 ? 'año' : 'años'})`,
         monto: ias, aplica: def.ias },
       { glosa: 'Indemnización sustitutiva del aviso previo', monto: avisoPrevio, aplica: def.aviso },
-      { glosa: `Feriado proporcional (${diasPendientes} días hábiles)`, monto: feriado, aplica: true },
+      { glosa: `Feriado proporcional (${conComa(diasPendientes)} días hábiles)`,
+        monto: feriado, aplica: true },
     ],
     total,
     notas,

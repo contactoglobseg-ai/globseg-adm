@@ -1408,6 +1408,18 @@ async function api(request, env, url, usuario) {
           ? await buscar(env, 'v_personal?select=id,nombre,rut,cargo&activo=is.true&order=nombre.asc')
           : [],
         migracion_anexo: docs.MIGRACION_ANEXO,
+        migracion_finiquito: docs.MIGRACION_FINIQUITO,
+        // Para el finiquito: las causales con su glosa, y cuáles esta
+        // plantilla no sabe redactar. Van acá y no se leen de `/rrhh/catalogos`
+        // porque a Documentos entra el prevencionista, que no tiene esa puerta.
+        causales: puedeLaboral ? rrhh.CAUSALES : {},
+        causales_sin_finiquito: docs.CAUSALES_SIN_FINIQUITO,
+        // Un finiquito se le hace, justamente, a quien ya se dio de baja:
+        // `personas` trae solo a los activos y sin esto la persona a
+        // finiquitar no aparecía en el desplegable.
+        personas_bajas: puedeLaboral
+          ? await buscar(env, 'v_personal?select=id,nombre,rut,cargo&activo=is.false&order=nombre.asc')
+          : [],
         // Para el anexo: a qué instalación se traslada. Van las activas, que
         // son a las que se puede mandar a alguien; una dada de baja sigue
         // nombrada en los contratos viejos y no tiene por qué ofrecerse.
@@ -1441,8 +1453,16 @@ async function api(request, env, url, usuario) {
       }
       const id = Number(url.searchParams.get('trabajador_id'));
       if (!id) return error('Falta la persona', 400);
-      const contrato = await primero(env,
+      // Por omisión, el vigente: es lo que el anexo necesita, y un anexo no
+      // modifica un contrato cerrado. El finiquito pide `cualquiera=1` porque
+      // se emite casi siempre con el término ya registrado.
+      const cualquiera = url.searchParams.get('cualquiera') === '1';
+      let contrato = await primero(env,
         `contratos?select=*&trabajador_id=eq.${id}&estado=eq.vigente&order=fecha_inicio.desc`);
+      if (!contrato && cualquiera) {
+        contrato = await primero(env,
+          `contratos?select=*&trabajador_id=eq.${id}&order=fecha_inicio.desc`);
+      }
       return json({ contrato: contrato || null });
     }
 

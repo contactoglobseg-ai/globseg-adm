@@ -26,8 +26,10 @@
 import { buscar, primero, insertar, actualizar, anotar } from './datos.js';
 import { hoyISO, esFecha, sumarMeses } from './fechas.js';
 import { armar, faltantes, explicarFaltantes, hash,
-         datosLaborales, datosArriendo, datosAnexo } from './plantillas.js';
-import { editarContrato } from './rrhh.js';
+         datosLaborales, datosArriendo, datosAnexo, datosFiniquito,
+         CAUSALES_SIN_FINIQUITO } from './plantillas.js';
+import { editarContrato, CAUSALES, parametros, saldoFeriado,
+         calcularFiniquito, valor } from './rrhh.js';
 import { ipDe, huellaDe } from './limite.js';
 import { formatearRut } from './rut.js';
 
@@ -37,6 +39,10 @@ export const MIGRACION = '20261020180000_documentos_firma.sql';
  *  lo dice con el nombre del archivo en vez de ofrecer un formulario que el
  *  servidor va a ignorar. */
 export const MIGRACION_ANEXO = '20261104180000_anexo_cambios.sql';
+/** La del finiquito que se firma. Si falta, la plantilla sencillamente no
+ *  existe y no sale en el desplegable; el cálculo estimado de Sueldos sigue
+ *  andando igual, que es lo que había hasta el 05-11-2026. */
+export const MIGRACION_FINIQUITO = '20261105120000_finiquito_documento.sql';
 
 /** Una firma pesa unos pocos kB. 400 kB es diez veces un trazo largo en un
  *  teléfono grande, y corta de raíz que alguien mande una foto como «firma». */
@@ -384,6 +390,109 @@ export async function aplicarCambios(env, quien, id) {
   return { ok: true, cambios: quedaron, avisos: r.avisos || [] };
 }
 
+// ------------------------------------------------------------- el finiquito
+/**
+ * Revisa lo que se pidió y recalcula el finiquito.
+ *
+ * Los montos **no vienen de la pantalla**. Vienen de `calcularFiniquito`, el
+ * mismo que alimenta la pestaña Sueldos → Finiquito, corrido acá otra vez con
+ * la causal y la fecha que se pidieron. La pantalla y el documento coinciden
+ * porque hacen la misma cuenta con los mismos datos, no porque uno le crea al
+ * otro: si los montos llegaran en el cuerpo del pedido, cualquiera con sesión
+ * podría firmar un finiquito por la cifra que quisiera.
+ */
+async function revisarFiniquito(env, { trabajador, contrato, campos }) {
+  const causal = limpio(campos.causal, 20);
+  if (!causal || !CAUSALES[causal]) {
+    return { error: 'Falta la causal de término del contrato', status: 400 };
+  }
+  if (CAUSALES_SIN_FINIQUITO[causal]) {
+    return { error: CAUSALES_SIN_FINIQUITO[causal], status: 409 };
+  }
+  // El 160 es diez causales distintas en un solo código, y la invocación vale
+  // por el numeral y por los hechos. «Causales del art. 160» a secas, dentro
+  // de un documento firmado, es lo que después se objeta entero.
+  if (causal === '160' && !limpio(campos.causal_detalle, 1000)) {
+    return { error: 'Con una causal del artículo 160 hay que escribir el numeral y los hechos '
+                    + 'en que se funda. Un finiquito que solo dice «artículo 160» no identifica '
+                    + 'la causal que se invocó.', status: 400 };
+  }
+
+  const fechaTermino = esFecha(campos.fecha_termino) ? campos.fecha_termino
+    : (contrato.termino_fecha || null);
+  if (!fechaTermino) return { error: 'Falta la fecha de término', status: 400 };
+  if (fechaTermino < contrato.fecha_inicio) {
+    return { error: 'La fecha de término es anterior al inicio del contrato', status: 400 };
+  }
+  if (fechaTermino > hoyISO()) {
+    return { error: 'La fecha de término todavía no llega. Un finiquito se firma por una '
+                    + 'relación laboral que ya terminó.', status: 400 };
+  }
+
+  const p = await parametros(env, fechaTermino);
+  const ausencias = await buscar(env,
+    `ausencias?select=tipo,desde,dias_habiles,estado&trabajador_id=eq.${trabajador.id}`);
+
+  const finiquito = calcularFiniquito({
+    trabajador, contrato, causal, fechaTermino,
+    avisoDado: campos.aviso_dado === true,
+    baseManual: entero(campos.base),
+    saldo: saldoFeriado(trabajador, ausencias, fechaTermino),
+    p, uf: Number(campos.uf) || valor(p, 'uf', 0) || null,
+  });
+  if (finiquito.error) return { error: finiquito.error, status: 400 };
+
+  const datos = datosFiniquito({
+    finiquito, contrato, trabajador,
+    campos: {
+      causal_detalle: limpio(campos.causal_detalle, 1000),
+      reserva: limpio(campos.reserva, 1000),
+      cotizaciones_hasta: limpio(campos.cotizaciones_hasta, 7),
+      forma_pago: limpio(campos.forma_pago, 20),
+      otros: sumas(campos.otros),
+      descuentos: sumas(campos.descuentos),
+    },
+  });
+
+  // Un finiquito que no paga nada no dice nada, igual que un anexo que no
+  // modifica nada. Pasa de verdad —una renuncia con el feriado al día— y la
+  // salida no es emitir un papel con el total en cero: es que la oficina
+  // agregue lo que el cálculo no conoce, que casi siempre son los días
+  // trabajados del último mes.
+  if (!datos.detalle_pagos) {
+    return { error: 'El cálculo no arroja ninguna suma que pagar y no se agregó ninguna otra. '
+                    + 'La causal elegida no da derecho a indemnización y no hay feriado '
+                    + 'pendiente. Agregue las sumas que correspondan —la remuneración de los '
+                    + 'días trabajados del último mes, por ejemplo— o revise la causal y la '
+                    + 'fecha de término.', status: 409 };
+  }
+
+  // Lo que el cálculo usó y nadie ha confirmado, más sus propias notas. Queda
+  // copiado dentro del documento: el que lo abra el año que viene tiene que
+  // poder ver con qué tope de UF se calculó sin depender de que alguien se
+  // acuerde de la pantalla donde lo leyó.
+  const aviso = [
+    ...finiquito.por_confirmar.map((x) => `${x.glosa || x.codigo} = ${x.valor}.`),
+    ...finiquito.notas,
+  ].join(' ') || null;
+
+  return { finiquito: { ...finiquito, pagos: datos.finiquito_pagos,
+                        descuentos: datos.finiquito_descuentos,
+                        total_documento: datos.finiquito_total },
+           datos, aviso };
+}
+
+/** Las sumas que escribe la oficina, limpiadas. Se topan en seis: una lista
+ *  larga dentro de un finiquito es un libro de remuneraciones, y lo que se
+ *  firma tiene que caber en una lectura. */
+function sumas(lista) {
+  if (!Array.isArray(lista)) return [];
+  return lista
+    .map((x) => ({ glosa: limpio(x?.glosa, 120), monto: entero(x?.monto) }))
+    .filter((x) => x.glosa && x.monto > 0)
+    .slice(0, 6);
+}
+
 // ------------------------------------------------------------------ armado
 /**
  * Arma el documento. Con `guardar` en false es la vista previa, que no escribe
@@ -417,6 +526,11 @@ export async function generar(env, quien, cuerpo,
   // a preguntarle nada a nadie: lo que se firmó es lo que se aplica.
   let cambios = null;
   let avisoCambio = null;
+  // El cálculo del finiquito, si esta plantilla es uno. Se guarda dentro de
+  // `datos` igual que los cambios del anexo: el documento tiene que poder
+  // explicarse solo el año que viene, sin volver a calcular nada.
+  let finiquito = null;
+  let avisoFiniquito = null;
 
   if (p.clase === 'laboral') {
     trabajador = await primero(env,
@@ -432,6 +546,14 @@ export async function generar(env, quien, cuerpo,
       : await primero(env,
           `contratos?select=*&trabajador_id=eq.${trabajador.id}&estado=eq.vigente`
           + '&order=fecha_inicio.desc');
+    // Un finiquito se emite, casi siempre, con el contrato ya cerrado: la
+    // oficina registra el término y después hace el papel. Buscar solo el
+    // vigente dejaba el documento imposible de generar justo en el caso
+    // normal, que es el que el gerente se encontró el 04-11-2026.
+    if (!contrato && p.usa_finiquito) {
+      contrato = await primero(env,
+        `contratos?select=*&trabajador_id=eq.${trabajador.id}&order=fecha_inicio.desc`);
+    }
     if (p.requiere_contrato && !contrato) {
       return { error: 'Esa persona no tiene contrato cargado. Cárguelo primero en '
                       + 'Personas → Fichas y después genere el documento.', status: 409 };
@@ -460,6 +582,16 @@ export async function generar(env, quien, cuerpo,
       datos = { ...datos, ...datosAnexo({
         contrato, anterior: instalacion, nueva: r.nueva, cambios, rigeDesde: r.rige }) };
       datos.cambios = cambios;
+    }
+
+    // Los montos del finiquito se recalculan acá. La pantalla ya los mostró,
+    // pero no se le creen: manda la causal y la fecha, no las cifras.
+    if (p.usa_finiquito) {
+      const r = await revisarFiniquito(env, { trabajador, contrato, campos: cuerpo.campos || {} });
+      if (r.error) return r;
+      finiquito = r.finiquito;
+      datos = { ...datos, ...r.datos };
+      avisoFiniquito = r.aviso;
     }
 
     // El bloque de funciones. Es lo único que distingue el contrato de un
@@ -496,6 +628,7 @@ export async function generar(env, quien, cuerpo,
   const porConfirmar = [
     p.por_confirmar,
     avisoCambio,
+    avisoFiniquito,
     ...Object.values(empresa).filter((e) => e.por_confirmar).map((e) => e.glosa || e.codigo),
   ].filter(Boolean).join(' ');
 
@@ -516,6 +649,9 @@ export async function generar(env, quien, cuerpo,
     // y el que abre el documento el año que viene no tenga que leerlo entero.
     cambios: cambios || null,
     cambios_resumen: cambios ? resumirCambios(cambios) : null,
+    // El desglose, para que la pantalla muestre los mismos números que el
+    // texto sin volver a sumarlos por su cuenta.
+    finiquito: finiquito || null,
   };
   if (!guardar) return { vista_previa: armado };
 
@@ -820,4 +956,4 @@ export async function archivar(env, quien, id) {
   return { ok: true, documento_id: doc.id, tipo };
 }
 
-export { MAX_FIRMA };
+export { MAX_FIRMA, CAUSALES_SIN_FINIQUITO };
