@@ -334,7 +334,7 @@ async function api(request, env, url, usuario) {
   const esSubidaDeArchivo = metodo === 'POST'
     && (/^\/rrhh\/documentos\/\d+\/archivo$/.test(ruta)
         || /^\/pagos\/estados\/\d+\/archivo$/.test(ruta)
-        || /^\/documentos\/prevencion(\/carpeta)?$/.test(ruta));
+        || /^\/documentos\/prevencion(\/carpeta|\/guardados)?$/.test(ruta));
 
   // PUT entra desde el 04-11-2026: la semana de la rotación se manda entera y
   // reemplaza lo que había, que es exactamente lo que significa PUT. Era la
@@ -1499,7 +1499,10 @@ async function api(request, env, url, usuario) {
         // pantalla la muestra apagada con el nombre del archivo, mientras
         // mandar a firmar sigue andando igual.
         const hayCarpeta = await prev.carpetaLista(env);
-        const [tipos, personas, envios, instalaciones, carpeta, vence] = await Promise.all([
+        // La biblioteca es otra migración, así que puede faltar sola: sin ella
+        // se sigue subiendo el PDF en cada envío, que es lo de antes.
+        const hayGuardados = await prev.guardadosListos(env);
+        const [tipos, personas, envios, instalaciones, carpeta, vence, biblioteca] = await Promise.all([
           prev.tipos(env), prev.destinatarios(env), prev.listarEnvios(env),
           buscar(env, 'instalaciones?select=id,nombre&activa=is.true&order=nombre.asc'),
           hayCarpeta ? prev.carpeta(env, {
@@ -1507,6 +1510,9 @@ async function api(request, env, url, usuario) {
             incluirBajas: url.searchParams.get('bajas') === 'si',
           }) : [],
           prev.porVencer(env),
+          hayGuardados ? prev.guardados(env, {
+            incluirBajas: url.searchParams.get('bajas_guardados') === 'si',
+          }) : [],
         ]);
         // Las personas van con nombre, RUT, cargo e instalación y nada más.
         // El prevencionista necesita saber a quién entregarle el papel; el
@@ -1519,7 +1525,67 @@ async function api(request, env, url, usuario) {
           carpeta_lista: hayCarpeta,
           aviso_carpeta: hayCarpeta ? null : prev.avisoCarpeta(),
           migracion_carpeta: prev.MIGRACION_CARPETA,
+          guardados: biblioteca,
+          guardados_listos: hayGuardados,
+          aviso_guardados: hayGuardados ? null : prev.avisoGuardados(),
         });
+      }
+
+      // ------------------------------------------ la biblioteca
+      //
+      // Un documento que se sube una vez y se manda las veces que haga falta.
+      // El IRL de la empresa son 34 hojas y 5,5 MB: subirlo en cada envío era
+      // el trámite que hacía que no se mandara.
+      if (sub === '/prevencion/guardados' && metodo === 'POST') {
+        if (!(await prev.guardadosListos(env))) return error(prev.avisoGuardados(), 503);
+        let forma;
+        try {
+          forma = await request.formData();
+        } catch {
+          return error('No llegó el formulario con el archivo', 400);
+        }
+        const archivo = forma.get('archivo');
+        if (!archivo || typeof archivo.arrayBuffer !== 'function') {
+          return error('No llegó ningún archivo', 400);
+        }
+        if (Number(archivo.size || 0) > arch.MAX_BYTES) {
+          return error(`El archivo pesa más de ${Math.round(arch.MAX_BYTES / 1048576)} MB.`, 413);
+        }
+        let datos = {};
+        try {
+          datos = JSON.parse(String(forma.get('datos') || '{}'));
+        } catch {
+          return error('Los datos del documento llegaron mal', 400);
+        }
+        const bytes = new Uint8Array(await archivo.arrayBuffer());
+        const r = await prev.guardarDocumento(env, usuario.usuario,
+          { bytes, nombre: archivo.name }, datos);
+        if (r.error) return error(r.error, r.status);
+        return json(r, 201);
+      }
+
+      const mGuardado = sub.match(/^\/prevencion\/guardados\/(\d+)(\/[a-z]+)?$/);
+      if (mGuardado) {
+        if (!(await prev.guardadosListos(env))) return error(prev.avisoGuardados(), 503);
+        const id = Number(mGuardado[1]);
+        const accion = mGuardado[2] || '';
+
+        if (accion === '/archivo' && metodo === 'GET') {
+          return responderPdfDocumento(env, await prev.filaGuardada(env, id));
+        }
+        // Acá se cambia dónde va la firma. El archivo no se reemplaza nunca:
+        // un PDF distinto es otro documento, y lo ya firmado quedaría
+        // apuntando a un papel que nadie leyó.
+        if (!accion && metodo === 'PATCH') {
+          const r = await prev.editarGuardado(env, usuario.usuario, id, cuerpo);
+          if (r.error) return error(r.error, r.status);
+          return json(r);
+        }
+        if (accion === '/baja' && metodo === 'POST') {
+          const r = await prev.darDeBajaGuardado(env, usuario.usuario, id, cuerpo.motivo);
+          if (r.error) return error(r.error, r.status);
+          return json(r);
+        }
       }
 
       // ------------------------------------------------- la carpeta
@@ -1576,26 +1642,32 @@ async function api(request, env, url, usuario) {
         } catch {
           return error('No llegó el formulario con el archivo', 400);
         }
-        const archivo = forma.get('archivo');
-        if (!archivo || typeof archivo.arrayBuffer !== 'function') {
-          return error('No llegó ningún archivo', 400);
-        }
-        // El tamaño se mira antes de leer los bytes, igual que en la subida de
-        // documentos de RRHH: un archivo de cien megas no puede llegar a
-        // cargarse en memoria para después rechazarlo.
-        if (Number(archivo.size || 0) > arch.MAX_BYTES) {
-          return error(`El archivo pesa más de ${Math.round(arch.MAX_BYTES / 1048576)} MB. `
-            + 'Guárdelo con menos resolución o divídalo.', 413);
-        }
         let datos = {};
         try {
           datos = JSON.parse(String(forma.get('datos') || '{}'));
         } catch {
           return error('Los datos del envío llegaron mal', 400);
         }
-        const bytes = new Uint8Array(await archivo.arrayBuffer());
+        // Un envío desde la biblioteca **no trae archivo**: el PDF ya está
+        // subido y se reusa. Exigirlo acá era pedirle a la prevencionista que
+        // volviera a cargar el mismo IRL de 34 hojas, que es justo lo que la
+        // biblioteca existe para evitar.
+        const archivo = forma.get('archivo');
+        const desdeBiblioteca = Number(datos?.guardado_id) > 0;
+        if (!desdeBiblioteca && (!archivo || typeof archivo.arrayBuffer !== 'function')) {
+          return error('No llegó ningún archivo', 400);
+        }
+        // El tamaño se mira antes de leer los bytes, igual que en la subida de
+        // documentos de RRHH: un archivo de cien megas no puede llegar a
+        // cargarse en memoria para después rechazarlo.
+        if (archivo && Number(archivo.size || 0) > arch.MAX_BYTES) {
+          return error(`El archivo pesa más de ${Math.round(arch.MAX_BYTES / 1048576)} MB. `
+            + 'Guárdelo con menos resolución o divídalo.', 413);
+        }
+        const bytes = archivo && typeof archivo.arrayBuffer === 'function'
+          ? new Uint8Array(await archivo.arrayBuffer()) : null;
         const r = await prev.enviar(env, usuario.usuario,
-          { bytes, nombre: archivo.name || datos.archivo }, datos);
+          { bytes, nombre: (archivo && archivo.name) || datos.archivo }, datos);
         if (r.error) return json({ error: r.error, omitidos: r.omitidos }, r.status);
         return json(r, 201);
       }
@@ -2386,6 +2458,7 @@ const RELACIONES = [
   'v_personal', 'v_documentos', 'v_documentos_generados', 'v_estados_pago',
   'v_envios_prevencion',
   'documentos_prevencion', 'v_documentos_prevencion',
+  'documentos_guardados', 'v_documentos_guardados',
   'rotaciones', 'rotacion_puntos', 'rotacion_dias', 'v_rotacion_dias',
   'dependencias', 'v_dependencias',
 ];
@@ -2402,6 +2475,7 @@ const COLUMNAS = [
   ['ficha_rrhh',                   'trabajadores',           ['fecha_ingreso', 'afp', 'salud_sistema']],
   ['documentos_con_archivo',       'documentos_trabajador',  ['archivo_ruta']],
   ['documentos_desde_archivo',     'documentos_generados',   ['archivo_ruta', 'envio_id', 'tipo_documento']],
+  ['documentos_desde_biblioteca',  'documentos_generados',   ['guardado_id', 'firmas_posicion']],
   ['instalaciones_con_direccion',  'instalaciones',          ['direccion']],
   ['permiso_de_borrar',            'usuarios',               ['puede_borrar']],
   ['anexo_con_cambios',            'plantillas_documento',   ['cambia_contrato']],

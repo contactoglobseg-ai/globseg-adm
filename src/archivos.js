@@ -134,6 +134,19 @@ export function rutaCarpetaPrevencion(extension) {
   return `prevencion-carpeta/${azar}.${extension}`;
 }
 
+/**
+ * Ruta de un documento de la biblioteca de prevención.
+ *
+ * No cuelga de ningún envío ni de ninguna persona: el mismo archivo lo
+ * comparten todos los envíos que salgan de él, y por eso dar de baja el
+ * documento **no lo borra**.
+ */
+export function rutaBiblioteca(extension) {
+  const azar = [...crypto.getRandomValues(new Uint8Array(12))]
+    .map((b) => b.toString(16).padStart(2, '0')).join('');
+  return `prevencion-biblioteca/${azar}.${extension}`;
+}
+
 /** SHA-256 de unos bytes, en hexadecimal. Es lo que firma quien firma un
  *  documento que llegó como archivo: ahí no hay texto que resumir. */
 export async function hashBytes(bytes) {

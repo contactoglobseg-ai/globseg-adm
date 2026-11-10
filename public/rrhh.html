@@ -3347,6 +3347,12 @@ const DOCS = {
     carpeta: { clase: "", titulo: "", instalacion: "", emision: "", vence: "",
                obs: "", archivo: null },
     carpetaFiltro: "", verBajas: false,
+    /* La biblioteca. `fuente` dice qué se manda: el id de un documento
+       guardado, o «nuevo» para subir un PDF en el momento, que es como
+       funcionaba antes y sigue sirviendo para algo que se manda una vez. */
+    fuente: "",
+    guardar: { nombre: "", tipo: "", archivo: null, paginas: null, abierto: false },
+    marcando: null, marcas: [], verBajasGuardados: false,
   },
 };
 
@@ -3898,6 +3904,8 @@ async function pintarPrevencion() {
   }
 
   const { tipos, personas, envios } = P.datos;
+  const guardados = P.datos.guardados || [];
+  const elegido = guardados.find(g => String(g.id) === String(P.fuente));
   const tipo = tipos.find(t => t.codigo === P.tipo);
   const instalaciones = [...new Map(personas.filter(x => x.instalacion_id)
     .map(x => [x.instalacion_id, x.instalacion])).entries()];
@@ -3913,6 +3921,23 @@ async function pintarPrevencion() {
         <span class="nota">Lo firma cada trabajador desde su teléfono</span></div>
 
       <div class="rejilla">
+        <label class="campo" style="grid-column:span 2"><span>Qué se manda</span>
+          <select id="p-fuente">
+            <option value="">Elija uno…</option>
+            ${guardados.length ? `<optgroup label="Guardados">${guardados.map(g =>
+              `<option value="${g.id}"${String(g.id) === String(P.fuente) ? " selected" : ""}>${
+                esc(g.nombre)}${g.archivo_paginas ? ` · ${g.archivo_paginas} hojas` : ""}</option>`
+              ).join("")}</optgroup>` : ""}
+            <option value="nuevo"${P.fuente === "nuevo" ? " selected" : ""}>Subir un PDF ahora…</option>
+          </select></label>
+        ${elegido ? `
+        <div class="campo" style="grid-column:span 2"><span>De qué se trata</span>
+          <p class="sub" style="margin:4px 0 0">${esc(elegido.tipo_nombre || elegido.tipo_documento || "—")}
+            · ${elegido.puntos_de_firma
+              ? `la firma va en ${elegido.puntos_de_firma} ${elegido.puntos_de_firma === 1
+                  ? "lugar marcado" : "lugares marcados"}`
+              : "la firma va al pie de todas las hojas"}</p></div>` : ""}
+        ${P.fuente === "nuevo" ? `
         <label class="campo" style="grid-column:span 2"><span>Qué documento es</span>
           <select id="p-tipo">
             <option value="">Elija uno…</option>
@@ -3922,12 +3947,12 @@ async function pintarPrevencion() {
         <label class="campo" style="grid-column:span 2"><span>El archivo, en PDF</span>
           <span class="bt bt--fino" style="align-self:flex-start">${P.archivo
             ? "Elegir otro archivo…" : "Elegir el PDF…"}</span>
-          <input type="file" id="p-archivo" accept="application/pdf,.pdf" hidden></label>
+          <input type="file" id="p-archivo" accept="application/pdf,.pdf" hidden></label>` : ""}
       </div>
 
-      ${tipo && tipo.base_legal
+      ${P.fuente === "nuevo" && tipo && tipo.base_legal
         ? `<p class="sub" style="padding:0 16px 12px">${esc(tipo.base_legal)}</p>` : ""}
-      ${tipo && tipo.vence && tipo.meses_validez ? aviso("bien",
+      ${P.fuente === "nuevo" && tipo && tipo.vence && tipo.meses_validez ? aviso("bien",
         "Vuelve a pedirse solo. ",
         `Al guardarlo en la ficha de cada uno queda venciendo a los ${tipo.meses_validez} `
         + "meses, así que RRHH vuelve a verlo en la lista de lo que está por vencer.") : ""}
@@ -3938,9 +3963,9 @@ async function pintarPrevencion() {
         : ""}</span>
         · <button class="bt bt--fino bt--chico" type="button" id="p-quitar">Quitar</button></p>
       <div id="p-visor"></div>
-      <p class="sub" style="padding:0 16px 12px">La firma de cada persona va al pie de todas las
-        hojas, como se visa en papel, más una hoja al final con el registro de la
-        firma.</p>` : ""}
+      <p class="sub" style="padding:0 16px 12px">La firma va al pie de todas las hojas, más
+        una hoja al final con el registro. Si este documento tiene su propio recuadro de
+        firma, guárdelo abajo y marque dónde va.</p>` : ""}
 
       <div class="caja__tit" style="padding-left:0"><h3 style="font-size:.95rem;margin:0">
         A quiénes</h3>
@@ -4014,14 +4039,25 @@ async function pintarPrevencion() {
 
     <div id="d-envio"></div>
 
+    ${seccionBiblioteca(P)}
+
     ${seccionCarpeta(P)}
 
     <div id="d-abierto"></div>`;
 
-  $("#p-tipo").onchange = e => { P.tipo = e.target.value; pintarPrevencion(); };
+  $("#p-fuente").onchange = e => {
+    P.fuente = e.target.value;
+    // Cambiar de documento descarta el PDF suelto que hubiera: mandar el
+    // guardado con el archivo de otro cargado al lado sería el peor enredo.
+    P.archivo = null; P.paginas = null; P.resultado = null;
+    pintarPrevencion();
+  };
+  if ($("#p-tipo")) $("#p-tipo").onchange = e => { P.tipo = e.target.value; pintarPrevencion(); };
   $("#p-instalacion").onchange = e => { P.instalacion = e.target.value; pintarPrevencion(); };
-  $("#p-archivo").onchange = e => elegirPdfPrevencion(e.target.files[0])
-    .catch(err => decir($("#m-prev"), err.message, "error"));
+  if ($("#p-archivo")) {
+    $("#p-archivo").onchange = e => elegirPdfPrevencion(e.target.files[0])
+      .catch(err => decir($("#m-prev"), err.message, "error"));
+  }
   if ($("#p-quitar")) {
     $("#p-quitar").onclick = () => {
       P.archivo = null; P.paginas = null; P.resultado = null; pintarPrevencion();
@@ -4070,9 +4106,286 @@ async function pintarPrevencion() {
     }).catch(() => {});
   }
   if (P.envio) pintarEnvio().catch(() => {});
+  conectarBiblioteca(P);
   conectarCarpeta(P);
 }
 
+
+
+/**
+ * La biblioteca: documentos que se suben una vez y se mandan muchas.
+ *
+ * Nació del IRL de la empresa —34 hojas y 5,5 MB— que la prevencionista tenía
+ * que volver a subir en cada envío. Y de lo otro que trajo con él: **la firma
+ * de ese documento no va al pie de las hojas**, va en el recuadro
+ * «IDENTIFICACIÓN DEL TRABAJADOR» de la hoja 1. Por eso acá se abre el PDF y
+ * se marca con un clic dónde va; no se configura con números, que nadie sabe
+ * de memoria.
+ */
+function seccionBiblioteca(P) {
+  const d = P.datos;
+  if (!d.guardados_listos) {
+    return `<section class="caja">
+      <div class="caja__tit"><h2>Documentos guardados</h2></div>
+      ${aviso("ojo", "Guardar documentos todavía no está disponible. ", d.aviso_guardados || "")}
+    </section>`;
+  }
+  const G = P.guardar;
+  const lista = d.guardados || [];
+
+  return `
+  <section class="caja">
+    <div class="caja__tit"><h2>Documentos guardados</h2>
+      <span class="nota">${lista.length} ${lista.length === 1 ? "documento" : "documentos"}</span></div>
+    <p class="sub" style="padding:0 16px 12px">Lo que se guarda acá se manda a firmar sin
+      volver a subirlo. En cada uno se marca dónde va la firma.</p>
+
+    ${lista.length ? `<div class="desliza"><table class="envios" style="min-width:900px">
+      <thead><tr><th>Documento</th><th>De qué se trata</th><th>Hojas</th><th>Dónde firma</th>
+        <th>Enviado</th><th></th></tr></thead><tbody>
+      ${lista.map(g => `<tr${g.vigente ? "" : ' style="opacity:.55"'}>
+        <td><b>${esc(g.nombre)}</b></td>
+        <td>${esc(g.tipo_nombre || g.tipo_documento || "—")}</td>
+        <td class="nowrap">${g.archivo_paginas || "—"}</td>
+        <td>${g.puntos_de_firma
+          ? `<span class="sello e-cerrado">${g.puntos_de_firma} ${
+              g.puntos_de_firma === 1 ? "lugar" : "lugares"}</span>`
+          : '<span class="sello e-solicitar_oc">Al pie de todas</span>'}</td>
+        <td class="nowrap">${g.veces_enviado || 0}</td>
+        <td class="celda-acciones">
+          <button class="bt bt--fino" type="button" data-marcar="${g.id}">
+            ${g.puntos_de_firma ? "Ver dónde firma" : "Marcar dónde firma"}</button>
+          ${g.vigente ? `<button class="bt bt--fino" type="button"
+            data-bajaguardado="${g.id}">Dar de baja</button>`
+            : '<span class="sub" style="margin:0">De baja</span>'}
+        </td>
+      </tr>`).join("")}
+    </tbody></table></div>` : `<p class="sub" style="padding:0 16px 12px">Todavía no hay
+      ninguno guardado.</p>`}
+
+    <div class="pie-form">
+      <button class="bt bt--fino" type="button" id="g-abrir">${G.abierto
+        ? "No guardar ninguno" : "Guardar un documento"}</button>
+      <label style="display:flex;gap:9px;align-items:center;font-size:.86rem;cursor:pointer">
+        <input type="checkbox" id="g-bajas"${P.verBajasGuardados ? " checked" : ""}
+          style="${ESTILO_CASILLA}">
+        <span>Ver también los dados de baja</span></label>
+    </div>
+  </section>
+
+  ${G.abierto ? `
+  <section class="caja">
+    <div class="caja__tit"><h2>Guardar un documento</h2>
+      <span class="nota">Se sube una vez</span></div>
+    <div class="rejilla">
+      <label class="campo" style="grid-column:span 2"><span>Cómo se llama</span>
+        <input id="g-nombre" value="${esc(G.nombre)}"
+          placeholder="Por ejemplo: IRL GLOBSEG 2026"></label>
+      <label class="campo" style="grid-column:span 2"><span>Qué documento es</span>
+        <select id="g-tipo">
+          <option value="">Elija uno…</option>
+          ${d.tipos.map(t => `<option value="${esc(t.codigo)}"
+            ${t.codigo === G.tipo ? " selected" : ""}>${esc(t.nombre)}</option>`).join("")}
+        </select></label>
+      <label class="campo" style="grid-column:span 2"><span>El archivo, en PDF</span>
+        <span class="bt bt--fino" style="align-self:flex-start">${G.archivo
+          ? "Elegir otro archivo…" : "Elegir el PDF…"}</span>
+        <input type="file" id="g-archivo" accept="application/pdf,.pdf" hidden></label>
+    </div>
+    ${G.archivo ? `<p class="sub" style="padding:0 16px 12px"><b>${esc(G.archivo.name)}</b> ·
+      ${pesoArchivo(G.archivo.size)}<span id="g-hojas">${G.paginas
+        ? ` · ${G.paginas} ${G.paginas === 1 ? "hoja" : "hojas"}` : ""}</span>
+      · <button class="bt bt--fino bt--chico" type="button" id="g-quitar">Quitar</button></p>
+      <div id="g-visor"></div>` : ""}
+    <p class="sub" style="padding:0 16px 12px">Después de guardarlo se marca dónde va la
+      firma. Mientras no se marque, va al pie de todas las hojas.</p>
+    <div class="pie-form">
+      <button class="bt" type="button" id="g-guardar">Guardar en la biblioteca</button>
+      <span class="mensaje" id="m-guardar"></span>
+    </div>
+  </section>` : ""}
+
+  <div id="g-marcador"></div>`;
+}
+
+function conectarBiblioteca(P) {
+  if (!P.datos.guardados_listos) return;
+  const G = P.guardar;
+
+  if ($("#g-abrir")) {
+    $("#g-abrir").onclick = () => {
+      G.abierto = !G.abierto;
+      if (!G.abierto) Object.assign(G, guardarVacio());
+      pintarPrevencion();
+    };
+  }
+  if ($("#g-bajas")) {
+    $("#g-bajas").onchange = e => {
+      P.verBajasGuardados = e.target.checked; P.datos = null; pintarPrevencion();
+    };
+  }
+  if ($("#g-nombre")) $("#g-nombre").oninput = e => { G.nombre = e.target.value; };
+  if ($("#g-tipo")) $("#g-tipo").onchange = e => { G.tipo = e.target.value; };
+  if ($("#g-archivo")) {
+    $("#g-archivo").onchange = e => {
+      const f = e.target.files[0];
+      if (f && f.size > MAX_ARCHIVO) {
+        return decir($("#m-guardar"),
+          `«${f.name}» pesa ${pesoArchivo(f.size)} y el máximo es 10 MB.`, "error");
+      }
+      G.archivo = f || null; G.paginas = null;
+      pintarPrevencion();
+    };
+  }
+  if ($("#g-quitar")) {
+    $("#g-quitar").onclick = () => { G.archivo = null; G.paginas = null; pintarPrevencion(); };
+  }
+  if ($("#g-guardar")) {
+    $("#g-guardar").onclick = () => guardarEnBiblioteca()
+      .catch(e => decir($("#m-guardar"), e.message, "error"));
+  }
+  // El PDF se dibuja después y sin esperarlo, como en el resto de la pantalla.
+  if (G.archivo && $("#g-visor")) {
+    VisorPdf.dibujarArchivo($("#g-visor"), G.archivo).then(hojas => {
+      if (!hojas) return;
+      G.paginas = hojas;
+      const el = $("#g-hojas");
+      if (el) el.textContent = ` · ${hojas} ${hojas === 1 ? "hoja" : "hojas"}`;
+    }).catch(() => {});
+  }
+  for (const b of document.querySelectorAll("[data-marcar]")) {
+    b.onclick = () => abrirMarcador(Number(b.dataset.marcar))
+      .catch(e => decir($("#m-guardar"), e.message, "error"));
+  }
+  for (const b of document.querySelectorAll("[data-bajaguardado]")) {
+    b.onclick = () => bajaGuardado(Number(b.dataset.bajaguardado))
+      .catch(e => decir($("#m-guardar"), e.message, "error"));
+  }
+  if (P.marcando) pintarMarcador();
+}
+
+const guardarVacio = () => ({ nombre: "", tipo: "", archivo: null, paginas: null, abierto: false });
+
+async function guardarEnBiblioteca() {
+  const G = DOCS.prev.guardar;
+  if (!G.nombre.trim()) throw new Error("Póngale un nombre.");
+  if (!G.tipo) throw new Error("Elija qué documento es.");
+  if (!G.archivo) throw new Error("Falta el archivo en PDF.");
+
+  const bt = $("#g-guardar");
+  bt.disabled = true;
+  decir($("#m-guardar"), "Guardando el documento…");
+  try {
+    const forma = new FormData();
+    forma.append("archivo", G.archivo, G.archivo.name);
+    forma.append("datos", JSON.stringify({
+      nombre: G.nombre, tipo: G.tipo, paginas: G.paginas,
+    }));
+    const resp = await fetch("/api/documentos/prevencion/guardados",
+      { method: "POST", body: forma });
+    const cuerpo = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(cuerpo.error || `Error ${resp.status}`);
+
+    Object.assign(DOCS.prev.guardar, guardarVacio());
+    DOCS.prev.datos = null;
+    // Se abre de una en el marcador: guardar sin decir dónde firma deja el
+    // documento a medias, y es justo lo que se vino a arreglar.
+    await pintarPrevencion();
+    await abrirMarcador(cuerpo.documento.id);
+  } finally {
+    if ($("#g-guardar")) $("#g-guardar").disabled = false;
+  }
+}
+
+/** Abre el documento para marcar dónde va la firma. */
+async function abrirMarcador(id) {
+  const g = (DOCS.prev.datos.guardados || []).find(x => String(x.id) === String(id));
+  DOCS.prev.marcando = id;
+  DOCS.prev.marcas = g && Array.isArray(g.firmas) ? g.firmas.map(f => ({ ...f })) : [];
+  await pintarMarcador();
+  $("#g-marcador").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+/**
+ * El marcador.
+ *
+ * Se hace clic sobre la hoja y ahí queda el recuadro. Las posiciones se
+ * guardan **en proporción del tamaño de la página**, así que el mismo número
+ * sirve para dibujar el recuadro acá y para estampar la firma en el PDF, en
+ * cualquier pantalla y con cualquier zoom.
+ */
+async function pintarMarcador() {
+  const caja = $("#g-marcador");
+  const P = DOCS.prev;
+  if (!caja || !P.marcando) return;
+  const g = (P.datos.guardados || []).find(x => String(x.id) === String(P.marcando));
+  if (!g) { caja.innerHTML = ""; return; }
+
+  caja.innerHTML = `
+    <section class="caja">
+      <div class="caja__tit"><h2>Dónde va la firma</h2>
+        <span class="nota">${esc(g.nombre)}</span></div>
+      ${aviso("bien", "Toque la hoja donde va la firma. ",
+        "Queda un recuadro; se puede poner uno en cada hoja que lo pida. Si no marca "
+        + "ninguno, la firma va al pie de todas las hojas, como hasta ahora.")}
+      <p class="sub" style="padding:0 16px 12px" id="g-cuantas"></p>
+      <div style="padding:0 16px 12px" id="g-papel"></div>
+      <div class="pie-form">
+        <button class="bt" type="button" id="g-guardar-marcas">Guardar dónde va la firma</button>
+        <button class="bt bt--fino" type="button" id="g-sin-marcas">Quitar todos</button>
+        <button class="bt bt--fino" type="button" id="g-cerrar-marcador">Cerrar</button>
+        <span class="mensaje" id="m-marcas"></span>
+      </div>
+    </section>`;
+
+  const cuantas = () => {
+    const n = P.marcas.length;
+    $("#g-cuantas").textContent = n
+      ? `${n} ${n === 1 ? "lugar marcado" : "lugares marcados"}: ${
+          P.marcas.map(m => "hoja " + m.pagina).join(", ")}.`
+      : "Sin marcar: la firma va al pie de todas las hojas.";
+  };
+  cuantas();
+
+  $("#g-guardar-marcas").onclick = () => guardarMarcas()
+    .catch(e => decir($("#m-marcas"), e.message, "error"));
+  $("#g-sin-marcas").onclick = () => { P.marcas = []; pintarMarcador(); };
+  $("#g-cerrar-marcador").onclick = () => { P.marcando = null; caja.innerHTML = ""; };
+
+  await VisorPdf.dibujar($("#g-papel"), `/api/documentos/prevencion/guardados/${g.id}/archivo`, {
+    marcas: P.marcas,
+    alMarcar: (pagina, x, y) => {
+      P.marcas.push({ pagina, x, y, ancho: VisorPdf.ANCHO_POR_OMISION });
+      P.marcas.sort((a, b) => a.pagina - b.pagina || a.y - b.y);
+      pintarMarcador();
+    },
+    alQuitar: (i) => { P.marcas.splice(i, 1); pintarMarcador(); },
+  }).catch(() => {});
+}
+
+async function guardarMarcas() {
+  const P = DOCS.prev;
+  decir($("#m-marcas"), "Guardando…");
+  await pedir(`/documentos/prevencion/guardados/${P.marcando}`, {
+    method: "PATCH", body: JSON.stringify({ firmas: P.marcas }),
+  });
+  P.datos = null;
+  await pintarPrevencion();
+  decir($("#m-marcas"), "Guardado.", "ok");
+}
+
+async function bajaGuardado(id) {
+  const motivo = prompt("¿Por qué se da de baja?\n\n"
+    + "El documento no se borra y su archivo se queda: lo están apuntando todos los que "
+    + "ya lo firmaron. Solo deja de ofrecerse al mandar.");
+  if (motivo === null) return;
+  await pedir(`/documentos/prevencion/guardados/${id}/baja`, {
+    method: "POST", body: JSON.stringify({ motivo }),
+  });
+  DOCS.prev.datos = null;
+  if (String(DOCS.prev.marcando) === String(id)) DOCS.prev.marcando = null;
+  await pintarPrevencion();
+}
 
 /**
  * Lo que está venciendo, arriba de todo.
@@ -4397,8 +4710,10 @@ async function elegirPdfPrevencion(archivo) {
 
 async function enviarPrevencion() {
   const P = DOCS.prev;
-  if (!P.tipo) throw new Error("Elija qué documento de prevención es.");
-  if (!P.archivo) throw new Error("Falta el archivo en PDF.");
+  const guardado = P.fuente && P.fuente !== "nuevo" ? P.fuente : null;
+  if (!P.fuente) throw new Error("Elija qué documento se manda.");
+  if (!guardado && !P.tipo) throw new Error("Elija qué documento de prevención es.");
+  if (!guardado && !P.archivo) throw new Error("Falta el archivo en PDF.");
   if (!P.marcados.size) throw new Error("Marque a quiénes se lo manda.");
 
   const bt = $("#p-enviar");
@@ -4406,11 +4721,15 @@ async function enviarPrevencion() {
   decir($("#m-prev"), "Mandando el documento…");
   try {
     const forma = new FormData();
-    forma.append("archivo", P.archivo, P.archivo.name);
+    // Con un documento guardado no viaja ningún archivo: el servidor apunta al
+    // que ya está en la biblioteca, que es justamente lo que evita volver a
+    // subir 5 MB en cada envío.
+    if (!guardado) forma.append("archivo", P.archivo, P.archivo.name);
     forma.append("datos", JSON.stringify({
-      tipo: P.tipo,
+      guardado_id: guardado || null,
+      tipo: guardado ? null : P.tipo,
       trabajadores: [...P.marcados],
-      paginas: P.paginas,
+      paginas: guardado ? null : P.paginas,
       nota: P.nota,
     }));
     // Sin `content-type` a mano: lo pone el navegador con el límite entre
@@ -4422,6 +4741,9 @@ async function enviarPrevencion() {
     P.resultado = cuerpo;
     P.archivo = null;
     P.paginas = null;
+    // El documento guardado se queda elegido: lo normal es mandar el mismo a
+    // otra instalación al rato.
+    if (!guardado) P.fuente = "";
     P.marcados.clear();
     P.datos = null;              // para que la lista de envíos traiga el nuevo
     P.envio = cuerpo.envio_id;
@@ -4965,6 +5287,85 @@ const winansi = (t) => String(t ?? "")
   .replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\xFF]/g, "");
 
 /**
+ * La copia firmada cuando el documento dice dónde va la firma.
+ *
+ * **Acá el original no se toca.** Se carga tal cual y la firma se dibuja
+ * encima, en el recuadro que la prevencionista marcó: ni se encoge ninguna
+ * hoja ni se agrega una franja. Eso es lo que pedía el IRL de la empresa, que
+ * tiene su propio recuadro «IDENTIFICACIÓN DEL TRABAJADOR» en la hoja 1 —y 33
+ * hojas más donde una firma al pie no significa nada—.
+ *
+ * Las posiciones vienen en proporción del tamaño de cada página y con `y`
+ * medida **desde arriba**, como se marcó en pantalla; pdf-lib mide desde
+ * abajo, así que acá se dan vuelta. El alto sale de la proporción real del
+ * trazo, no de la del recuadro: estirar una firma para que calce en una caja
+ * la deforma, y una firma deformada es otra firma.
+ */
+async function sellarEnLosPuntos(d, bytesOriginal, puntos, op) {
+  const { PDFDocument, StandardFonts, rgb } = window.PDFLib;
+  const pdf = await PDFDocument.load(bytesOriginal);
+  const normal = await pdf.embedFont(StandardFonts.Helvetica);
+  const negrita = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const tinta = rgb(0.07, 0, 0.32);
+  const gris = rgb(0.43, 0.43, 0.52);
+
+  const firmas = [];
+  for (const f of (d.firmas || [])) {
+    let img = null;
+    try { img = f.imagen ? await pdf.embedPng(f.imagen) : null; } catch (_) { img = null; }
+    firmas.push({ ...f, img });
+  }
+  // El recuadro lleva la primera firma, que en prevención es la del
+  // trabajador: es la que el documento pide en ese lugar. Las demás, si las
+  // hubiera, salen completas en la hoja de registro.
+  const firma = firmas[0];
+  const hojas = pdf.getPages();
+
+  for (const m of puntos) {
+    const hoja = hojas[Number(m.pagina) - 1];
+    if (!hoja) continue;                       // una hoja que ya no existe no bota el PDF
+    const { width, height } = hoja.getSize();
+    const ancho = Math.max(0.05, Math.min(0.6, Number(m.ancho) || 0.22)) * width;
+    const alto = firma && firma.img
+      ? ancho / (firma.img.width / firma.img.height)
+      : ancho / 3;
+    const x = Math.max(0, Math.min(width - ancho, Number(m.x) * width));
+    // De «desde arriba» a «desde abajo», que es como mide pdf-lib.
+    const y = Math.max(0, Math.min(height - alto, height - (Number(m.y) * height) - alto));
+
+    if (firma && firma.img) {
+      try { hoja.drawImage(firma.img, { x, y, width: ancho, height: alto }); } catch (_) {}
+    }
+    // Bajo el trazo, quién firmó y cuándo: una firma sin nombre al lado no se
+    // puede atribuir, y es media hoja más abajo donde el documento lo pide.
+    if (firma) {
+      hoja.drawText(winansi(firma.nombre || ""),
+        { x, y: Math.max(2, y - 8), size: 6.5, font: negrita, color: tinta });
+      hoja.drawText(winansi(`${firma.rut || ""} · ${cuando(firma.firmado_en)}`),
+        { x, y: Math.max(2, y - 15), size: 6, font: normal, color: gris });
+    }
+  }
+
+  await hojaDeRegistro(pdf, d, firmas, hojas.length, { normal, negrita, tinta, gris });
+
+  const bytes = await pdf.save();
+  const blob = new Blob([bytes], { type: "application/pdf" });
+  if (op.descargar === false) return blob;
+  bajarBlob(blob, `${d.numero} ${d.titulo}.pdf`);
+  return null;
+}
+
+/** Descarga un blob con un nombre de archivo que el sistema acepte. */
+function bajarBlob(blob, nombre) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = nombre.replace(/[\\/:*?"<>|]/g, "-");
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/**
  * La copia firmada de un documento que llegó como archivo.
  *
  * **La firma va al pie de todas las hojas**, que es lo que el gerente pidió y
@@ -4991,7 +5392,14 @@ async function pdfPrevencionSellado(d, op = {}) {
 
   const resp = await fetch(`/api/documentos/${d.id}/archivo`, { credentials: "same-origin" });
   if (!resp.ok) throw new Error("No se pudo bajar el documento original.");
-  const original = await PDFDocument.load(await resp.arrayBuffer());
+  const bytesOriginal = await resp.arrayBuffer();
+
+  // Dónde va la firma, si el documento guardado lo dice. Se congeló al
+  // enviar, así que mover el recuadro mañana no cambia lo ya firmado.
+  const puntos = Array.isArray(d.firmas_posicion) ? d.firmas_posicion : [];
+  if (puntos.length) return sellarEnLosPuntos(d, bytesOriginal, puntos, op);
+
+  const original = await PDFDocument.load(bytesOriginal);
 
   const pdf = await PDFDocument.create();
   const normal = await pdf.embedFont(StandardFonts.Helvetica);
@@ -5054,73 +5462,88 @@ async function pdfPrevencionSellado(d, op = {}) {
         y: FRANJA - 15, size: 6.5, font: normal, color: gris });
   });
 
-  // ------------------------------------------------------- hoja de registro
-  const reg = pdf.addPage([595.28, 841.89]);     // A4 en puntos
-  const M = 56;
-  let y = 790;
-  const linea = (texto, { tam = 9.5, fuente = normal, color = rgb(0.12, 0.12, 0.16),
-                          salto = 14, ancho = 595.28 - M * 2 } = {}) => {
-    for (const trozo of cortar(winansi(texto), fuente, tam, ancho)) {
-      reg.drawText(trozo, { x: M, y, size: tam, font: fuente, color });
-      y -= salto;
-    }
-  };
-
-  linea("REGISTRO DE FIRMA ELECTRÓNICA", { tam: 13, fuente: negrita, color: tinta, salto: 20 });
-  linea("GLOBSEG SPA · RUT 78.095.104-4 · Seguridad Garridos",
-    { tam: 8.5, color: gris, salto: 18 });
-  linea(d.titulo, { tam: 11, fuente: negrita, color: tinta, salto: 17 });
-  linea(`Documento N° ${d.numero}`, { tam: 9, color: gris });
-  linea(`Archivo: ${d.archivo_nombre || "—"} · ${hojas.length} `
-    + `${hojas.length === 1 ? "hoja" : "hojas"}`, { tam: 9, color: gris });
-  if (d.datos && d.datos.base_legal) linea(d.datos.base_legal, { tam: 8.5, color: gris });
-  if (d.creado_por) {
-    // La cuenta y no «fulano»: `creado_por` guarda el usuario, y decir un
-    // nombre que no está guardado sería inventarlo adentro de un documento.
-    linea(`Lo entregó la cuenta ${d.creado_por}, el ${cuando(d.creado_en)}`,
-      { tam: 9, color: gris });
-  }
-  y -= 10;
-
-  for (const f of firmas) {
-    if (f.img) {
-      const alto = 42;
-      const ancho = Math.min(160, (f.img.width / f.img.height) * alto);
-      reg.drawImage(f.img, { x: M, y: y - alto + 8, width: ancho, height: alto });
-      y -= alto + 2;
-    }
-    reg.drawLine({ start: { x: M, y }, end: { x: M + 180, y }, thickness: 0.6, color: gris });
-    y -= 13;
-    linea(f.nombre || "", { tam: 10, fuente: negrita, color: tinta, salto: 12 });
-    linea(`${f.rut || ""} · ${rolRotulo(f.rol)}`, { tam: 8.5, color: gris, salto: 11 });
-    linea(`Firmado el ${cuando(f.firmado_en)} (hora del servidor)`,
-      { tam: 8.5, color: gris, salto: 11 });
-    linea(f.origen === "asistencia"
-      ? `Desde el libro de asistencia, con la cuenta ${f.quien || ""}`
-      : `Desde el panel, con la cuenta ${f.quien || ""}`, { tam: 8.5, color: gris, salto: 18 });
-  }
-
-  y -= 6;
-  linea("Firma electrónica simple conforme a la Ley 19.799. No es firma electrónica "
-    + "avanzada: eso exige un certificado de un prestador acreditado. Lo que este "
-    + "registro acredita es que la persona entró con su propia cuenta y su propia "
-    + "clave, leyó el documento y firmó a la hora indicada. La firma va repetida al "
-    + "pie de todas las hojas del documento.",
-    { tam: 7.5, color: gris, salto: 10 });
-  y -= 4;
-  linea(`Verificación del archivo (SHA-256): ${d.cuerpo_hash || ""}`,
-    { tam: 7, color: gris, salto: 9 });
+  // La hoja de registro es la misma para los dos caminos de sellado.
+  await hojaDeRegistro(pdf, d, firmas, hojas.length,
+    { normal, negrita, tinta, gris }, { alPieDeTodas: true });
 
   const bytes = await pdf.save();
   const blob = new Blob([bytes], { type: "application/pdf" });
   if (op.descargar === false) return blob;
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `${d.numero} ${d.titulo}.pdf`.replace(/[\\/:*?"<>|]/g, "-");
-  a.click();
-  URL.revokeObjectURL(url);
+  bajarBlob(blob, `${d.numero} ${d.titulo}.pdf`);
   return null;
+}
+
+/**
+ * La hoja de registro, al final de la copia firmada.
+ *
+ * Es la que contesta «quién firmó y cuándo», que es lo único que se discute
+ * cuando alguien objeta una firma electrónica simple. Va igual por los dos
+ * caminos de sellado —al pie de todas las hojas, o en los recuadros que el
+ * documento tiene marcados—, y lo único que cambia entre ellos es la frase
+ * que dice dónde quedó la firma.
+ */
+async function hojaDeRegistro(pdf, d, firmas, totalHojas, fuentes, opciones) {
+  const { normal, negrita, tinta, gris } = fuentes;
+  const op = opciones || {};
+  const { rgb } = window.PDFLib;
+  const negro = rgb(0.12, 0.12, 0.16);
+      const reg = pdf.addPage([595.28, 841.89]);     // A4 en puntos
+    const M = 56;
+    let y = 790;
+    const linea = (texto, { tam = 9.5, fuente = normal, color = negro,
+                            salto = 14, ancho = 595.28 - M * 2 } = {}) => {
+      for (const trozo of cortar(winansi(texto), fuente, tam, ancho)) {
+        reg.drawText(trozo, { x: M, y, size: tam, font: fuente, color });
+        y -= salto;
+      }
+    };
+
+    linea("REGISTRO DE FIRMA ELECTRÓNICA", { tam: 13, fuente: negrita, color: tinta, salto: 20 });
+    linea("GLOBSEG SPA · RUT 78.095.104-4 · Seguridad Garridos",
+      { tam: 8.5, color: gris, salto: 18 });
+    linea(d.titulo, { tam: 11, fuente: negrita, color: tinta, salto: 17 });
+    linea(`Documento N° ${d.numero}`, { tam: 9, color: gris });
+    linea(`Archivo: ${d.archivo_nombre || "—"} · ${totalHojas} `
+      + `${totalHojas === 1 ? "hoja" : "hojas"}`, { tam: 9, color: gris });
+    if (d.datos && d.datos.base_legal) linea(d.datos.base_legal, { tam: 8.5, color: gris });
+    if (d.creado_por) {
+      // La cuenta y no «fulano»: `creado_por` guarda el usuario, y decir un
+      // nombre que no está guardado sería inventarlo adentro de un documento.
+      linea(`Lo entregó la cuenta ${d.creado_por}, el ${cuando(d.creado_en)}`,
+        { tam: 9, color: gris });
+    }
+    y -= 10;
+
+    for (const f of firmas) {
+      if (f.img) {
+        const alto = 42;
+        const ancho = Math.min(160, (f.img.width / f.img.height) * alto);
+        reg.drawImage(f.img, { x: M, y: y - alto + 8, width: ancho, height: alto });
+        y -= alto + 2;
+      }
+      reg.drawLine({ start: { x: M, y }, end: { x: M + 180, y }, thickness: 0.6, color: gris });
+      y -= 13;
+      linea(f.nombre || "", { tam: 10, fuente: negrita, color: tinta, salto: 12 });
+      linea(`${f.rut || ""} · ${rolRotulo(f.rol)}`, { tam: 8.5, color: gris, salto: 11 });
+      linea(`Firmado el ${cuando(f.firmado_en)} (hora del servidor)`,
+        { tam: 8.5, color: gris, salto: 11 });
+      linea(f.origen === "asistencia"
+        ? `Desde el libro de asistencia, con la cuenta ${f.quien || ""}`
+        : `Desde el panel, con la cuenta ${f.quien || ""}`, { tam: 8.5, color: gris, salto: 18 });
+    }
+
+    y -= 6;
+    linea("Firma electrónica simple conforme a la Ley 19.799. No es firma electrónica "
+      + "avanzada: eso exige un certificado de un prestador acreditado. Lo que este "
+      + "registro acredita es que la persona entró con su propia cuenta y su propia "
+      + "clave, leyó el documento y firmó a la hora indicada. "
+      + (op.alPieDeTodas
+          ? "La firma va repetida al pie de todas las hojas del documento."
+          : "La firma va en los lugares que el documento tiene marcados para eso."),
+      { tam: 7.5, color: gris, salto: 10 });
+    y -= 4;
+    linea(`Verificación del archivo (SHA-256): ${d.cuerpo_hash || ""}`,
+      { tam: 7, color: gris, salto: 9 });
 }
 
 /** Corta un texto al ancho de la hoja. pdf-lib no parte líneas solo. */

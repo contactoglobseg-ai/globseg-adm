@@ -32,6 +32,13 @@ window.VisorPdf = (function () {
 
   let cargando = null;
 
+  /* La proporción del recuadro de firma: tres de ancho por uno de alto, que es
+     como queda un trazo hecho con el dedo en el lienzo de `firma.js`. El alto
+     no se marca aparte a propósito: dejar estirar los dos lados por separado
+     solo permite deformar la firma. */
+  const PROPORCION = 1 / 3;
+  const ANCHO_POR_OMISION = 0.22;
+
   /* El estilo viaja con el visor y no en `panel.css`, porque lo usan dos
      páginas que no comparten hoja de estilo: el libro de asistencia tiene la
      suya. Escribirlo en los dos `<style>` sería la clase de copia que después
@@ -45,7 +52,20 @@ window.VisorPdf = (function () {
   background:var(--sup-2);border-bottom:1px solid var(--borde)}
 .visor__hoja canvas{display:block}
 .visor__cargando,.visor__error{font-size:.85rem;color:var(--texto-2);margin:0;padding:10px 0}
-.visor__error a{color:var(--acento)}`;
+.visor__error a{color:var(--acento)}
+/* La hoja es el marco de referencia de las marcas: van en porcentaje de su
+   tamaño, así que se ven en el mismo sitio con cualquier zoom y en cualquier
+   pantalla. */
+.visor__papel{position:relative;line-height:0}
+.visor__papel--marcando{cursor:crosshair}
+.visor__marca{position:absolute;border:2px solid var(--acento);border-radius:4px;
+  background:color-mix(in srgb,var(--acento) 12%,transparent);
+  display:flex;align-items:flex-end;justify-content:space-between;gap:4px;
+  padding:3px 4px;box-sizing:border-box}
+.visor__marca span{font:600 .68rem var(--cuerpo);color:var(--acento);
+  background:var(--sup);border-radius:3px;padding:1px 4px;line-height:1.3;white-space:nowrap}
+.visor__marca button{font:600 .68rem var(--cuerpo);color:var(--rojo);background:var(--sup);
+  border:0;border-radius:3px;padding:1px 5px;cursor:pointer;line-height:1.3}`;
 
   function estilar() {
     if (document.getElementById('visor-pdf-estilo')) return;
@@ -79,12 +99,12 @@ window.VisorPdf = (function () {
    * pasó y un enlace para abrirlo aparte: que no se pueda dibujar no puede
    * dejar a la persona sin poder leer lo que va a firmar.
    */
-  async function dibujar(caja, url) {
+  async function dibujar(caja, url, opciones) {
     return pintar(caja, url, async () => {
       const resp = await fetch(url, { credentials: 'same-origin' });
       if (!resp.ok) throw new Error('No se pudo bajar el documento (' + resp.status + ').');
       return new Uint8Array(await resp.arrayBuffer());
-    });
+    }, opciones);
   }
 
   /**
@@ -92,11 +112,20 @@ window.VisorPdf = (function () {
    * computador. Es la vista previa de antes de mandarlo: el PDF todavía no ha
    * salido de ahí, así que no hay nada que bajar.
    */
-  async function dibujarArchivo(caja, archivo) {
-    return pintar(caja, null, async () => new Uint8Array(await archivo.arrayBuffer()));
+  async function dibujarArchivo(caja, archivo, opciones) {
+    return pintar(caja, null, async () => new Uint8Array(await archivo.arrayBuffer()),
+                  opciones);
   }
 
-  async function pintar(caja, url, traer) {
+  /**
+   * `opciones` sirve para marcar dónde va la firma:
+   *   marcas    [{pagina,x,y,ancho}] — lo que ya está marcado, en proporción
+   *   alMarcar  fn(pagina, x, y)     — un clic en una hoja
+   *   alQuitar  fn(indice)           — la cruz de un recuadro
+   * Sin `alMarcar` el documento solo se lee, que es como lo abre el guardia.
+   */
+  async function pintar(caja, url, traer, opciones) {
+    const op = opciones || {};
     estilar();
     caja.classList.add('visor');
     caja.innerHTML = '<p class="visor__cargando">Abriendo el documento…</p>';
@@ -120,10 +149,28 @@ window.VisorPdf = (function () {
         const rotulo = document.createElement('div');
         rotulo.className = 'visor__rotulo';
         rotulo.textContent = `Hoja ${n} de ${doc.numPages}`;
+        const papel = document.createElement('div');
+        papel.className = 'visor__papel' + (op.alMarcar ? ' visor__papel--marcando' : '');
         const lienzo = document.createElement('canvas');
+        papel.appendChild(lienzo);
         hoja.appendChild(rotulo);
-        hoja.appendChild(lienzo);
+        hoja.appendChild(papel);
         caja.appendChild(hoja);
+
+        marcasDe(papel, n, op);
+        if (op.alMarcar) {
+          papel.onclick = (e) => {
+            // Donde se hizo clic, en proporción del tamaño de la hoja, y
+            // centrado: lo que la persona apunta es el medio del recuadro, no
+            // su esquina.
+            const r = papel.getBoundingClientRect();
+            const ancho = op.ancho || ANCHO_POR_OMISION;
+            const alto = ancho * PROPORCION * (r.width / r.height);
+            op.alMarcar(n,
+              Math.min(1 - ancho, Math.max(0, (e.clientX - r.left) / r.width - ancho / 2)),
+              Math.min(1 - alto, Math.max(0, (e.clientY - r.top) / r.height - alto / 2)));
+          };
+        }
 
         const pagina = await doc.getPage(n);
         const natural = pagina.getViewport({ scale: 1 });
@@ -143,6 +190,33 @@ window.VisorPdf = (function () {
     }
   }
 
+  /** Los recuadros de esta hoja, encima del canvas. */
+  function marcasDe(papel, pagina, op) {
+    (op.marcas || []).forEach((m, i) => {
+      if (Number(m.pagina) !== pagina) return;
+      const caja = document.createElement('div');
+      caja.className = 'visor__marca';
+      const ancho = Number(m.ancho) || ANCHO_POR_OMISION;
+      caja.style.left = (m.x * 100) + '%';
+      caja.style.top = (m.y * 100) + '%';
+      caja.style.width = (ancho * 100) + '%';
+      // El alto se calcula del ancho **en píxeles**, porque el porcentaje de
+      // alto se mide contra la hoja y una hoja no es cuadrada.
+      caja.style.aspectRatio = String(1 / PROPORCION);
+      const rotulo = document.createElement('span');
+      rotulo.textContent = 'Firma';
+      caja.appendChild(rotulo);
+      if (op.alQuitar) {
+        const quitar = document.createElement('button');
+        quitar.type = 'button';
+        quitar.textContent = 'Quitar';
+        quitar.onclick = (e) => { e.stopPropagation(); op.alQuitar(i); };
+        caja.appendChild(quitar);
+      }
+      papel.appendChild(caja);
+    });
+  }
+
   function fallo(caja, url, mensaje) {
     caja.innerHTML = '<p class="visor__error"></p>';
     const p = caja.firstChild;
@@ -160,5 +234,5 @@ window.VisorPdf = (function () {
     return 0;
   }
 
-  return { dibujar, dibujarArchivo };
+  return { dibujar, dibujarArchivo, PROPORCION, ANCHO_POR_OMISION };
 })();

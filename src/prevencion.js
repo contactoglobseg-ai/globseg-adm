@@ -91,22 +91,45 @@ const limpio = (v, max = 200) => {
  */
 export async function enviar(env, quien, { bytes, nombre }, datos) {
   // ------------------------------------------------------------- el papel
-  if (!bytes || !bytes.length) return { error: 'No llegó ningún archivo', status: 400 };
-  if (bytes.length > arch.MAX_BYTES) {
-    return { error: `El archivo pesa más de ${Math.round(arch.MAX_BYTES / 1048576)} MB.`,
-             status: 413 };
+  //
+  // Dos caminos: un PDF que se sube ahora, o uno de la biblioteca. El segundo
+  // es el que pidió el gerente —el IRL son 34 hojas y 5,5 MB, y subirlo cada
+  // mes es el trámite que hace que no se mande—, y **no copia el archivo**:
+  // apunta al mismo, igual que los doce documentos de un envío apuntan a uno.
+  const guardadoId = Number(datos?.guardado_id) || null;
+  let guardado = null;
+  if (guardadoId) {
+    guardado = await primero(env,
+      `documentos_guardados?select=*&id=eq.${guardadoId}`);
+    if (!guardado) return { error: 'Ese documento guardado no existe', status: 404 };
+    if (!guardado.vigente) {
+      return { error: 'Ese documento está dado de baja. Guarde la versión nueva y mándela '
+                      + 'desde ahí.', status: 409 };
+    }
+  } else if (!bytes || !bytes.length) {
+    return { error: 'No llegó ningún archivo', status: 400 };
   }
-  // Lo que el archivo es de verdad, por sus primeros bytes, no por lo que dijo
-  // el navegador. Misma revisión que la de los documentos de RRHH.
-  const reconocido = arch.reconocer(bytes);
-  if (!reconocido || reconocido.tipo !== 'application/pdf') {
-    return { error: 'El documento tiene que ser un PDF. Una foto o una imagen no tiene '
-                    + 'hojas, y la firma va al pie de cada una. Si lo tiene en Word, '
-                    + 'guárdelo como PDF.', status: 415 };
+
+  let reconocido = { tipo: guardado?.archivo_tipo || 'application/pdf', ext: 'pdf' };
+  if (!guardado) {
+    if (bytes.length > arch.MAX_BYTES) {
+      return { error: `El archivo pesa más de ${Math.round(arch.MAX_BYTES / 1048576)} MB.`,
+               status: 413 };
+    }
+    // Lo que el archivo es de verdad, por sus primeros bytes, no por lo que dijo
+    // el navegador. Misma revisión que la de los documentos de RRHH.
+    reconocido = arch.reconocer(bytes);
+    if (!reconocido || reconocido.tipo !== 'application/pdf') {
+      return { error: 'El documento tiene que ser un PDF. Una foto o una imagen no tiene '
+                      + 'hojas donde poner la firma. Si lo tiene en Word, guárdelo como '
+                      + 'PDF.', status: 415 };
+    }
   }
 
   // -------------------------------------------------------------- el tipo
-  const codigo = limpio(datos?.tipo, 40);
+  // El del documento guardado manda si no se pidió otro: el IRL guardado ya
+  // sabe que es un IRL, y volver a preguntarlo es una forma de equivocarse.
+  const codigo = limpio(datos?.tipo, 40) || guardado?.tipo_documento || null;
   const lista = await tipos(env);
   const tipo = lista.find((t) => t.codigo === codigo);
   if (!tipo) {
@@ -140,17 +163,26 @@ export async function enviar(env, quien, { bytes, nombre }, datos) {
   // ------------------------------------------------------------- el envío
   const envio = [...crypto.getRandomValues(new Uint8Array(12))]
     .map((b) => b.toString(16).padStart(2, '0')).join('');
-  const ruta = arch.rutaPrevencion(envio, 'pdf');
-  const nombreArchivo = arch.nombreSeguro(nombre || '', 'pdf');
+  const nota = limpio(datos?.nota, 300);
+
   // El hash es de los bytes del PDF, no de un texto: acá no hay cuerpo que
   // resumir. Es lo que cada firma guarda, y lo que deja decir después que el
   // papel firmado es el mismo que está guardado.
-  const hash = await arch.hashBytes(bytes);
-  const paginas = Number.isInteger(Number(datos?.paginas)) && Number(datos.paginas) > 0
-    ? Number(datos.paginas) : null;
-  const nota = limpio(datos?.nota, 300);
+  const ruta = guardado ? guardado.archivo_ruta : arch.rutaPrevencion(envio, 'pdf');
+  const nombreArchivo = guardado
+    ? (guardado.archivo_nombre || arch.nombreSeguro(guardado.nombre, 'pdf'))
+    : arch.nombreSeguro(nombre || '', 'pdf');
+  const hash = guardado ? guardado.cuerpo_hash : await arch.hashBytes(bytes);
+  const paginas = guardado ? guardado.archivo_paginas
+    : (Number.isInteger(Number(datos?.paginas)) && Number(datos.paginas) > 0
+        ? Number(datos.paginas) : null);
+  // **Congeladas al enviar.** Si mañana alguien mueve el recuadro de firma del
+  // documento guardado, lo que ya se firmó tiene que seguir sellándose donde
+  // se firmó. Mismo criterio que el cuerpo de un contrato.
+  const posiciones = guardado && Array.isArray(guardado.firmas) && guardado.firmas.length
+    ? guardado.firmas : null;
 
-  await arch.subir(env, ruta, bytes, reconocido.tipo);
+  if (!guardado) await arch.subir(env, ruta, bytes, reconocido.tipo);
 
   const numeros = await siguientesNumeros(env, activos.length);
   const filas = activos.map((t, i) => ({
@@ -164,8 +196,10 @@ export async function enviar(env, quien, { bytes, nombre }, datos) {
     archivo_ruta: ruta,
     archivo_nombre: nombreArchivo,
     archivo_tipo: reconocido.tipo,
-    archivo_bytes: bytes.length,
+    archivo_bytes: guardado ? guardado.archivo_bytes : bytes.length,
     archivo_paginas: paginas,
+    guardado_id: guardado ? guardado.id : null,
+    firmas_posicion: posiciones,
     cuerpo: null,
     cuerpo_hash: hash,
     // Lo que se usó, tal como estaba ese día. La base legal se congela acá
@@ -186,7 +220,10 @@ export async function enviar(env, quien, { bytes, nombre }, datos) {
     // Si no se pudo escribir ninguna fila, el archivo recién subido no lo
     // apunta nadie: se saca, o queda ocupando espacio para siempre. Es el
     // mismo orden que la subida de documentos de RRHH.
-    await arch.borrar(env, ruta).catch(() => {});
+    //
+    // **El de un documento guardado no se toca**: es de la biblioteca y de
+    // todos los envíos anteriores, no de este envío que falló.
+    if (!guardado) await arch.borrar(env, ruta).catch(() => {});
     throw e;
   }
 
@@ -409,3 +446,215 @@ export async function porVencer(env) {
     empresa: empresa.map((d) => ({ ...d, clase_nombre: NOMBRE_CLASE[d.clase] || d.clase })),
   };
 }
+
+// ============================================== la biblioteca de documentos
+//
+// Un documento que se sube una vez y se manda a firmar las veces que haga
+// falta. Nació del IRL de la empresa: 34 hojas y 5,5 MB que la prevencionista
+// tenía que volver a subir en cada envío.
+//
+// **El archivo no se copia.** Los documentos generados apuntan al mismo que
+// guarda la biblioteca, igual que los doce de un envío apuntan a uno. Por eso
+// un documento guardado **no se borra**: se da de baja, y su archivo se queda
+// donde está mientras exista alguien que lo firmó.
+
+export const MIGRACION_GUARDADOS = '20261109120000_documentos_guardados.sql';
+
+export async function guardadosListos(env) {
+  try {
+    await buscar(env, 'v_documentos_guardados?select=id&limit=1');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const avisoGuardados = () =>
+  'Falta aplicar la migración ' + MIGRACION_GUARDADOS + ' en el SQL Editor de Supabase. '
+  + 'Guardar documentos para reenviarlos no está disponible hasta que se aplique; '
+  + 'subir el PDF en cada envío sigue funcionando igual. '
+  + 'Ver COMO-APLICAR-MIGRACIONES.md.';
+
+/** La biblioteca. Lo dado de baja no sale, salvo que se pida. */
+export const guardados = (env, { incluirBajas } = {}) =>
+  buscar(env, 'v_documentos_guardados?select=*'
+    + (incluirBajas ? '' : '&vigente=is.true')
+    + '&order=nombre.asc&limit=200');
+
+/**
+ * Dónde va cada firma, revisado.
+ *
+ * Llega de la pantalla, así que se revisa entero: son las coordenadas con que
+ * después se estampa una firma dentro de un documento, y una fuera de rango
+ * dejaría el trazo colgando fuera de la hoja o encima del texto.
+ *
+ * `x` e `y` son la esquina superior izquierda, en proporción del tamaño de la
+ * página y **medidas desde arriba**, como se ven en pantalla. El sellado las
+ * da vuelta para pdf-lib, que mide desde abajo.
+ */
+export function revisarFirmas(valor, paginas) {
+  if (valor === undefined || valor === null) return { firmas: null };
+  if (!Array.isArray(valor)) return { error: 'Las posiciones de la firma llegaron mal' };
+  if (valor.length > 20) {
+    return { error: 'Son demasiados puntos de firma: ponga los que el documento pide' };
+  }
+  const firmas = [];
+  for (const f of valor) {
+    const pagina = Number(f?.pagina);
+    if (!Number.isInteger(pagina) || pagina < 1) {
+      return { error: 'Cada punto de firma tiene que decir en qué hoja va' };
+    }
+    if (paginas && pagina > paginas) {
+      return { error: `El documento tiene ${paginas} ${paginas === 1 ? 'hoja' : 'hojas'} y `
+                      + `se marcó una firma en la ${pagina}` };
+    }
+    const num = (v, pordefecto) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : pordefecto;
+    };
+    const ancho = Math.min(0.6, Math.max(0.08, num(f?.ancho, 0.22)));
+    const x = Math.min(1 - ancho, Math.max(0, num(f?.x, 0)));
+    // El alto sale del ancho: una firma tiene su proporción y dejar que se
+    // estire por separado solo permite deformarla.
+    const y = Math.min(1, Math.max(0, num(f?.y, 0)));
+    firmas.push({ pagina, x: redondear(x), y: redondear(y), ancho: redondear(ancho) });
+  }
+  // Ordenadas por hoja: así la pantalla y el PDF las recorren igual.
+  firmas.sort((a, b) => a.pagina - b.pagina || a.y - b.y);
+  return { firmas };
+}
+
+const redondear = (n) => Math.round(n * 10000) / 10000;
+
+/** Guarda un documento en la biblioteca. `archivo` es `{ bytes, nombre }`. */
+export async function guardarDocumento(env, quien, { bytes, nombre }, datos) {
+  const titulo = limpio(datos?.nombre, 160);
+  if (!titulo) {
+    return { error: 'Póngale un nombre: es con lo que se va a elegir al mandarlo a firmar '
+                    + '(por ejemplo «IRL GLOBSEG 2026»).', status: 400 };
+  }
+
+  const codigo = limpio(datos?.tipo, 40);
+  const lista = await tipos(env);
+  const tipo = lista.find((t) => t.codigo === codigo);
+  if (!tipo) {
+    return { error: 'Elija qué documento de prevención es. Los que el sistema conoce son: '
+                    + lista.map((t) => t.nombre).join(', ') + '.', status: 400 };
+  }
+
+  if (!bytes || !bytes.length) return { error: 'No llegó ningún archivo', status: 400 };
+  if (bytes.length > arch.MAX_BYTES) {
+    return { error: `El archivo pesa más de ${Math.round(arch.MAX_BYTES / 1048576)} MB.`,
+             status: 413 };
+  }
+  const reconocido = arch.reconocer(bytes);
+  if (!reconocido || reconocido.tipo !== 'application/pdf') {
+    return { error: 'El documento tiene que ser un PDF. Si lo tiene en Word, ábralo y '
+                    + 'guárdelo como PDF.', status: 415 };
+  }
+
+  const paginas = Number.isInteger(Number(datos?.paginas)) && Number(datos.paginas) > 0
+    ? Number(datos.paginas) : null;
+  const r = revisarFirmas(datos?.firmas, paginas);
+  if (r.error) return { error: r.error, status: 400 };
+
+  const ruta = arch.rutaBiblioteca(reconocido.ext);
+  await arch.subir(env, ruta, bytes, reconocido.tipo);
+
+  let creado;
+  try {
+    [creado] = await insertar(env, 'documentos_guardados', {
+      tipo_documento: tipo.codigo,
+      nombre: titulo,
+      archivo_ruta: ruta,
+      archivo_nombre: arch.nombreSeguro(nombre || titulo, 'pdf'),
+      archivo_tipo: reconocido.tipo,
+      archivo_bytes: bytes.length,
+      archivo_paginas: paginas,
+      cuerpo_hash: await arch.hashBytes(bytes),
+      firmas: r.firmas || [],
+      creado_por: quien,
+    });
+  } catch (e) {
+    await arch.borrar(env, ruta).catch(() => {});
+    throw e;
+  }
+
+  await anotar(env, quien, 'documento_guardado', creado.id, 'guardó un documento de prevención',
+    `${tipo.nombre} · ${titulo}${paginas ? ` · ${paginas} hojas` : ''}`);
+  return { documento: creado };
+}
+
+/**
+ * Cambia el nombre, el tipo o dónde va la firma.
+ *
+ * **El archivo no se reemplaza acá.** Un PDF distinto es otro documento: lo ya
+ * firmado quedaría apuntando a un papel que nadie leyó, y el hash de cada
+ * firma dejaría de calzar. Para una versión nueva se guarda otro y se da de
+ * baja el anterior.
+ */
+export async function editarGuardado(env, quien, id, cuerpo) {
+  const d = await primero(env, `documentos_guardados?select=*&id=eq.${Number(id)}`);
+  if (!d) return { error: 'Ese documento no existe', status: 404 };
+
+  const campos = {};
+  const detalle = [];
+
+  if (cuerpo?.nombre !== undefined) {
+    const titulo = limpio(cuerpo.nombre, 160);
+    if (!titulo) return { error: 'El nombre no puede quedar vacío', status: 400 };
+    if (titulo !== d.nombre) { campos.nombre = titulo; detalle.push(`nombre: «${d.nombre}» → «${titulo}»`); }
+  }
+
+  if (cuerpo?.tipo !== undefined) {
+    const lista = await tipos(env);
+    const tipo = lista.find((t) => t.codigo === limpio(cuerpo.tipo, 40));
+    if (!tipo) return { error: 'Ese no es un documento de prevención que el sistema conozca', status: 400 };
+    if (tipo.codigo !== d.tipo_documento) {
+      campos.tipo_documento = tipo.codigo;
+      detalle.push(`tipo: ${d.tipo_documento} → ${tipo.codigo}`);
+    }
+  }
+
+  if (cuerpo?.firmas !== undefined) {
+    const r = revisarFirmas(cuerpo.firmas, d.archivo_paginas);
+    if (r.error) return { error: r.error, status: 400 };
+    const antes = Array.isArray(d.firmas) ? d.firmas.length : 0;
+    campos.firmas = r.firmas || [];
+    if (JSON.stringify(campos.firmas) !== JSON.stringify(d.firmas || [])) {
+      detalle.push(`dónde firma: ${antes} → ${campos.firmas.length} ${
+        campos.firmas.length === 1 ? 'punto' : 'puntos'}`);
+    }
+  }
+
+  if (!Object.keys(campos).length) return { documento: d, sin_cambios: true };
+
+  campos.actualizado_por = quien;
+  campos.actualizado_en = new Date().toISOString();
+  const [guardado] = await actualizar(env, `documentos_guardados?id=eq.${d.id}`, campos);
+
+  await anotar(env, quien, 'documento_guardado', d.id, 'corrigió un documento guardado',
+    `${d.nombre}${detalle.length ? ' · ' + detalle.join(' · ') : ''}`);
+  return { documento: guardado || { ...d, ...campos } };
+}
+
+/**
+ * Lo da de baja. No lo borra, y **no toca su archivo**: lo están apuntando
+ * todos los documentos que ya se firmaron con él.
+ */
+export async function darDeBajaGuardado(env, quien, id, motivo) {
+  const d = await primero(env, `documentos_guardados?select=*&id=eq.${Number(id)}`);
+  if (!d) return { error: 'Ese documento no existe', status: 404 };
+  if (!d.vigente) return { ok: true, ya_estaba: true };
+
+  await actualizar(env, `documentos_guardados?id=eq.${d.id}`,
+    { vigente: false, actualizado_por: quien, actualizado_en: new Date().toISOString() });
+  await anotar(env, quien, 'documento_guardado', d.id, 'dio de baja un documento guardado',
+    `${d.nombre}${limpio(motivo, 200) ? ' · ' + limpio(motivo, 200) : ''}`);
+  return { ok: true };
+}
+
+/** La fila cruda, para poder entregar el archivo. */
+export const filaGuardada = (env, id) =>
+  primero(env, 'documentos_guardados'
+    + `?select=archivo_ruta,archivo_tipo,archivo_nombre&id=eq.${Number(id)}`);
