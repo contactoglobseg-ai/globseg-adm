@@ -46,24 +46,47 @@ fotos más grandes del documento).
 
 ---
 
-## 3. Marcar dónde va la firma
+## 3. Marcar qué va en cada lugar
 
-Esto es lo que hace que la firma caiga en el recuadro del documento y no al pie
-de las 34 hojas.
+Esto es lo que hace que la firma caiga en su recuadro —y no al pie de las 34
+hojas— y que el nombre, el RUT y la fecha salgan escritos en vez de a mano.
 
 1. En la fila del documento, apriete **«Marcar dónde firma»**.
-2. Se abre el PDF completo, hoja por hoja. Baje hasta el recuadro donde firma
-   el trabajador —en el IRL es la **hoja 1**, donde dice
-   *IDENTIFICACIÓN DEL TRABAJADOR*—.
-3. **Toque el recuadro.** Queda dibujado ahí un rectángulo con la palabra
-   «Firma»: eso es lo que va a salir impreso.
-4. Si quedó corrido, apriete **«Quitar»** sobre el rectángulo y vuelva a tocar.
-   Puede poner uno en cada hoja que lo pida.
-5. Apriete **«Guardar dónde va la firma»** y después **«Cerrar»**.
+2. Arriba hay cuatro botones: **Firma · Nombre · RUT · Fecha**. Elija uno y
+   **toque la hoja donde va**. Queda un rectángulo con ese nombre.
+3. En el acuse de recibo del RIOHS, por ejemplo, la línea es
+   *Nombre · RUT · Firma del Trabajador*: se marcan los tres sobre la raya, y
+   la fecha más abajo, en la línea «Fecha: ___/___/____».
+4. Para que dos campos salgan en la misma línea, **tóquelos a la misma
+   altura**: el alto del rectángulo no cambia aunque uno sea más ancho.
+5. Si quedó corrido, quítelo con la **✕** de la lista de arriba y vuelva a
+   tocar. Puede poner uno en cada hoja que lo pida.
+6. Apriete **«Guardar dónde va la firma»** y después **«Cerrar»**.
+
+Qué pone cada uno, todo congelado en el documento el día que se firmó:
+
+| Botón | Qué escribe |
+|---|---|
+| Firma | El trazo que la persona dibujó con el dedo |
+| Nombre | El nombre completo con que se firmó |
+| RUT | El RUT con que se firmó, con puntos y guion |
+| Fecha | El día en que se firmó, como 11/11/2026 |
 
 > **Si no marca ninguno, la firma va al pie de todas las hojas**, como se hacía
 > hasta ahora. Es lo correcto para una charla o una entrega de EPP de una hoja;
 > para el IRL no.
+
+### La huella dactilar
+
+**No se pone desde acá, y no es una limitación que se pueda levantar.** El
+lector de huella de los teléfonos nunca le entrega la imagen a una página web:
+la huella no sale del chip seguro del aparato. Y una huella inventada dentro de
+un documento firmado sería un dato falso que nadie podría distinguir del
+verdadero.
+
+Esa casilla se llena **en terreno, sobre papel**: se imprime la hoja que la
+pide, se toma la huella, y esa hoja se archiva en la carpeta personal del
+trabajador o se sube escaneada a sus documentos.
 
 ---
 
