@@ -62,8 +62,13 @@ window.VisorPdf = (function () {
   background:color-mix(in srgb,var(--acento) 12%,transparent);
   display:flex;align-items:flex-end;justify-content:space-between;gap:4px;
   padding:3px 4px;box-sizing:border-box}
-.visor__marca span{font:600 .68rem var(--cuerpo);color:var(--acento);
-  background:var(--sup);border-radius:3px;padding:1px 4px;line-height:1.3;white-space:nowrap}
+/* El rotulo cuelga del borde de arriba y no se mete adentro: un recuadro de
+   texto mide dos milimetros de alto y el nombre no cabria. Sin eventos de
+   puntero, para que tocar el rotulo marque la hoja en vez de esquivarlo.
+   Ojo: este bloque es una plantilla de texto y un acento grave aca la cierra. */
+.visor__marca span{position:absolute;bottom:100%;left:-2px;margin-bottom:2px;
+  font:600 .66rem var(--cuerpo);color:var(--acento);pointer-events:none;
+  background:var(--sup);border-radius:3px;padding:0 4px;line-height:1.4;white-space:nowrap}
 .visor__marca button{font:600 .68rem var(--cuerpo);color:var(--rojo);background:var(--sup);
   border:0;border-radius:3px;padding:1px 5px;cursor:pointer;line-height:1.3}`;
 
@@ -165,7 +170,7 @@ window.VisorPdf = (function () {
             // su esquina.
             const r = papel.getBoundingClientRect();
             const ancho = op.ancho || ANCHO_POR_OMISION;
-            const alto = ancho * PROPORCION * (r.width / r.height);
+            const alto = ancho * proporcionDe(op.tipo, ancho) * (r.width / r.height);
             op.alMarcar(n,
               Math.min(1 - ancho, Math.max(0, (e.clientX - r.left) / r.width - ancho / 2)),
               Math.min(1 - alto, Math.max(0, (e.clientY - r.top) / r.height - alto / 2)));
@@ -191,6 +196,29 @@ window.VisorPdf = (function () {
   }
 
   /** Los recuadros de esta hoja, encima del canvas. */
+  /**
+   * Qué alto tiene el recuadro, como fracción de su ancho.
+   *
+   * La firma es un trazo y ocupa alto; el nombre, el RUT y la fecha son una
+   * línea de texto y un recuadro alto los haría apuntar a cualquier parte.
+   * Son los mismos números que usa el PDF al sellar, y tienen que seguir
+   * siéndolo: lo que se ve al marcar es lo que sale impreso.
+   */
+  function proporcionDe(tipo, ancho) {
+    if (!tipo || tipo === 'firma') return PROPORCION;
+    // **El alto de un texto no sigue a su ancho.** Si lo siguiera, dos campos
+    // tocados a la misma altura pero de distinto ancho —«Nombre» es más largo
+    // que «RUT»— saldrían en renglones distintos, porque lo que se guarda es
+    // el borde de arriba del recuadro. Con el alto fijo, tocar a la misma
+    // altura deja los dos en la misma línea, que es lo que pide un formulario.
+    return ALTO_TEXTO / Math.max(0.01, Number(ancho) || ANCHO_POR_OMISION);
+  }
+
+  /** Alto de un recuadro de texto, en fracción del ANCHO de la hoja. */
+  const ALTO_TEXTO = 1 / 40;
+
+  const ROTULOS = { firma: 'Firma', nombre: 'Nombre', rut: 'RUT', fecha: 'Fecha' };
+
   function marcasDe(papel, pagina, op) {
     (op.marcas || []).forEach((m, i) => {
       if (Number(m.pagina) !== pagina) return;
@@ -202,9 +230,9 @@ window.VisorPdf = (function () {
       caja.style.width = (ancho * 100) + '%';
       // El alto se calcula del ancho **en píxeles**, porque el porcentaje de
       // alto se mide contra la hoja y una hoja no es cuadrada.
-      caja.style.aspectRatio = String(1 / PROPORCION);
+      caja.style.aspectRatio = String(1 / proporcionDe(m.tipo, ancho));
       const rotulo = document.createElement('span');
-      rotulo.textContent = 'Firma';
+      rotulo.textContent = ROTULOS[m.tipo] || ROTULOS.firma;
       caja.appendChild(rotulo);
       if (op.alQuitar) {
         const quitar = document.createElement('button');
@@ -234,5 +262,5 @@ window.VisorPdf = (function () {
     return 0;
   }
 
-  return { dibujar, dibujarArchivo, PROPORCION, ANCHO_POR_OMISION };
+  return { dibujar, dibujarArchivo, PROPORCION, ANCHO_POR_OMISION, ALTO_TEXTO, proporcionDe, ROTULOS };
 })();

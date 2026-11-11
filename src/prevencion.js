@@ -230,6 +230,13 @@ export async function enviar(env, quien, { bytes, nombre }, datos) {
   try {
     creados = await insertar(env, 'documentos_generados', filas);
   } catch (e) {
+    // Una migración pegada a medias: la tabla de la biblioteca quedó y las
+    // columnas de `documentos_generados` no, o al revés. Pasa de verdad —en
+    // este proyecto el SQL se pega a mano— y el error crudo de PostgREST no
+    // le dice a nadie qué hacer. Lo que hay que hacer es volver a pegarla.
+    if (guardado && /column/i.test(String(e && e.message))) {
+      return { error: avisoGuardados(), status: 503 };
+    }
     // Si no se pudo escribir ninguna fila, el archivo recién subido no lo
     // apunta nadie: se saca, o queda ocupando espacio para siempre. Es el
     // mismo orden que la subida de documentos de RRHH.
@@ -505,6 +512,18 @@ export const guardados = (env, { incluirBajas } = {}) =>
  * página y **medidas desde arriba**, como se ven en pantalla. El sellado las
  * da vuelta para pdf-lib, que mide desde abajo.
  */
+/**
+ * Qué puede ir en un punto marcado del documento.
+ *
+ * La firma es el trazo; los otros tres son datos que el sistema ya tiene
+ * congelados en el documento y que hoy la oficina escribe a mano sobre el
+ * papel impreso. **No hay huella**: el lector de los teléfonos no entrega la
+ * imagen de la huella —no sale del chip seguro y ninguna API del navegador la
+ * devuelve— y dibujar una inventada sería poner un dato falso dentro de un
+ * documento firmado. Esa casilla se llena en terreno, en papel.
+ */
+export const TIPOS_PUNTO = ['firma', 'nombre', 'rut', 'fecha'];
+
 export function revisarFirmas(valor, paginas) {
   if (valor === undefined || valor === null) return { firmas: null };
   if (!Array.isArray(valor)) return { error: 'Las posiciones de la firma llegaron mal' };
@@ -525,12 +544,17 @@ export function revisarFirmas(valor, paginas) {
       const n = Number(v);
       return Number.isFinite(n) ? n : pordefecto;
     };
+    // Qué va en ese lugar. El documento del gerente tiene una línea con tres
+    // casillas —Nombre, RUT, Firma del Trabajador— y una cuarta con la fecha,
+    // así que un punto no siempre es una firma. Lo que no se reconoce entra
+    // como firma, que es lo que había antes de esto.
+    const tipo = TIPOS_PUNTO.includes(f?.tipo) ? f.tipo : 'firma';
     const ancho = Math.min(0.6, Math.max(0.08, num(f?.ancho, 0.22)));
     const x = Math.min(1 - ancho, Math.max(0, num(f?.x, 0)));
     // El alto sale del ancho: una firma tiene su proporción y dejar que se
     // estire por separado solo permite deformarla.
     const y = Math.min(1, Math.max(0, num(f?.y, 0)));
-    firmas.push({ pagina, x: redondear(x), y: redondear(y), ancho: redondear(ancho) });
+    firmas.push({ tipo, pagina, x: redondear(x), y: redondear(y), ancho: redondear(ancho) });
   }
   // Ordenadas por hoja: así la pantalla y el PDF las recorren igual.
   firmas.sort((a, b) => a.pagina - b.pagina || a.y - b.y);

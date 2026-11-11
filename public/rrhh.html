@@ -3352,7 +3352,7 @@ const DOCS = {
        funcionaba antes y sigue sirviendo para algo que se manda una vez. */
     fuente: "",
     guardar: { nombre: "", tipo: "", archivo: null, paginas: null, abierto: false },
-    marcando: null, marcas: [], verBajasGuardados: false,
+    marcando: null, marcas: [], tipoPunto: "firma", verBajasGuardados: false,
   },
 };
 
@@ -4298,6 +4298,32 @@ async function guardarEnBiblioteca() {
 }
 
 /** Abre el documento para marcar dónde va la firma. */
+/**
+ * Qué se puede poner en un lugar del documento.
+ *
+ * Salió del acuse de recibo del RIOHS que trajo el gerente: una línea con
+ * «Nombre · RUT · Firma del Trabajador» y abajo «Fecha: ___/___/____». Los
+ * cuatro son datos que el sistema ya tiene congelados en el documento, así
+ * que escribirlos a mano sobre el papel impreso era copiar lo que ya está.
+ *
+ * La casilla «Huella Dactilar» de ese mismo papel **no está acá a propósito**:
+ * ver el aviso del marcador.
+ */
+const TIPOS_PUNTO = [
+  { codigo: "firma",  nombre: "Firma" },
+  { codigo: "nombre", nombre: "Nombre" },
+  { codigo: "rut",    nombre: "RUT" },
+  { codigo: "fecha",  nombre: "Fecha" },
+];
+const TIPO_PUNTO_AYUDA = {
+  firma:  "El trazo que dibujó la persona con el dedo.",
+  nombre: "El nombre completo con que se firmó, no el de la ficha de hoy.",
+  rut:    "El RUT con que se firmó, con puntos y guion.",
+  fecha:  "El día en que se firmó, del reloj del servidor, como 09/11/2026.",
+};
+const nombreTipoPunto = t =>
+  (TIPOS_PUNTO.find(x => x.codigo === (t || "firma")) || TIPOS_PUNTO[0]).nombre;
+
 async function abrirMarcador(id) {
   const g = (DOCS.prev.datos.guardados || []).find(x => String(x.id) === String(id));
   DOCS.prev.marcando = id;
@@ -4323,11 +4349,20 @@ async function pintarMarcador() {
 
   caja.innerHTML = `
     <section class="caja">
-      <div class="caja__tit"><h2>Dónde va la firma</h2>
+      <div class="caja__tit"><h2>Qué va en cada lugar</h2>
         <span class="nota">${esc(g.nombre)}</span></div>
-      ${aviso("bien", "Toque la hoja donde va la firma. ",
-        "Queda un recuadro; se puede poner uno en cada hoja que lo pida. Si no marca "
-        + "ninguno, la firma va al pie de todas las hojas, como hasta ahora.")}
+      ${aviso("bien", "Elija qué va y toque la hoja ahí. ",
+        "Queda un recuadro donde tocó; se puede poner uno en cada hoja que lo pida. Si no "
+        + "marca ninguno, la firma va al pie de todas las hojas, como hasta ahora.")}
+      <div class="segmento" style="margin:0 16px 10px" id="g-que">
+        ${TIPOS_PUNTO.map(t => `<button type="button" data-tipo="${t.codigo}" `
+          + `aria-pressed="${P.tipoPunto === t.codigo}">${t.nombre}</button>`).join("")}
+      </div>
+      <p class="sub" style="padding:0 16px 10px">${esc(TIPO_PUNTO_AYUDA[P.tipoPunto] || "")}</p>
+      ${aviso("ojo", "La huella dactilar no se puede poner acá. ",
+        "El lector de huella de los teléfonos no entrega la imagen —no sale del chip "
+        + "seguro del aparato— y una huella inventada dentro de un documento firmado "
+        + "sería un dato falso. Esa casilla se toma en terreno, sobre el papel.")}
       <p class="sub" style="padding:0 16px 12px" id="g-cuantas"></p>
       <div style="padding:0 16px 12px" id="g-papel"></div>
       <div class="pie-form">
@@ -4338,14 +4373,36 @@ async function pintarMarcador() {
       </div>
     </section>`;
 
+  // Lo marcado, con su botón de quitar **acá y no sobre la hoja**: un recuadro
+  // de texto mide dos milímetros de alto, y en un teléfono los botones se
+  // montaban unos sobre otros y se quitaba el que no era.
   const cuantas = () => {
-    const n = P.marcas.length;
-    $("#g-cuantas").textContent = n
-      ? `${n} ${n === 1 ? "lugar marcado" : "lugares marcados"}: ${
-          P.marcas.map(m => "hoja " + m.pagina).join(", ")}.`
-      : "Sin marcar: la firma va al pie de todas las hojas.";
+    const caja = $("#g-cuantas");
+    if (!P.marcas.length) {
+      caja.textContent = "Sin marcar: la firma va al pie de todas las hojas.";
+      return;
+    }
+    // Con estilo en línea y no en panel.css: ese archivo tiene cambios de otra
+    // sesión sin commitear, y `.chip` ya existe allá para el calendario.
+    const marco = "display:inline-flex;align-items:center;gap:6px;margin:0 6px 6px 0;"
+      + "padding:3px 4px 3px 9px;border:1px solid var(--borde);border-radius:980px;"
+      + "background:var(--sup-2);font-size:.82rem";
+    const equis = "border:0;background:none;color:var(--rojo);cursor:pointer;"
+      + "font:600 .9rem var(--cuerpo);line-height:1;padding:2px 5px;border-radius:50%";
+    caja.innerHTML = P.marcas.map((m, i) =>
+      `<span style="${marco}">${esc(nombreTipoPunto(m.tipo))} · hoja ${m.pagina}`
+      + `<button type="button" style="${equis}" data-quitar="${i}" `
+      + `aria-label="Quitar ${esc(nombreTipoPunto(m.tipo))} de la hoja ${m.pagina}">✕</button></span>`
+    ).join("");
+    for (const b of caja.querySelectorAll("[data-quitar]")) {
+      b.onclick = () => { P.marcas.splice(Number(b.dataset.quitar), 1); pintarMarcador(); };
+    }
   };
   cuantas();
+
+  for (const b of $("#g-que").querySelectorAll("button")) {
+    b.onclick = () => { P.tipoPunto = b.dataset.tipo; pintarMarcador(); };
+  }
 
   $("#g-guardar-marcas").onclick = () => guardarMarcas()
     .catch(e => decir($("#m-marcas"), e.message, "error"));
@@ -4354,12 +4411,12 @@ async function pintarMarcador() {
 
   await VisorPdf.dibujar($("#g-papel"), `/api/documentos/prevencion/guardados/${g.id}/archivo`, {
     marcas: P.marcas,
+    tipo: P.tipoPunto,
     alMarcar: (pagina, x, y) => {
-      P.marcas.push({ pagina, x, y, ancho: VisorPdf.ANCHO_POR_OMISION });
+      P.marcas.push({ tipo: P.tipoPunto, pagina, x, y, ancho: VisorPdf.ANCHO_POR_OMISION });
       P.marcas.sort((a, b) => a.pagina - b.pagina || a.y - b.y);
       pintarMarcador();
     },
-    alQuitar: (i) => { P.marcas.splice(i, 1); pintarMarcador(); },
   }).catch(() => {});
 }
 
@@ -5187,6 +5244,21 @@ const repintarDocs = () =>
 const rolRotulo = r => ({ trabajador: "El trabajador", empleador: "Por la empresa",
                           arrendador: "El arrendador" }[r] || r);
 
+/**
+ * El día de la firma como lo pide un formulario: 09/11/2026.
+ *
+ * `cuando()` trae además la hora, que en la línea «Fecha: ___/___/____» no
+ * cabe y no es lo que el papel pregunta.
+ */
+const diaDeFirma = iso => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return String(iso).slice(0, 10).split("-").reverse().join("/");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  return `${dd}/${mm}/${d.getFullYear()}`;
+};
+
 const cuando = iso => {
   if (!iso) return "";
   const d = new Date(iso);
@@ -5321,24 +5393,58 @@ async function sellarEnLosPuntos(d, bytesOriginal, puntos, op) {
   const firma = firmas[0];
   const hojas = pdf.getPages();
 
+  // Si el documento tiene su propia casilla para el nombre —como la línea
+  // «Nombre · RUT · Firma del Trabajador» del acuse del RIOHS—, el pie bajo el
+  // trazo sobra y encima choca con lo impreso. Cuando no la tiene, ese pie es
+  // lo único que hace atribuible la firma, así que se mantiene.
+  const nombreAparte = puntos.some(m => m.tipo === "nombre");
+
   for (const m of puntos) {
     const hoja = hojas[Number(m.pagina) - 1];
     if (!hoja) continue;                       // una hoja que ya no existe no bota el PDF
+    const tipo = m.tipo || "firma";
     const { width, height } = hoja.getSize();
     const ancho = Math.max(0.05, Math.min(0.6, Number(m.ancho) || 0.22)) * width;
-    const alto = firma && firma.img
-      ? ancho / (firma.img.width / firma.img.height)
+    // Los mismos números que el marcador dibuja en pantalla (VisorPdf.proporcionDe):
+    // lo que se ve al marcar tiene que ser lo que sale impreso.
+    // El alto de un texto es fijo —una fracción del ancho de la hoja, no del
+    // recuadro—, así que dos campos tocados a la misma altura salen en el
+    // mismo renglón aunque uno sea más ancho que el otro. Mismo número que
+    // VisorPdf.ALTO_TEXTO: lo que se ve al marcar es lo que sale impreso.
+    const alto = tipo !== "firma" ? width / 40
+      : firma && firma.img ? ancho / (firma.img.width / firma.img.height)
       : ancho / 3;
     const x = Math.max(0, Math.min(width - ancho, Number(m.x) * width));
     // De «desde arriba» a «desde abajo», que es como mide pdf-lib.
     const y = Math.max(0, Math.min(height - alto, height - (Number(m.y) * height) - alto));
+
+    if (tipo !== "firma") {
+      // Los datos que el sistema ya tiene congelados en el documento, escritos
+      // donde el papel los pide. Salen de la firma —el nombre y el RUT con que
+      // se firmó— y no de la ficha de hoy: si mañana alguien corrige el RUT,
+      // el documento tiene que seguir diciendo con cuál se firmó.
+      const texto = tipo === "nombre" ? (firma && firma.nombre) || ""
+        : tipo === "rut" ? (firma && firma.rut) || ""
+        : diaDeFirma(firma && firma.firmado_en);
+      if (!texto) continue;                    // sin dato no se escribe un hueco
+      // Se encoge hasta caber: un nombre largo saliéndose del recuadro taparía
+      // lo impreso al lado, que es lo que el recuadro existe para evitar.
+      let cuerpo = Math.min(11, alto * 1.6);
+      const plano = winansi(texto);
+      while (cuerpo > 5 && normal.widthOfTextAtSize(plano, cuerpo) > ancho) cuerpo -= 0.25;
+      // La línea de base queda **donde se tocó**, que es el medio del
+      // recuadro: así el texto se apoya en la raya impresa del formulario.
+      hoja.drawText(plano,
+        { x, y: Math.max(2, y + alto / 2 - cuerpo * 0.35), size: cuerpo, font: normal, color: tinta });
+      continue;
+    }
 
     if (firma && firma.img) {
       try { hoja.drawImage(firma.img, { x, y, width: ancho, height: alto }); } catch (_) {}
     }
     // Bajo el trazo, quién firmó y cuándo: una firma sin nombre al lado no se
     // puede atribuir, y es media hoja más abajo donde el documento lo pide.
-    if (firma) {
+    if (firma && !nombreAparte) {
       hoja.drawText(winansi(firma.nombre || ""),
         { x, y: Math.max(2, y - 8), size: 6.5, font: negrita, color: tinta });
       hoja.drawText(winansi(`${firma.rut || ""} · ${cuando(firma.firmado_en)}`),
