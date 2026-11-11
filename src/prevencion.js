@@ -190,6 +190,16 @@ export async function enviar(env, quien, { bytes, nombre }, datos) {
 
   if (!guardado) await arch.subir(env, ruta, bytes, reconocido.tipo);
 
+  // El nombre de quien manda. Una consulta por envío, no por documento. Si no
+  // se encuentra —una cuenta borrada, por ejemplo— va el nombre de usuario,
+  // que es mejor que nada y nunca falta.
+  let instructor = quien;
+  try {
+    const cuenta = await primero(env,
+      `usuarios?select=nombre&usuario=eq.${encodeURIComponent(String(quien))}`);
+    if (cuenta && cuenta.nombre) instructor = cuenta.nombre;
+  } catch { /* el envío no se cae por el nombre del instructor */ }
+
   const numeros = await siguientesNumeros(env, activos.length);
   const filas = activos.map((t, i) => ({
     numero: numeros[i],
@@ -221,6 +231,12 @@ export async function enviar(env, quien, { bytes, nombre }, datos) {
     datos: {
       tipo: tipo.codigo, tipo_nombre: tipo.nombre, base_legal: tipo.base_legal || null,
       archivo: nombreArchivo, paginas, nota,
+      // Quién entregó el documento, con el nombre que tenía ese día. La hoja 11
+      // del IRL lo pide impreso («DATOS INSTRUCTOR»), y se congela acá en vez
+      // de leerse de la cuenta al imprimir: si mañana cambia el nombre de esa
+      // cuenta, o la cuenta se da de baja, el documento tiene que seguir
+      // diciendo quién lo entregó.
+      instructor: instructor || null,
     },
     por_confirmar: null,
     creado_por: quien,
@@ -522,7 +538,7 @@ export const guardados = (env, { incluirBajas } = {}) =>
  * devuelve— y dibujar una inventada sería poner un dato falso dentro de un
  * documento firmado. Esa casilla se llena en terreno, en papel.
  */
-export const TIPOS_PUNTO = ['firma', 'nombre', 'rut', 'fecha'];
+export const TIPOS_PUNTO = ['firma', 'nombre', 'rut', 'fecha', 'instructor'];
 
 export function revisarFirmas(valor, paginas) {
   if (valor === undefined || valor === null) return { firmas: null };

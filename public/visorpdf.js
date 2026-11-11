@@ -217,7 +217,8 @@ window.VisorPdf = (function () {
   /** Alto de un recuadro de texto, en fracción del ANCHO de la hoja. */
   const ALTO_TEXTO = 1 / 40;
 
-  const ROTULOS = { firma: 'Firma', nombre: 'Nombre', rut: 'RUT', fecha: 'Fecha' };
+  const ROTULOS = { firma: 'Firma', nombre: 'Nombre', rut: 'RUT', fecha: 'Fecha',
+                    instructor: 'Instructor' };
 
   function marcasDe(papel, pagina, op) {
     (op.marcas || []).forEach((m, i) => {

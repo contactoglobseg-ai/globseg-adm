@@ -4314,12 +4314,15 @@ const TIPOS_PUNTO = [
   { codigo: "nombre", nombre: "Nombre" },
   { codigo: "rut",    nombre: "RUT" },
   { codigo: "fecha",  nombre: "Fecha" },
+  { codigo: "instructor", nombre: "Instructor" },
 ];
 const TIPO_PUNTO_AYUDA = {
   firma:  "El trazo que dibujó la persona con el dedo.",
   nombre: "El nombre completo con que se firmó, no el de la ficha de hoy.",
   rut:    "El RUT con que se firmó, con puntos y guion.",
   fecha:  "El día en que se firmó, del reloj del servidor, como 09/11/2026.",
+  instructor: "El nombre de quien mandó el documento a firmar. Va donde el papel "
+    + "dice «DATOS INSTRUCTOR»; no es una firma suya.",
 };
 const nombreTipoPunto = t =>
   (TIPOS_PUNTO.find(x => x.codigo === (t || "firma")) || TIPOS_PUNTO[0]).nombre;
@@ -5425,6 +5428,10 @@ async function sellarEnLosPuntos(d, bytesOriginal, puntos, op) {
       // el documento tiene que seguir diciendo con cuál se firmó.
       const texto = tipo === "nombre" ? (firma && firma.nombre) || ""
         : tipo === "rut" ? (firma && firma.rut) || ""
+        // Quien entregó el documento, congelado al enviarlo. Los documentos
+        // mandados antes de que esto existiera no lo traen: ahí no se escribe
+        // nada, que es mejor que imprimir un hueco con el nombre del campo.
+        : tipo === "instructor" ? (d.datos && d.datos.instructor) || ""
         : diaDeFirma(firma && firma.firmado_en);
       if (!texto) continue;                    // sin dato no se escribe un hueco
       // Se encoge hasta caber: un nombre largo saliéndose del recuadro taparía
