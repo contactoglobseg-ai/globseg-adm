@@ -71,6 +71,20 @@ Qué pone cada uno, todo congelado en el documento el día que se firmó:
 | Nombre | El nombre completo con que se firmó |
 | RUT | El RUT con que se firmó, con puntos y guion |
 | Fecha | El día en que se firmó, como 11/11/2026 |
+| Instructor | El nombre de quien mandó el documento a firmar |
+
+**«Instructor» no es una firma.** Es el nombre impreso de quien entregó el
+documento, para los papeles que lo piden —el IRL de GLOBSEG lo pide en la
+**hoja 11**, donde dice *DATOS INSTRUCTOR*—. Firma solo el trabajador.
+
+### Dónde va cada cosa en el IRL de GLOBSEG
+
+| Hoja | Qué pide | Qué marcar |
+|---|---|---|
+| 3 | Acuse de recibo del RIOHS | Nombre, RUT, Firma y Fecha sobre la raya. La huella queda en blanco. |
+| 11 | Certificado de conformidad (DS 44) | Nombre y RUT bajo *DATOS DEL TRABAJADOR*; Instructor y Fecha bajo *DATOS INSTRUCTOR*. |
+
+Son las dos hojas que piden datos. Las demás van sin marcar.
 
 > **Si no marca ninguno, la firma va al pie de todas las hojas**, como se hacía
 > hasta ahora. Es lo correcto para una charla o una entrega de EPP de una hoja;
