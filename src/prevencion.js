@@ -99,8 +99,14 @@ export async function enviar(env, quien, { bytes, nombre }, datos) {
   const guardadoId = Number(datos?.guardado_id) || null;
   let guardado = null;
   if (guardadoId) {
-    guardado = await primero(env,
-      `documentos_guardados?select=*&id=eq.${guardadoId}`);
+    // Sin la migración la tabla no existe y la consulta revienta con el error
+    // crudo de Postgres. Acá se dice qué falta, que es lo que se puede hacer.
+    try {
+      guardado = await primero(env,
+        `documentos_guardados?select=*&id=eq.${guardadoId}`);
+    } catch {
+      return { error: avisoGuardados(), status: 503 };
+    }
     if (!guardado) return { error: 'Ese documento guardado no existe', status: 404 };
     if (!guardado.vigente) {
       return { error: 'Ese documento está dado de baja. Guarde la versión nueva y mándela '
@@ -198,8 +204,15 @@ export async function enviar(env, quien, { bytes, nombre }, datos) {
     archivo_tipo: reconocido.tipo,
     archivo_bytes: guardado ? guardado.archivo_bytes : bytes.length,
     archivo_paginas: paginas,
-    guardado_id: guardado ? guardado.id : null,
-    firmas_posicion: posiciones,
+    // Las dos columnas de la biblioteca van **solo si hacen falta**, y por eso
+    // se arma el objeto aparte: sin su migración esas columnas no existen y
+    // mandarlas con null igual hace que PostgREST rechace el envío entero
+    // («Could not find the 'firmas_posicion' column … in the schema cache»).
+    // Un envío que sube el PDF en el momento no las necesita, así que sin la
+    // migración mandar a firmar sigue andando, que es lo que esta pantalla
+    // promete cuando dice que falta un archivo .sql.
+    ...(guardado ? { guardado_id: guardado.id } : {}),
+    ...(posiciones ? { firmas_posicion: posiciones } : {}),
     cuerpo: null,
     cuerpo_hash: hash,
     // Lo que se usó, tal como estaba ese día. La base legal se congela acá
