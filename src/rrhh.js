@@ -610,6 +610,15 @@ export async function editarContrato(env, quien, id, cuerpo) {
 }
 
 // ---------------------------------------------------------------- documentos
+/** Cargos que cuentan como guardia para el catálogo de documentos. */
+const CARGOS_GUARDIA = ['guardia', 'nochero', 'rondin', 'supervisor'];
+
+/** ¿Este papel se le exige a alguien con este cargo? Una sola regla para el
+ *  panel y para las alertas: dos copias terminan diciendo cosas distintas. */
+export const aplicaA = (td, cargo) => td.aplica_a === 'todos'
+  || (td.aplica_a === 'guardia' && CARGOS_GUARDIA.includes(cargo))
+  || (td.aplica_a === 'conductor' && cargo === 'conductor');
+
 export async function crearDocumento(env, quien, cuerpo) {
   const trabajadorId = entero(cuerpo.trabajador_id);
   const t = await primero(env, `trabajadores?select=id,nombre&id=eq.${trabajadorId}`);
@@ -1131,8 +1140,22 @@ export async function panelRrhh(env) {
 
   // Documentos vencidos y por vencer, ya separados: son dos urgencias
   // distintas y mezclarlas hace que la segunda tape a la primera.
-  const vencidos = documentos.filter((d) => d.estado === 'vencido');
-  const porVencer = documentos.filter((d) => d.estado === 'por_vencer');
+  //
+  // De cada papel de cada persona cuenta el último. Cuando la OS-10 se renueva
+  // la nueva es otra fila y la vieja queda vigente hasta que alguien la anule,
+  // que nadie hace: sin esto la credencial renovada seguía saliendo en rojo.
+  // Gana la que vence más tarde, igual que en src/alertas.js.
+  const ultimoDoc = new Map();
+  for (const d of await buscar(env, 'v_documentos?select=id,trabajador_id,tipo,fecha_vencimiento'
+    + '&trabajador_activo=is.true&vigente=is.true&fecha_vencimiento=not.is.null&limit=5000')) {
+    const k = `${d.trabajador_id}|${d.tipo}`;
+    const a = ultimoDoc.get(k);
+    if (!a || d.fecha_vencimiento > a.fecha_vencimiento
+        || (d.fecha_vencimiento === a.fecha_vencimiento && d.id > a.id)) ultimoDoc.set(k, d);
+  }
+  const esUltimo = (d) => ultimoDoc.get(`${d.trabajador_id}|${d.tipo}`)?.id === d.id;
+  const vencidos = documentos.filter((d) => d.estado === 'vencido' && esUltimo(d));
+  const porVencer = documentos.filter((d) => d.estado === 'por_vencer' && esUltimo(d));
 
   // Contratos a plazo que se vencen. Es la alerta más cara de todas: pasado un
   // día, el contrato es indefinido.
@@ -1177,9 +1200,7 @@ export async function panelRrhh(env) {
   for (const t of activos) {
     const tiene = porTrabajador.get(t.id) || new Set();
     const faltan = tipos
-      .filter((td) => td.aplica_a === 'todos'
-        || (td.aplica_a === 'guardia' && ['guardia', 'nochero', 'rondin', 'supervisor'].includes(t.cargo))
-        || (td.aplica_a === 'conductor' && t.cargo === 'conductor'))
+      .filter((td) => aplicaA(td, t.cargo))
       .filter((td) => !tiene.has(td.codigo))
       .map((td) => td.nombre);
     if (faltan.length) {
