@@ -578,7 +578,7 @@ async function verDocumento(id) {
       : `<div class="documento">${esc(d.cuerpo || "")}</div>`}
     </div>
 
-    ${d.estado === "por_firmar" ? `
+    ${d.estado === "por_firmar" && !d.ya_firmo ? `
     <div class="caja">
       <div class="caja__tit">Su firma</div>
       ${d.firma_todas_hojas ? `<p class="firmado" style="padding:0 16px">
@@ -600,7 +600,9 @@ async function verDocumento(id) {
       <small>Queda guardado con la fecha y la hora</small>
     </button>
     <p class="recado" id="recado-firma"></p>`
-    : `<div class="caja"><p class="firmado">Este documento ya está firmado.</p></div>`}
+    : `<div class="caja"><p class="firmado">${d.estado === "por_firmar"
+        ? "Usted ya firmó este documento. Falta la firma de la empresa."
+        : "Este documento ya está firmado."}</p></div>`}
 
     <p class="firmado" style="text-align:center">
       Firma electrónica simple (Ley 19.799). Queda guardado quién firmó, desde qué
@@ -622,7 +624,7 @@ async function verDocumento(id) {
       .catch(() => {});
   }
 
-  if (d.estado !== "por_firmar") return;
+  if (d.estado !== "por_firmar" || d.ya_firmo) return;
 
   const lienzo = Firma.conectar($("#lienzo"));
   $("#borrar-firma").onclick = () => lienzo.limpiar();
