@@ -760,10 +760,24 @@ export async function ver(env, id) {
 }
 
 /** Lo que una persona tiene pendiente de firmar. Es lo que el guardia ve al
- *  entrar a marcar turno. */
-export const porFirmarDe = (env, trabajadorId) =>
-  buscar(env, 'v_documentos_generados?select=id,numero,titulo,plantilla_nombre,creado_en'
+ *  entrar a marcar turno.
+ *
+ *  `por_firmar` dice que al documento le falta alguna firma, no que le falte
+ *  la del trabajador. Un anexo o un contrato que el guardia ya firmó sigue
+ *  `por_firmar` hasta que firma la empresa, y si se le mostraba igual, quedaba
+ *  primero en la lista, el botón lo abría a él, la firma se rechazaba con
+ *  «Esa firma ya está puesta» y los documentos de atrás no se alcanzaban
+ *  nunca. Le pasó a Juan Zambrano con el anexo 2026-0010 (19-11-2026). */
+export async function porFirmarDe(env, trabajadorId) {
+  const docs = await buscar(env,
+    'v_documentos_generados?select=id,numero,titulo,plantilla_nombre,creado_en'
     + `&trabajador_id=eq.${entero(trabajadorId)}&estado=eq.por_firmar&order=creado_en.asc`);
+  if (!docs.length) return docs;
+  const ya = await buscar(env, 'firmas_documento?select=documento_id&rol=eq.trabajador'
+    + `&documento_id=in.(${docs.map((d) => entero(d.id)).join(',')})`);
+  const firmados = new Set(ya.map((f) => f.documento_id));
+  return docs.filter((d) => !firmados.has(d.id));
+}
 
 // -------------------------------------------------------------------- firma
 /**

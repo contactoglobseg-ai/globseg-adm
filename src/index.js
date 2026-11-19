@@ -2384,6 +2384,9 @@ async function apiAsistencia(request, env, url) {
         base_legal: d.datos?.base_legal || null,
         firma_todas_hojas: d.firma_todas_hojas === true,
         firmas: d.firmas.map((f) => ({ rol: f.rol, nombre: f.nombre, firmado_en: f.firmado_en })),
+        // Si ya firmó, la pantalla no le vuelve a pedir la firma: el documento
+        // sigue `por_firmar` solo porque falta la de la empresa.
+        ya_firmo: d.firmas.some((f) => f.rol === 'trabajador'),
       },
     });
   }
