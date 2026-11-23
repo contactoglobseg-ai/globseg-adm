@@ -1392,6 +1392,201 @@ const MESES = ["enero","febrero","marzo","abril","mayo","junio",
 let mesVisto = null;   // "YYYY-MM"
 let diaAbierto = null; // "YYYY-MM-DD"
 
+/** Portada de la oficina: identidad, las tareas del equipo arriba, la agenda
+ * cercana y las entradas rápidas.
+ *
+ * Las tareas van primero porque son lo único de esta pantalla que otra persona
+ * puso ahí para quien entra: lo demás lo puede ir a buscar cuando quiera, una
+ * tarea que le pidieron no sabe que existe hasta que la ve. */
+let tareasPestana = "recibidas";   // "recibidas" | "enviadas"
+
+async function pintarInicio() {
+  const u = estado.usuario;
+  const nombre = (u?.nombre || "Equipo").split(/\s+/)[0];
+  const areas = [
+    { titulo: "Cobranza", texto: "Periodos, facturas y pagos", vista: "panel", icono: "₱", modulo: "facturacion", color: "menta" },
+    { titulo: "Ventas", texto: "Contactos y cotizaciones", vista: "contactos", icono: "↗", modulo: "cotizaciones", color: "azul" },
+    { titulo: "Operaciones", texto: "Servicios, turnos y asistencia", vista: "servicio", icono: "⌁", modulo: "facturacion", color: "lila" },
+    { titulo: "Contabilidad", texto: "Acceso a estados de pago", vista: "pagos", icono: "▤", modulo: "facturacion", color: "ambar" },
+    { titulo: "Personas", texto: "Trabajadores y documentación", href: "/rrhh", icono: "◎", modulo: "personal", color: "rosa" },
+    { titulo: "Calendario", texto: "Cierres y fechas de servicio", vista: "calendario", icono: "▦", modulo: "facturacion", color: "azul" },
+  ].filter(a => u?.permisos?.includes(a.modulo));
+
+  let agenda = null, agendaError = "";
+  let tareas = null, tareasError = "";
+  await Promise.all([
+    u?.permisos?.includes("facturacion")
+      ? pedir(`/agenda?mes=${hoyISO().slice(0, 7)}`).then(r => { agenda = r; }, e => { agendaError = e.message; })
+      : null,
+    pedir("/tareas").then(r => { tareas = r; }, e => { tareasError = e.message; }),
+  ]);
+  const hoy = hoyISO();
+  const proximos = (agenda?.ciclos || []).filter(c => c.hasta >= hoy)
+    .sort((a,b) => a.hasta.localeCompare(b.hasta)).slice(0,4);
+  const iniciales = (u?.nombre || "SG").split(/\s+/).slice(0,2).map(x=>x[0]).join("").toUpperCase();
+  const fechas = proximos.length ? proximos.map(c => `<div class="inicio-evento"><span class="inicio-evento__dia">${fecha(c.hasta).slice(0,5)}</span><span><b>Cierre de periodo N°${esc(c.numero)}</b><small>${esc(c.instalacion)}</small></span><i>Preparar OC</i></div>`).join("") : `<p class="inicio-vacio">${agendaError ? `No se pudo cargar la agenda: ${esc(agendaError)}` : "No hay cierres de periodo próximos registrados."}</p>`;
+  const panel = u?.permisos?.includes("facturacion") && estado.panel;
+  const alerta = panel ? (panel.ciclos || []).filter(c => c.estado === "solicitar_oc").length : 0;
+  const abiertas = (tareas?.recibidas || []).filter(t => t.estado === "pendiente" || t.estado === "en_curso").length;
+  $("#app").innerHTML = `<section class="inicio">
+    <div class="inicio-cab"><div><span class="inicio-saludo">OFICINA · SEGURIDAD GARRIDOS</span><h2>Hola, ${esc(nombre)}</h2><p>Tu espacio de trabajo para hoy.</p></div><button class="inicio-perfil" type="button" aria-label="Perfil de ${esc(u?.nombre)}"><span>${esc(iniciales)}</span><b>${esc(u?.nombre || "Usuario")}</b><small>${esc(u?.rol || "")}</small></button></div>
+    <section class="tickets" id="tickets" aria-label="Tareas del equipo"></section>
+    <div class="inicio-mosaico">
+      <section class="inicio-card inicio-agenda"><header><div class="inicio-icono">▦</div><div><h3>Calendario</h3><p>${agenda ? `${agenda.ciclos.length} periodos · ${proximos.length} próximos cierres` : "Agenda de la oficina"}</p></div><button data-inicio-vista="calendario" aria-label="Abrir calendario">↗</button></header><div class="inicio-eventos">${fechas}</div><button class="inicio-link" data-inicio-vista="calendario">Ver calendario completo <span>→</span></button></section>
+      <section class="inicio-card inicio-tareas"><header><div class="inicio-icono">✓</div><div><h3>Mis tareas</h3><p>Asignadas a tu perfil</p></div></header><div class="inicio-tarea-cuerpo"><strong>${abiertas}</strong><span>${abiertas === 1 ? "tarea abierta para ti" : "tareas abiertas para ti"}</span></div><p class="inicio-nota">${alerta ? `Además, ${alerta} ${alerta === 1 ? "periodo requiere" : "periodos requieren"} solicitar OC en Cobranza.` : abiertas ? "Están arriba, ordenadas por urgencia y fecha." : "Nadie te ha pedido nada por ahora."}</p>${alerta ? `<button class="inicio-link" data-inicio-vista="panel">Ir a cobranza <span>→</span></button>` : `<button class="inicio-link" data-ir-tickets>Ver las tareas <span>↑</span></button>`}</section>
+      ${areas.map(a => `<button class="inicio-area inicio-area--${a.color}" ${a.href ? `data-inicio-href="${a.href}"` : `data-inicio-vista="${a.vista}"`}><span class="inicio-area__icon">${a.icono}</span><span><b>${esc(a.titulo)}</b><small>${esc(a.texto)}</small></span><i>↗</i></button>`).join("")}
+    </div><p class="inicio-pie">Accesos disponibles según tu perfil de ${esc(u?.rol || "usuario")}.</p>
+  </section>`;
+  $("#app").querySelectorAll("[data-inicio-vista]").forEach(b => b.onclick = () => ir(b.dataset.inicioVista));
+  $("#app").querySelectorAll("[data-inicio-href]").forEach(b => b.onclick = () => location.href = b.dataset.inicioHref);
+  $("#app").querySelectorAll("[data-ir-tickets]").forEach(b => b.onclick = () => $("#tickets").scrollIntoView({ behavior: "smooth", block: "start" }));
+  pintarTickets(tareas, tareasError);
+}
+
+/* ---------------------------------------------------------------- tickets
+   Lo que alguien del equipo le pidió a otro. Quien la recibe la empieza, la
+   termina o la rechaza con el motivo; quien la pidió la ve avanzar y puede
+   cancelarla. Las reglas las pone el servidor (src/tareas.js): acá solo se
+   ofrecen los botones que el servidor va a aceptar. */
+const PRIORIDAD_TXT = { normal: "Normal", alta: "Alta", urgente: "Urgente" };
+const ESTADO_TAREA = {
+  pendiente: "Pendiente", en_curso: "En curso", hecha: "Hecha",
+  rechazada: "Rechazada", cancelada: "Cancelada",
+};
+
+/** «vence hoy», «venció hace 2 días», «vence en 3 días». Se cuenta en días de
+ *  calendario de Chile, no en horas: una tarea para el viernes vence el
+ *  viernes, no a las 21:00 del jueves. */
+function venceTxt(vence, abierta) {
+  if (!vence) return "";
+  const hoy = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Santiago" }));
+  hoy.setHours(0, 0, 0, 0);
+  const [a, m, d] = vence.split("-").map(Number);
+  const dias = Math.round((new Date(a, m - 1, d) - hoy) / 86400000);
+  if (!abierta) return `para el ${fecha(vence)}`;
+  if (dias < 0) return `venció hace ${-dias} ${dias === -1 ? "día" : "días"}`;
+  if (dias === 0) return "vence hoy";
+  if (dias === 1) return "vence mañana";
+  return `vence en ${dias} días · ${fecha(vence).slice(0, 5)}`;
+}
+
+function ticketHtml(t, lado) {
+  const abierta = t.estado === "pendiente" || t.estado === "en_curso";
+  const vence = venceTxt(t.vence, abierta);
+  const atrasada = abierta && /^venció/.test(vence);
+  const quien = lado === "recibidas" ? `De <b>${esc(t.de_nombre)}</b>` : `Para <b>${esc(t.para_nombre)}</b>`;
+  const acciones = !abierta ? "" : lado === "recibidas"
+    ? `${t.estado === "pendiente" ? `<button class="bt bt--fino bt--chico" data-tarea="${t.id}" data-hacer="en_curso">Empezar</button>` : ""}
+       <button class="bt bt--chico" data-tarea="${t.id}" data-hacer="hecha">Marcar hecha</button>
+       <button class="bt bt--fino bt--chico" data-tarea="${t.id}" data-hacer="rechazada">Rechazar</button>`
+    : `<button class="bt bt--fino bt--chico" data-tarea="${t.id}" data-hacer="cancelada">Cancelar</button>`;
+  return `<article class="ticket ticket--${t.prioridad}${abierta ? "" : " ticket--cerrada"}">
+    <header><span class="ticket__prio">${esc(PRIORIDAD_TXT[t.prioridad])}</span>
+      <span class="ticket__estado ticket__estado--${t.estado}">${esc(ESTADO_TAREA[t.estado])}</span></header>
+    <h4>${esc(t.titulo)}</h4>
+    ${t.detalle ? `<p class="ticket__detalle">${esc(t.detalle)}</p>` : ""}
+    <p class="ticket__meta">${quien}${vence ? ` · <span${atrasada ? ' class="ticket__atraso"' : ""}>${esc(vence)}</span>` : ""}</p>
+    ${t.respuesta ? `<p class="ticket__resp"><b>${t.estado === "rechazada" ? "Motivo" : "Respuesta"}:</b> ${esc(t.respuesta)}</p>` : ""}
+    ${acciones ? `<footer>${acciones}</footer>` : ""}
+  </article>`;
+}
+
+function pintarTickets(datos, falla) {
+  const caja = $("#tickets");
+  if (!caja) return;
+  if (falla || datos?.sin_migracion) {
+    caja.innerHTML = aviso("ojo", "Las tareas todavía no están activas.",
+      falla ? ` No se pudieron cargar: ${falla}` : " " + datos.aviso);
+    return;
+  }
+  const recibidas = datos.recibidas || [], enviadas = datos.enviadas || [];
+  const abiertas = l => l.filter(t => t.estado === "pendiente" || t.estado === "en_curso").length;
+  const lista = tareasPestana === "recibidas" ? recibidas : enviadas;
+  const vacio = tareasPestana === "recibidas"
+    ? "Nadie te ha pedido nada. Cuando alguien del equipo te pida una tarea, aparece acá."
+    : "No has pedido tareas en las últimas dos semanas.";
+  caja.innerHTML = `
+    <div class="tickets__cab">
+      <div><h3>Tareas del equipo</h3>
+        <p>${abiertas(recibidas)} para ti · ${abiertas(enviadas)} que pediste y siguen abiertas</p></div>
+      <button class="bt" type="button" id="pedir-tarea">+ Pedir una tarea</button>
+    </div>
+    <div class="tickets__pestanas" role="tablist">
+      <button role="tab" aria-selected="${tareasPestana === "recibidas"}" data-pestana="recibidas">Para mí <span>${abiertas(recibidas)}</span></button>
+      <button role="tab" aria-selected="${tareasPestana === "enviadas"}" data-pestana="enviadas">Las que pedí <span>${abiertas(enviadas)}</span></button>
+    </div>
+    <form class="tickets__form" id="form-tarea" hidden>
+      <div class="rejilla">
+        <label class="campo"><span>Para</span>
+          <select name="para" required><option value="">Elija a quién</option>
+            ${(datos.equipo || []).map(p => `<option value="${esc(p.usuario)}">${esc(p.nombre)}${p.usuario === estado.usuario.usuario ? " (yo)" : ""} · ${esc(p.rol)}</option>`).join("")}
+          </select></label>
+        <label class="campo"><span>Prioridad</span>
+          <select name="prioridad">${["normal", "alta", "urgente"].map(p => `<option value="${p}">${PRIORIDAD_TXT[p]}</option>`).join("")}</select></label>
+        <label class="campo"><span>Para cuándo (opcional)</span>
+          <input name="vence" type="date" min="${new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" })}"></label>
+        <label class="campo tickets__ancho"><span>Qué hay que hacer</span>
+          <input name="titulo" maxlength="160" required placeholder="Ej.: Subir el F30-1 de octubre a la carpeta de Puelche"></label>
+        <label class="campo tickets__ancho"><span>Detalle (opcional)</span>
+          <textarea name="detalle" rows="3" maxlength="4000" placeholder="Lo que la otra persona necesita saber para hacerla sin tener que preguntar."></textarea></label>
+      </div>
+      <div class="tickets__form-pie">
+        <button class="bt bt--fino" type="button" id="cancelar-tarea">Cancelar</button>
+        <button class="bt" type="submit">Enviar la tarea</button>
+      </div>
+    </form>
+    <div class="tickets__lista">${lista.length ? lista.map(t => ticketHtml(t, tareasPestana)).join("") : `<p class="inicio-vacio">${vacio}</p>`}</div>`;
+
+  const form = $("#form-tarea");
+  $("#pedir-tarea").onclick = () => { form.hidden = false; form.querySelector("[name=para]").focus(); };
+  $("#cancelar-tarea").onclick = () => { form.reset(); form.hidden = true; };
+  caja.querySelectorAll("[data-pestana]").forEach(b => b.onclick = () => {
+    tareasPestana = b.dataset.pestana;
+    pintarTickets(datos);
+  });
+  form.onsubmit = async ev => {
+    ev.preventDefault();
+    const bt = form.querySelector("button[type=submit]");
+    bt.disabled = true;
+    try {
+      const cuerpo = Object.fromEntries(new FormData(form));
+      const r = await pedir("/tareas", { method: "POST", body: JSON.stringify(cuerpo) });
+      recado(`Tarea enviada a ${r.tarea.para_nombre}`);
+      tareasPestana = r.tarea.para_usuario === estado.usuario.usuario ? "recibidas" : "enviadas";
+      pintarTickets(await pedir("/tareas"));
+    } catch (e) {
+      bt.disabled = false;
+      recado(e.message, "mal");
+    }
+  };
+  caja.querySelectorAll("[data-hacer]").forEach(b => b.onclick = async () => {
+    const hacer = b.dataset.hacer;
+    const cuerpo = { estado: hacer };
+    if (hacer === "rechazada") {
+      const motivo = prompt("¿Por qué la rechaza? Quien la pidió va a leer esto.");
+      if (motivo === null) return;
+      cuerpo.respuesta = motivo;
+    } else if (hacer === "hecha") {
+      const nota = prompt("¿Algo que decirle a quien la pidió? (opcional)", "");
+      if (nota === null) return;
+      cuerpo.respuesta = nota;
+    } else if (hacer === "cancelada" && !confirm("¿Cancelar esta tarea? Queda a la vista como cancelada.")) {
+      return;
+    }
+    b.disabled = true;
+    try {
+      await pedir(`/tareas/${b.dataset.tarea}`, { method: "PATCH", body: JSON.stringify(cuerpo) });
+      recado({ en_curso: "Tarea en curso", hecha: "Tarea marcada como hecha",
+               rechazada: "Tarea rechazada", cancelada: "Tarea cancelada" }[hacer]);
+      pintarTickets(await pedir("/tareas"));
+    } catch (e) {
+      b.disabled = false;
+      recado(e.message, "mal");
+    }
+  });
+}
+
+
 const mesVecino = (mes, paso) => {
   const [a, m] = mes.split("-").map(Number);
   const d = new Date(Date.UTC(a, m - 1 + paso, 1));
@@ -4545,6 +4740,7 @@ function enganchesRotacion(dependencias, conDeps) {
 }
 
 const VISTAS = {
+  inicio: { rotulo: "Inicio", pintar: pintarInicio },
   panel: { rotulo: "Panel", pintar: pintarPanel, modulo: "facturacion" },
   calendario: { rotulo: "Calendario", pintar: pintarCalendario, modulo: "facturacion" },
   contactos: { rotulo: "Contactos web", pintar: pintarContactos, modulo: "facturacion" },
@@ -4588,6 +4784,7 @@ const VISTAS = {
    El orden de acá manda también para qué se abre al entrar: la primera
    sección que la cuenta pueda ver. */
 const GRUPOS = [
+  { rotulo: "Espacio de trabajo", vistas: ["inicio"] },
   { rotulo: "Cobranza",    vistas: ["panel", "calendario", "pagos", "bitacora"] },
   { rotulo: "Comercial",   vistas: ["contactos", "cotizaciones"] },
   { rotulo: "Operaciones", vistas: ["servicio", "instalaciones", "extra", "rotacion", "libro", "trabajadores"] },

@@ -29,6 +29,7 @@ import * as rotaciones from './rotaciones.js';
 import * as pagos from './pagos.js';
 import * as usr from './usuarios.js';
 import * as alertas from './alertas.js';
+import * as tareas from './tareas.js';
 import { redireccionHttps, cabecerasSeguridad, conCabeceras, soloHttps }
   from './seguridad.js';
 import { ipDe, huellaDe, revisarLimite, limpiarHuellas, MENSAJES as MENSAJES_LIMITE,
@@ -390,6 +391,36 @@ async function api(request, env, url, usuario) {
     const r = await lote.aplicar(env, usuario, puede, cuerpo);
     if (r.error) return error(r.error, r.status);
     return json(r);
+  }
+
+  // ------------------------------------------------------------ tareas
+  // Lo que un miembro de la oficina le pide a otro. No pide módulo: el que
+  // tiene cuenta de oficina es parte del equipo, y lo que puede hacer con
+  // cada tarea (moverla, cancelarla, corregirla) lo decide `src/tareas.js`
+  // según sea quien la pidió o quien la recibió.
+  if (ruta === '/tareas' || ruta.startsWith('/tareas/')) {
+    if (!(await tareas.tablasListas(env))) {
+      if (metodo === 'GET') {
+        return json({ sin_migracion: true, aviso: tareas.avisoMigracion(),
+                      recibidas: [], enviadas: [], equipo: [] });
+      }
+      return error(tareas.avisoMigracion(), 503);
+    }
+    if (ruta === '/tareas' && metodo === 'GET') {
+      return json(await tareas.listar(env, usuario));
+    }
+    if (ruta === '/tareas' && metodo === 'POST') {
+      const r = await tareas.crear(env, usuario, cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r, 201);
+    }
+    const mTarea = ruta.match(/^\/tareas\/(\d+)$/);
+    if (mTarea && metodo === 'PATCH') {
+      const r = await tareas.cambiar(env, usuario, Number(mTarea[1]), cuerpo);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+    return error('Ruta no encontrada', 404);
   }
 
   // ---------------------------------------------------------- usuarios
@@ -2493,6 +2524,7 @@ const RELACIONES = [
   'rotaciones', 'rotacion_puntos', 'rotacion_dias', 'v_rotacion_dias',
   'dependencias', 'v_dependencias',
   'avisos_documentos', 'envios_alertas',
+  'tareas',
 ];
 
 const COLUMNAS = [
