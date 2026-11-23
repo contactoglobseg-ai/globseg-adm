@@ -579,7 +579,7 @@ async function pintarDocumentacion() {
               title="Marcar como subido a Pronexo">${esc(x.nombre)} ✓</button>`).join("")}</div>` : ""}</td>
         <td class="nowrap">
           ${p.faltan + p.vencidos + p.por_vencer ? `<button class="bt bt--chico" data-subir-faltan="${p.id}"
-             title="Subir de una vez los archivos que le faltan">Subir lo que falta</button>` : ""}
+             title="Subir de una vez los archivos que le faltan, o su carpeta completa">Subir pendientes</button>` : ""}
           <button class="bt bt--fino bt--chico" data-ver-ficha="${p.id}">Ver ficha</button>
           ${pro.length > 1 ? `<button class="bt bt--fino bt--chico" data-pronexo-persona="${p.id}"
              title="Marca como subido todo lo suyo que falta">Todo en Pronexo</button>` : ""}</td>
@@ -800,7 +800,7 @@ async function pintarSubirFaltan(id) {
     let html = `<div class="pie-form" style="padding:0 0 12px;justify-content:flex-start">
       <button class="bt bt--fino" id="sf-volver">← Volver a la lista</button></div>
     <section class="caja">
-      <div class="caja__tit"><h2>Subir lo que falta · ${esc(p.nombre)}</h2>
+      <div class="caja__tit"><h2>Subir pendientes · ${esc(p.nombre)}</h2>
         <span class="nota">${esc(p.rut)} · ${rotCargo(p.cargo)}${p.instalacion ? " · " + esc(p.instalacion) : ""}</span></div>
       <div style="padding:0 16px 14px">
         <div class="sub" style="margin:0 0 6px">Pendiente${pendientes.length ? "" : ": nada, está al día"}</div>
@@ -814,13 +814,20 @@ async function pintarSubirFaltan(id) {
     </section>
 
     <section class="caja">
-      <label id="sf-zona" style="display:block;margin:0 16px 14px;padding:28px 16px;text-align:center;cursor:pointer;
+      <div id="sf-zona" style="margin:0 16px 14px;padding:24px 16px;text-align:center;
           border:2px dashed var(--borde);border-radius:var(--r);background:var(--sup-2)">
-        <b>Arrastre aquí los archivos de ${esc(p.nombre.split(" ")[0])}</b>
-        <span class="sub" style="display:block;margin:4px 0 0">o toque para elegirlos · PDF o foto (JPG, PNG, HEIC), hasta 10 MB cada uno.
-          El papel se propone por el nombre del archivo; revíselo antes de subir.</span>
+        <b>Arrastre aquí la carpeta de ${esc(p.nombre.split(" ")[0])}, o sus archivos</b>
+        <span class="sub" style="display:block;margin:4px 0 10px">Se recorren también las subcarpetas. Entran los PDF y las
+          fotos (JPG, PNG, HEIC) de hasta 10 MB; lo demás se deja fuera y se dice qué. El papel se propone por el nombre
+          del archivo y de su carpeta: revíselo antes de subir.</span>
+        <button type="button" class="bt" id="sf-elegir-carpeta"${S.ocupado ? " disabled" : ""}>Elegir carpeta completa</button>
+        <button type="button" class="bt bt--fino" id="sf-elegir-archivos"${S.ocupado ? " disabled" : ""}>Elegir archivos</button>
         <input type="file" id="sf-archivos" multiple accept="application/pdf,image/*" style="display:none">
-      </label>
+        <input type="file" id="sf-carpeta" webkitdirectory multiple style="display:none">
+      </div>
+      ${S.dejados?.length ? `<div style="margin:0 16px 14px">${aviso("ojo",
+        `${S.dejados.length} archivo${S.dejados.length === 1 ? "" : "s"} de la carpeta no se suben`,
+        S.dejados.map(d => `${d.ruta} (${d.motivo})`).join(" · "))}</div>` : ""}
 
       ${porSubir.length ? `<div class="desliza"><table style="min-width:720px">
         <thead><tr><th>Archivo</th><th style="width:34%">Qué papel es</th><th style="width:22%">Fecha</th><th style="width:1%"></th></tr></thead><tbody>
@@ -831,14 +838,15 @@ async function pintarSubirFaltan(id) {
           const repetido = f.tipo && repetidos.get(f.tipo) > 1;
           const yaLoTiene = f.tipo && !codPend.has(f.tipo) && !S.hechos.has(f.tipo);
           return `<tr>
-            <td><b style="word-break:break-all">${esc(f.archivo.name)}</b><span class="sub">${pesoArchivo(f.archivo.size)}${
+            <td><b style="word-break:break-all">${esc(f.archivo.name)}</b><span class="sub">${
+              f.ruta && f.ruta !== f.archivo.name ? esc(f.ruta.split("/").slice(0, -1).join(" / ")) + " · " : ""}${pesoArchivo(f.archivo.size)}${
               f.adivinado ? " · propuesto por el nombre" : ""}</span>
               ${f.estado === "error" ? `<span class="sub" style="color:var(--rojo)">${esc(f.error)}</span>` : ""}
               ${f.estado === "subiendo" ? `<span class="sub">Subiendo…</span>` : ""}</td>
             <td><select data-sf-tipo="${i}"${S.ocupado || f.documentoId ? " disabled" : ""}>${opciones(f.tipo)}</select>
               ${!f.tipo ? `<span class="sub" style="color:var(--ambar)">No se reconoció: elija el papel</span>` : ""}
               ${repetido ? `<span class="sub" style="color:var(--ambar)">Hay otro archivo para este mismo papel: quedarán como dos documentos (sirve para cédula por los dos lados)</span>` : ""}
-              ${yaLoTiene ? `<span class="sub">Ya tiene uno cargado y vigente: este pasa a ser el último</span>` : ""}</td>
+              ${yaLoTiene ? `<span class="sub">Ya tiene este papel cargado: quedan los dos, y vale el que vence más tarde. Si es una copia vieja, quítela</span>` : ""}</td>
             <td>${pide ? `<label class="campo" style="margin:0"><span>${pide === "emision" ? "Emitido el" : "Vence el"}</span>
                 <input type="date" data-sf-fecha="${i}" value="${f.fecha || ""}"${pide === "emision" ? ` max="${hoyISO()}"` : ""}${S.ocupado || f.documentoId ? " disabled" : ""}></label>
                 ${!f.fecha ? `<span class="sub" style="color:var(--ambar)">Obligatoria: sin fecha nunca avisa que venció</span>` : ""}`
@@ -850,6 +858,8 @@ async function pintarSubirFaltan(id) {
         <div class="pie-form" style="padding:12px 16px">
           <button class="bt" id="sf-subir"${!listos.length || listos.length < porSubir.length || S.ocupado ? " disabled" : ""}>Subir ${
             porSubir.length} documento${porSubir.length === 1 ? "" : "s"}</button>
+          ${porSubir.filter(f => !f.tipo).length > 1 ? `<button class="bt bt--fino" id="sf-quitar-raros"${S.ocupado ? " disabled" : ""}>Quitar los ${
+            porSubir.filter(f => !f.tipo).length} sin reconocer</button>` : ""}
           <span class="mensaje" id="sf-msg">${listos.length < porSubir.length
             ? `Faltan ${porSubir.length - listos.length} por completar (papel o fecha)` : ""}</span>
         </div>` : ""}
@@ -858,23 +868,76 @@ async function pintarSubirFaltan(id) {
     $("#app").innerHTML = html;
     $("#sf-volver").onclick = volver;
 
+    // Cada elemento es { archivo, ruta }: la ruta dentro de la carpeta sirve
+    // para adivinar («Antecedentes/scan01.jpg») y para decir de dónde salió.
     const agregar = (lista) => {
-      for (const archivo of lista) {
-        if (archivo.size > MAX_ARCHIVO) {
-          alert(`«${archivo.name}» pesa ${pesoArchivo(archivo.size)} y el máximo es 10 MB. `
-            + "Si es una foto, sáquela con menos resolución o conviértala a PDF.");
+      S.dejados = [];
+      const ya = new Set(S.filas.map(f => f.ruta + "|" + f.archivo.size));
+      for (const { archivo, ruta } of lista) {
+        const nombre = archivo.name;
+        if (nombre.startsWith(".") || nombre.startsWith("~$")) continue;     // .DS_Store, temporales de Office
+        if (ya.has(ruta + "|" + archivo.size)) continue;                     // la misma carpeta soltada dos veces
+        if (!/\.(pdf|jpe?g|png|webp|heic|heif)$/i.test(nombre)) {
+          S.dejados.push({ ruta, motivo: /\.(docx?|xlsx?|odt)$/i.test(nombre)
+            ? "Word o Excel: guárdelo como PDF" : "no es PDF ni foto" });
           continue;
         }
-        const tipo = adivinarTipo(archivo.name, porCodigo);
-        S.filas.push({ archivo, tipo, adivinado: !!tipo, fecha: "", estado: "nuevo" });
+        if (archivo.size > MAX_ARCHIVO) {
+          S.dejados.push({ ruta, motivo: `pesa ${pesoArchivo(archivo.size)}, el máximo es 10 MB` });
+          continue;
+        }
+        // Primero el nombre del archivo; si no dice nada, el de su subcarpeta.
+        // La carpeta de más arriba no cuenta: es la de la persona, y si se
+        // llamara «Contrato Alan» todo saldría como contrato.
+        const carpetas = ruta.split("/").slice(1, -1).join(" ");
+        const tipo = adivinarTipo(nombre, porCodigo) || adivinarTipo(carpetas, porCodigo);
+        S.filas.push({ archivo, ruta, tipo, adivinado: !!tipo, fecha: "", estado: "nuevo" });
       }
       pintar();
     };
+    const deInput = (input) => [...input.files].map(archivo =>
+      ({ archivo, ruta: archivo.webkitRelativePath || archivo.name }));
+    $("#sf-archivos").onchange = e => agregar(deInput(e.target));
+    $("#sf-carpeta").onchange = e => agregar(deInput(e.target));
+    $("#sf-elegir-archivos").onclick = () => $("#sf-archivos").click();
+    $("#sf-elegir-carpeta").onclick = () => $("#sf-carpeta").click();
+
+    // Una carpeta soltada llega como una entrada, no como archivos: hay que
+    // recorrerla. readEntries entrega de a tandas (100 en Chrome), así que se
+    // llama hasta que devuelva vacío.
+    const leerEntrada = async (entrada, salida) => {
+      if (entrada.isFile) {
+        const archivo = await new Promise((ok, mal) => entrada.file(ok, mal));
+        salida.push({ archivo, ruta: entrada.fullPath.replace(/^\//, "") });
+      } else if (entrada.isDirectory) {
+        const lector = entrada.createReader();
+        for (;;) {
+          const tanda = await new Promise((ok, mal) => lector.readEntries(ok, mal));
+          if (!tanda.length) break;
+          for (const e of tanda) await leerEntrada(e, salida);
+        }
+      }
+    };
     const zona = $("#sf-zona");
-    $("#sf-archivos").onchange = e => agregar([...e.target.files]);
     zona.ondragover = e => { e.preventDefault(); zona.style.borderColor = "var(--acento)"; };
     zona.ondragleave = () => { zona.style.borderColor = ""; };
-    zona.ondrop = e => { e.preventDefault(); zona.style.borderColor = ""; if (!S.ocupado) agregar([...e.dataTransfer.files]); };
+    zona.ondrop = async e => {
+      e.preventDefault(); zona.style.borderColor = "";
+      if (S.ocupado) return;
+      // Las entradas se sacan antes del primer await: después el navegador
+      // vacía la lista del arrastre.
+      const entradas = [...e.dataTransfer.items].map(i => i.webkitGetAsEntry?.()).filter(Boolean);
+      if (!entradas.length) {
+        return agregar([...e.dataTransfer.files].map(archivo => ({ archivo, ruta: archivo.name })));
+      }
+      const salida = [];
+      try { for (const en of entradas) await leerEntrada(en, salida); }
+      catch (err) { alert("No se pudo leer la carpeta: " + err.message); }
+      agregar(salida);
+    };
+    if ($("#sf-quitar-raros")) $("#sf-quitar-raros").onclick = () => {
+      S.filas = S.filas.filter(f => f.tipo || f.estado === "hecho"); pintar();
+    };
 
     document.querySelectorAll("[data-sf-tipo]").forEach(s => {
       s.onchange = () => { const f = S.filas[s.dataset.sfTipo]; f.tipo = s.value; f.adivinado = false; f.fecha = ""; pintar(); };
@@ -902,7 +965,7 @@ async function pintarSubirFaltan(id) {
               trabajador_id: id, tipo: f.tipo,
               ...(pide === "emision" ? { fecha_emision: f.fecha } : {}),
               ...(pide === "vencimiento" ? { fecha_vencimiento: f.fecha } : {}),
-              observacion: "Cargado desde «Subir lo que falta»",
+              observacion: "Cargado desde «Subir pendientes»",
             }) });
             f.documentoId = r.documento.id;
           }
@@ -1067,7 +1130,7 @@ async function pintarRrhh() {
         ${panel.faltantes.map(t => `<tr>
           <td><b>${esc(t.nombre)}</b><span class="sub">${rotCargo(t.cargo)}</span></td>
           <td>${t.faltan.map(f => `<span class="sello e-en_curso" style="margin:0 4px 4px 0">${esc(f)}</span>`).join("")}</td>
-          <td class="nowrap"><button class="bt bt--chico" data-subir-faltan="${t.id}">Subir lo que falta</button>
+          <td class="nowrap"><button class="bt bt--chico" data-subir-faltan="${t.id}">Subir pendientes</button>
             <button class="bt bt--fino bt--chico" data-ver-ficha="${t.id}">Abrir ficha</button></td>
         </tr>`).join("")}
       </tbody></table></div></section>`;
