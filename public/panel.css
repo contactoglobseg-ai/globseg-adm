@@ -546,3 +546,71 @@ tr.marcada:hover{background:var(--acento-suave)}
   background:var(--verde)}
 .recado--mal::before{background:var(--ambar)}
 body.hay-seleccion .recado{bottom:104px}
+
+/* ---------- portada tipo espacio personal ---------- */
+.inicio{max-width:1120px;margin:0 auto;padding:clamp(4px,2vw,22px) 0 30px}
+.inicio-cab{display:flex;align-items:center;justify-content:space-between;gap:20px;margin:0 0 24px}
+.inicio-saludo{font-size:.68rem;font-weight:700;letter-spacing:.12em;color:var(--texto-3)}
+.inicio-cab h2{margin:7px 0 2px;font-size:clamp(1.7rem,3vw,2.35rem);letter-spacing:-.045em}
+.inicio-cab p{margin:0;color:var(--texto-2)}
+.inicio-perfil{display:grid;grid-template-columns:46px auto;grid-template-rows:auto auto;align-items:center;column-gap:11px;text-align:left;padding:10px 14px;border:1px solid var(--borde-suave);border-radius:16px;background:var(--sup-2);color:var(--texto);font:inherit;cursor:default}
+.inicio-perfil>span{grid-row:1/3;width:46px;height:46px;display:grid;place-items:center;border-radius:50%;background:var(--acento-suave);color:var(--acento);font-weight:700}
+.inicio-perfil b{font-size:.88rem}.inicio-perfil small{color:var(--texto-3);font-size:.76rem}
+.inicio-mosaico{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.inicio-card,.inicio-area{border:1px solid var(--borde-suave);border-radius:20px;background:var(--sup-2);box-shadow:var(--sombra);color:var(--texto)}
+.inicio-card{padding:18px 20px;min-height:190px}
+.inicio-agenda{grid-column:span 2;grid-row:span 2;min-height:360px}
+.inicio-card header{display:flex;align-items:center;gap:12px}
+.inicio-card header h3{margin:0;font-size:1rem}.inicio-card header p{margin:3px 0 0;color:var(--texto-3);font-size:.8rem}
+.inicio-icono{width:40px;height:40px;display:grid;place-items:center;border-radius:13px;background:var(--acento-suave);color:var(--acento);font-size:1.25rem}
+.inicio-card header button{margin-left:auto;border:0;background:none;color:var(--texto-3);font-size:1.2rem;cursor:pointer}
+.inicio-eventos{margin:20px 0 12px}.inicio-evento{display:grid;grid-template-columns:58px 1fr auto;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--borde-suave)}
+.inicio-evento__dia{font-size:.78rem;font-weight:700;color:var(--acento)}.inicio-evento b{display:block;font-size:.86rem}.inicio-evento small{display:block;margin-top:3px;color:var(--texto-3)}.inicio-evento i{font-style:normal;font-size:.72rem;color:var(--ambar)}
+.inicio-vacio{padding:12px 0;color:var(--texto-3);font-size:.86rem;line-height:1.5}
+.inicio-link{display:flex;align-items:center;justify-content:space-between;width:100%;padding:11px 0 0;border:0;border-top:1px solid var(--borde-suave);background:none;color:var(--acento);font:600 .82rem var(--cuerpo);text-align:left;cursor:pointer}
+.inicio-tarea-cuerpo{display:flex;align-items:baseline;gap:8px;margin:18px 0 6px}.inicio-tarea-cuerpo strong{font-size:2.2rem;letter-spacing:-.05em}.inicio-tarea-cuerpo span{font-size:.8rem;color:var(--texto-2)}
+.inicio-nota{margin:0 0 14px;font-size:.78rem;line-height:1.45;color:var(--texto-3)}
+.inicio-area{display:flex;align-items:center;gap:12px;min-height:82px;padding:14px;text-align:left;font:inherit;cursor:pointer;transition:transform .18s,border-color .18s}
+.inicio-area:hover{transform:translateY(-2px);border-color:var(--acento)}.inicio-area__icon{width:42px;height:42px;flex:none;display:grid;place-items:center;border-radius:14px;font-size:1.2rem}
+.inicio-area b,.inicio-area small{display:block}.inicio-area b{font-size:.9rem}.inicio-area small{margin-top:4px;font-size:.73rem;color:var(--texto-3)}.inicio-area i{margin-left:auto;color:var(--texto-3);font-style:normal}
+.inicio-area--menta .inicio-area__icon{background:rgba(0,232,138,.13);color:#00b875}.inicio-area--azul .inicio-area__icon{background:rgba(0,167,245,.13);color:#0098dc}.inicio-area--lila .inicio-area__icon{background:rgba(147,115,255,.15);color:#9b82ff}.inicio-area--ambar .inicio-area__icon{background:var(--ambar-suave);color:var(--ambar)}.inicio-area--rosa .inicio-area__icon{background:rgba(236,117,178,.14);color:#dc64a1}
+.inicio-pie{margin:15px 2px;color:var(--texto-3);font-size:.75rem}
+@media(max-width:850px){.inicio-mosaico{grid-template-columns:repeat(2,minmax(0,1fr))}.inicio-agenda{grid-column:span 2;grid-row:auto}.inicio-tareas{min-height:190px}}
+@media(max-width:560px){.inicio-cab{align-items:flex-start}.inicio-perfil{grid-template-columns:38px auto;padding:8px 10px}.inicio-perfil>span{width:38px;height:38px}.inicio-perfil b{max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.inicio-mosaico{grid-template-columns:1fr}.inicio-agenda{grid-column:auto}.inicio-card{min-height:unset}.inicio-evento{grid-template-columns:48px 1fr}.inicio-evento i{grid-column:2}}
+
+/* ---------- tickets de tareas del equipo ----------
+   Van arriba del mosaico, a todo el ancho: es lo único del Inicio que otra
+   persona puso ahí. La franja de color a la izquierda es la prioridad, y es
+   lo primero que se lee: urgente en rojo, alta en ámbar, normal sin color. */
+.tickets{margin:0 0 18px;padding:18px 20px;border:1px solid var(--borde-suave);border-radius:20px;background:var(--sup-2);box-shadow:var(--sombra);-webkit-backdrop-filter:var(--desenfoque);backdrop-filter:var(--desenfoque)}
+.tickets .aviso{margin:0}
+.tickets__cab{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}
+.tickets__cab h3{margin:0;font-size:1rem}.tickets__cab p{margin:3px 0 0;color:var(--texto-3);font-size:.8rem}
+.tickets__pestanas{display:flex;gap:6px;margin:14px 0 12px}
+.tickets__pestanas button{border:1px solid var(--borde-suave);background:none;color:var(--texto-2);font:500 .8rem var(--cuerpo);padding:6px 12px;border-radius:999px;cursor:pointer}
+.tickets__pestanas button span{display:inline-block;min-width:1.4em;margin-left:4px;padding:0 6px;border-radius:999px;background:var(--sup-3);font-size:.72rem;text-align:center}
+.tickets__pestanas button[aria-selected="true"]{background:var(--acento-suave);color:var(--acento);border-color:transparent}
+.tickets__form{margin:0 0 14px;border:1px solid var(--borde-suave);border-radius:16px;background:var(--sup-3)}
+.tickets__form .rejilla{grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}
+.tickets__ancho{grid-column:1/-1}
+.tickets__form textarea{resize:vertical;font:inherit}
+.tickets__form-pie{display:flex;justify-content:flex-end;gap:8px;padding:0 16px 16px}
+.tickets__lista{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:12px}
+.ticket{display:flex;flex-direction:column;gap:8px;padding:14px 16px 14px 18px;border:1px solid var(--borde-suave);border-left:4px solid var(--borde-suave);border-radius:14px;background:var(--sup-3)}
+.ticket--alta{border-left-color:var(--ambar)}
+.ticket--urgente{border-left-color:var(--rojo)}
+.ticket--cerrada{opacity:.62}
+.ticket header{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.ticket__prio{font-size:.66rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--texto-3)}
+.ticket--alta .ticket__prio{color:var(--ambar)}.ticket--urgente .ticket__prio{color:var(--rojo)}
+.ticket__estado{font-size:.7rem;font-weight:600;padding:3px 9px;border-radius:999px;background:var(--sup-2);color:var(--texto-2)}
+.ticket__estado--en_curso{background:var(--acento-suave);color:var(--acento)}
+.ticket__estado--hecha{background:var(--verde-suave);color:var(--verde)}
+.ticket__estado--rechazada{background:var(--rojo-suave);color:var(--rojo)}
+.ticket h4{margin:0;font-size:.95rem;line-height:1.3}
+.ticket__detalle{margin:0;font-size:.82rem;line-height:1.5;color:var(--texto-2);white-space:pre-line;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+.ticket__meta{margin:0;font-size:.76rem;color:var(--texto-3)}.ticket__meta b{color:var(--texto-2);font-weight:600}
+.ticket__atraso{color:var(--rojo);font-weight:600}
+.ticket__resp{margin:0;padding:8px 10px;border-radius:10px;background:var(--sup-2);font-size:.78rem;line-height:1.45;color:var(--texto-2);white-space:pre-line}
+.ticket footer{display:flex;flex-wrap:wrap;gap:6px;margin-top:auto;padding-top:4px}
+@media(max-width:560px){.tickets{padding:14px}.tickets__cab .bt{width:100%;justify-content:center}.tickets__lista{grid-template-columns:1fr}}
