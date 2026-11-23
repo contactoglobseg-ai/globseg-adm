@@ -50,6 +50,14 @@ export const CLASES = {
   f30:                  'F30 · Certificado de antecedentes laborales y previsionales',
   f30_1:                'F30-1 · Certificado de cumplimiento de obligaciones',
   deuda_fiscal:         'Certificado de deuda fiscal · Tesorería',
+  contratos:            'Contratos y anexos',
+  documentacion_personal: 'Documentación del personal al día',
+  comprobante_pago:     'Comprobante de pago de remuneraciones',
+  finiquitos:           'Finiquitos del mes',
+  entrega_epp:          'Registro de entrega de EPP',
+  mutual:               'Certificado de la mutual',
+  seguro_vida:          'Póliza de seguro de vida del personal',
+  directiva_os10:       'Directiva de funcionamiento OS-10',
   previred:             'Planilla Previred',
   factura:              'Factura',
   otro:                 'Otro documento',
@@ -61,7 +69,17 @@ export const CLASES = {
  * oficina adivinando cuáles.
  */
 export const EXIGIDOS = ['libro_asistencia', 'cotizaciones_pagadas', 'libro_remuneraciones',
-                         'liquidaciones', 'f30', 'f30_1', 'deuda_fiscal'];
+                         'liquidaciones', 'f30', 'f30_1', 'deuda_fiscal',
+                         'contratos', 'documentacion_personal'];
+
+/**
+ * Lo que unos mandantes piden y otros no (19-11-2026). Se ofrece en la carpeta
+ * pero **no cuenta como faltante**: una carpeta que dice «faltan 16» cuando el
+ * mandante pide nueve deja de leerse, y la alerta que importa se pierde entre
+ * las que no.
+ */
+export const OPCIONALES = ['comprobante_pago', 'finiquitos', 'entrega_epp', 'mutual',
+                           'seguro_vida', 'directiva_os10', 'factura'];
 
 /**
  * Las dos clases que agrega la migración del 02-11-2026. Si no se pegó, la
@@ -69,10 +87,18 @@ export const EXIGIDOS = ['libro_asistencia', 'cotizaciones_pagadas', 'libro_remu
  * hablando de un check constraint: acá se cambia por el nombre del archivo que
  * hay que pegar, que es lo único que se puede hacer al respecto.
  */
-const CLASES_NUEVAS = ['cotizaciones_pagadas', 'deuda_fiscal'];
-export const FALTA_MIGRACION_CLASES =
-  'Falta aplicar la migración supabase/migrations/20261102140000_carpeta_completa.sql, '
+const MIGRACION_DE_CLASE = {
+  cotizaciones_pagadas: '20261102140000_carpeta_completa.sql',
+  deuda_fiscal:         '20261102140000_carpeta_completa.sql',
+};
+for (const c of ['contratos', 'documentacion_personal', 'comprobante_pago', 'finiquitos',
+                 'entrega_epp', 'mutual', 'seguro_vida', 'directiva_os10']) {
+  MIGRACION_DE_CLASE[c] = '20261119120000_carpeta_personal.sql';
+}
+export const faltaMigracionClase = (clase) =>
+  `Falta aplicar la migración supabase/migrations/${MIGRACION_DE_CLASE[clase]}, `
   + 'que es la que agrega este papel a la carpeta.';
+export const FALTA_MIGRACION_CLASES = faltaMigracionClase('deuda_fiscal');
 
 export const ESTADOS = ['armando', 'enviado', 'aprobado', 'pagado'];
 
@@ -148,6 +174,166 @@ async function insumos(env, mes, ids) {
   return { p, afps, tramos, contratos, cargas };
 }
 
+// ------------------------------------------------------- variables del mes
+
+/**
+ * Lo que el libro de asistencia dice de un mes, por persona.
+ *
+ * Esto existe desde el 08-11-2026, cuando el gerente decidió el reparto con
+ * Sistema Contable: el ERP sigue emitiendo la liquidación oficial y nosotros
+ * le entregamos el mes armado. Las variables del mes salen de acá.
+ *
+ * Tres cosas que conviene tener claras antes de leer el código:
+ *
+ *  - **Un día marcado es un día con entrada**, no con salida. La salida puede
+ *    faltar —el guardia se fue sin marcarla— y el día igual se trabajó. Por
+ *    eso los días se cuentan por `fecha` de la entrada y las jornadas sin
+ *    salida se cuentan aparte, en vez de perderse.
+ *  - **La salida hereda la fecha de su entrada**, que es como el libro guarda
+ *    el turno de noche. Por eso pedir el mes por `fecha` trae el turno
+ *    completo del 31 aunque termine el día 1 del mes siguiente, y no parte
+ *    ninguna jornada en dos.
+ *  - **Las horas no son horas extra.** Son las que estuvo. Las extra se pactan
+ *    y se autorizan; restarle la jornada a lo marcado y llamar extra a la
+ *    diferencia sería inventar un pacto. Van como dato, no como cálculo.
+ */
+const AUSENCIA_SIN_GOCE = ['permiso_sin_goce', 'falta_injustificada', 'suspension'];
+const AUSENCIA_LA_PAGA_OTRO = ['licencia_medica', 'accidente_trabajo'];
+
+const primeroDe = (mes) => `${mes}-01`;
+const comoDia = (iso) => Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10));
+const diasCorridos = (desde, hasta) =>
+  Math.round((comoDia(hasta) - comoDia(desde)) / 86400000) + 1;
+const horasEntre = (a, b) => (new Date(b) - new Date(a)) / 3600000;
+
+const sinAsistencia = () => ({
+  dias_marcados: 0,
+  jornadas_sin_salida: 0,
+  horas: 0,
+  ausencias: {},
+  dias_sin_goce: 0,
+  dias_los_paga_otro: 0,
+  dias_con_marca_y_ausencia: [],
+});
+
+/**
+ * Lee el mes del libro y lo resume por persona.
+ *
+ * Devuelve `{ leido, aviso, filas }`. `leido` en false significa que el libro
+ * no se pudo leer —falta la migración de asistencia, o la base contestó mal—
+ * y entonces **no se toca lo que hubiera**: es la diferencia entre «no marcó
+ * ningún día» y «no sabemos cuántos marcó», y confundirlas deja a alguien con
+ * cero días en una planilla de sueldos.
+ */
+export async function asistenciaDelMes(env, mes, ids) {
+  const filas = new Map(ids.map((id) => [id, sinAsistencia()]));
+  if (!ids.length) return { leido: true, aviso: null, filas };
+
+  const enIds = `(${ids.join(',')})`;
+  const desde = primeroDe(mes);
+  const hasta = cierreDe(mes);
+
+  let marcas, ausencias;
+  try {
+    [marcas, ausencias] = await Promise.all([
+      buscar(env, 'marcas?select=trabajador_id,tipo,fecha,cuando'
+        + `&trabajador_id=in.${enIds}&fecha=gte.${desde}&fecha=lte.${hasta}`
+        + '&order=cuando.asc'),
+      buscar(env, 'ausencias?select=trabajador_id,tipo,desde,hasta,con_goce'
+        + `&trabajador_id=in.${enIds}&estado=eq.aprobada`
+        + `&desde=lte.${hasta}&hasta=gte.${desde}`),
+    ]);
+  } catch {
+    return {
+      leido: false,
+      aviso: 'No se pudo leer el libro de asistencia de este mes, así que los días '
+        + 'trabajados quedaron como estaban. El resto del cálculo no cambia.',
+      filas,
+    };
+  }
+
+  // Los días se juntan en un conjunto por persona: dos entradas el mismo día
+  // son el mismo día trabajado, no dos.
+  const diasPorId = new Map(ids.map((id) => [id, new Set()]));
+  const abierta = new Map();
+
+  for (const m of marcas) {
+    const r = filas.get(m.trabajador_id);
+    if (!r) continue;
+    if (m.tipo === 'entrada') {
+      // Una entrada con otra todavía abierta quiere decir que a la anterior
+      // nunca le marcaron la salida.
+      if (abierta.has(m.trabajador_id)) r.jornadas_sin_salida++;
+      abierta.set(m.trabajador_id, m);
+      diasPorId.get(m.trabajador_id).add(m.fecha);
+    } else {
+      const e = abierta.get(m.trabajador_id);
+      if (e) {
+        r.horas += horasEntre(e.cuando, m.cuando);
+        abierta.delete(m.trabajador_id);
+      }
+    }
+  }
+  for (const id of abierta.keys()) {
+    const r = filas.get(id);
+    if (r) r.jornadas_sin_salida++;
+  }
+
+  for (const [id, dias] of diasPorId) {
+    const r = filas.get(id);
+    r.dias_marcados = dias.size;
+    r.horas = Number(r.horas.toFixed(2));
+  }
+
+  for (const a of ausencias) {
+    const r = filas.get(a.trabajador_id);
+    if (!r) continue;
+    // Solo la parte de la ausencia que cae dentro del mes: una licencia del 25
+    // de octubre al 10 de noviembre son seis días de octubre y diez de
+    // noviembre, no dieciséis en cada uno.
+    const d1 = a.desde > desde ? a.desde : desde;
+    const d2 = a.hasta < hasta ? a.hasta : hasta;
+    const n = diasCorridos(d1, d2);
+    if (n <= 0) continue;
+    r.ausencias[a.tipo] = (r.ausencias[a.tipo] || 0) + n;
+    if (AUSENCIA_SIN_GOCE.includes(a.tipo) || a.con_goce === false) r.dias_sin_goce += n;
+    if (AUSENCIA_LA_PAGA_OTRO.includes(a.tipo)) r.dias_los_paga_otro += n;
+
+    // Marcó turno un día en que estaba con licencia o de vacaciones. No se
+    // corrige solo: las dos cosas están escritas y las dos pueden ser ciertas
+    // (una licencia cargada con el rango equivocado, un día que vino igual).
+    // Lo que no puede es pasar sin que nadie lo vea.
+    for (const f of diasPorId.get(a.trabajador_id) || []) {
+      if (f >= d1 && f <= d2) r.dias_con_marca_y_ausencia.push({ fecha: f, tipo: a.tipo });
+    }
+  }
+
+  return { leido: true, aviso: null, filas };
+}
+
+/**
+ * ¿Está la columna donde se guarda esto?
+ *
+ * Mismo criterio que `soportaUF()` en cotizaciones: se recuerda el sí —una
+ * columna no desaparece— y el no se vuelve a mirar, para que el módulo empiece
+ * a guardar en cuanto alguien pegue la migración, sin desplegar nada.
+ */
+let hayColumnaAsistencia = false;
+async function guardaAsistencia(env) {
+  if (hayColumnaAsistencia) return true;
+  try {
+    await buscar(env, 'remuneraciones_mes?select=asistencia&limit=1');
+    hayColumnaAsistencia = true;
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+export const FALTA_MIGRACION_VARIABLES =
+  'Falta aplicar la migración supabase/migrations/20261108120000_variables_mes.sql: '
+  + 'las variables del mes se calculan y se muestran, pero no quedan guardadas.';
+
 /** El contrato que corresponde a ese mes: el vigente, o el último que hubo. */
 function contratoDe(contratos, id, mes) {
   const suyos = contratos.filter((c) => c.trabajador_id === id);
@@ -185,10 +371,15 @@ export async function calcularMes(env, quien, { mes, instalacion_id }) {
     return { error: 'Esa instalación no tiene a nadie asignado en la ficha', status: 409 };
   }
   const ids = trabajadores.map((t) => t.id);
-  const [ins, previas] = await Promise.all([
+  const [ins, previas, asis, guarda] = await Promise.all([
     insumos(env, mes, ids),
     buscar(env, `remuneraciones_mes?select=*&mes=eq.${mes}&trabajador_id=in.(${ids.join(',')})`),
+    asistenciaDelMes(env, mes, ids),
+    guardaAsistencia(env),
   ]);
+  const avisos = [];
+  if (asis.aviso) avisos.push(asis.aviso);
+  if (!guarda) avisos.push(FALTA_MIGRACION_VARIABLES);
 
   const omitidos = [];
   let escritas = 0, cerradas = 0;
@@ -207,13 +398,21 @@ export async function calcularMes(env, quien, { mes, instalacion_id }) {
     const fila = {
       mes, trabajador_id: t.id, instalacion_id: inst, contrato_id: contrato.id,
       cargo: contrato.cargo || null,
-      dias_trabajados: previa?.dias_trabajados ?? null,
+      // Los días salen del libro de asistencia. Si la oficina los corrigió a
+      // mano, manda la corrección: el libro no sabe del día que esa persona
+      // trabajó en otro lado ni de la marca que nadie alcanzó a hacer. Y si el
+      // libro no se pudo leer, se deja lo que hubiera en vez de poner cero.
+      dias_trabajados: previa?.extra?.dias_trabajados_oficina
+        ? previa.dias_trabajados
+        : (asis.leido ? (asis.filas.get(t.id)?.dias_marcados ?? 0)
+                      : (previa?.dias_trabajados ?? null)),
       extra, detalle: liq,
       total_haberes: liq.haberes.total_haberes,
       total_descuentos: liq.descuentos.total_descuentos,
       liquido: liq.liquido,
       costo_empresa: liq.empresa.costo_total,
       estado: 'borrador',
+      ...(guarda && asis.leido ? { asistencia: asis.filas.get(t.id) ?? null } : {}),
     };
     if (previa) {
       await actualizar(env, `remuneraciones_mes?id=eq.${previa.id}`, fila);
@@ -224,7 +423,7 @@ export async function calcularMes(env, quien, { mes, instalacion_id }) {
   }
   await anotar(env, quien, 'remuneraciones_mes', inst, 'calculó el mes',
     `${mes}: ${escritas} liquidaciones` + (cerradas ? `, ${cerradas} ya cerradas sin tocar` : ''));
-  return { ok: true, escritas, cerradas, omitidos };
+  return { ok: true, escritas, cerradas, omitidos, avisos };
 }
 
 /** Las filas de un mes, con el nombre y el RUT pegados para la pantalla. */
@@ -279,11 +478,16 @@ export async function editarFila(env, quien, id, cuerpo) {
   if (!t || !contrato) return { error: 'Falta la ficha o el contrato de esa persona', status: 409 };
 
   const extra = {};
+  // La marca de «estos días los puso la oficina» no se pierde al corregir otra
+  // cosa: sin ella, el siguiente recálculo volvería a pisar los días con lo
+  // que dice el libro y la corrección se desharía sola.
+  if (fila.extra?.dias_trabajados_oficina) extra.dias_trabajados_oficina = true;
   for (const k of ['horas_extra_monto', 'bono_imponible', 'no_imponible', 'otros_descuentos',
                    'anticipo', 'apv']) {
     const v = cuerpo.extra?.[k];
     if (v !== undefined && v !== null && v !== '') extra[k] = entero(v) ?? 0;
   }
+  if (cuerpo.dias_trabajados !== undefined) extra.dias_trabajados_oficina = true;
   const ins = await insumos(env, fila.mes, [t.id]);
   const liq = liquidacionDe({ t, contrato, ins, mes: fila.mes, extra });
   const actualizada = await actualizar(env, `remuneraciones_mes?id=eq.${id}`, {
@@ -553,15 +757,126 @@ export async function detalleEstado(env, id) {
     : (dot?.trabajadores || []).map((t) => ({
         trabajador_id: t.id, nombre: t.nombre, rut: t.rut ? formatearRut(t.rut) : null }));
 
+  // Si leer las fichas falla, la carpeta abre igual sin esa sección: lo que
+  // no se puede es que un papel de una persona deje a toda la carpeta muda.
+  const personal = await papelesDelPersonal(env, personas, cierreDe(e.mes))
+    .catch((err) => ({ error: err.message || 'No se pudieron leer las fichas' }));
+
   return {
     estado: e,
     archivos: archivos.map((a) => ({ ...a, clase_nombre: CLASES[a.clase] || a.clase })),
     exigidos: EXIGIDOS.map((c) => ({ clase: c, nombre: CLASES[c] })),
+    opcionales: OPCIONALES.map((c) => ({ clase: c, nombre: CLASES[c] })),
     faltan,
     personas,
+    personal,
     personas_origen: mes.remuneraciones.length ? 'mes' : 'ficha',
     remuneraciones: mes.remuneraciones,
     totales: mes.totales,
+  };
+}
+
+/**
+ * Los papeles de cada persona de la carpeta, leídos de su ficha (19-11-2026).
+ *
+ * Pedido del gerente: la carpeta lleva **siempre** los contratos y anexos y la
+ * documentación al día de los trabajadores. Esos papeles ya están en el
+ * sistema —cada ficha los tiene, y los contratos firmados con el dedo se
+ * archivan ahí solos—, así que pedirle a la oficina que los vuelva a subir uno
+ * por uno a cada carpeta sería el trámite que hace que la carpeta no se arme.
+ *
+ * Tres reglas:
+ *  - **Se mira al cierre del mes de la carpeta, no hoy.** La carpeta de
+ *    octubre prueba que en octubre la credencial estaba vigente; que haya
+ *    vencido el 5 de noviembre es asunto de la carpeta de noviembre.
+ *  - **De cada papel cuenta el último** (el que vence más tarde): al renovar la
+ *    OS-10 la vieja sigue vigente en la base y saldría vencida.
+ *  - **Registrado sin archivo se dice aparte.** Para el sistema el papel
+ *    existe, pero no se puede meter en el PDF que recibe el mandante.
+ */
+const CARGOS_GUARDIA = ['guardia', 'nochero', 'rondin', 'supervisor'];
+// La misma regla que `aplicaA` de la sesión de alertas (src/rrhh.js, todavía
+// sin commitear al escribir esto). Cuando entre, conviene usar esa y borrar
+// esta: dos copias terminan diciendo cosas distintas.
+const seLeExige = (td, cargo) => td.aplica_a === 'todos'
+  || (td.aplica_a === 'guardia' && CARGOS_GUARDIA.includes(cargo))
+  || (td.aplica_a === 'conductor' && cargo === 'conductor');
+
+/** Lo que va en «Contratos y anexos»; el resto va en «Documentación». */
+const DE_CONTRATO = ['contrato', 'anexo'];
+
+export async function papelesDelPersonal(env, personas, alCierre) {
+  const ids = personas.map((p) => p.trabajador_id).filter(Boolean);
+  if (!ids.length) return { al_cierre: alCierre, personas: [], totales: null };
+  const enIds = `(${ids.join(',')})`;
+  const [fichas, tipos, docs] = await Promise.all([
+    buscar(env, `trabajadores?select=id,cargo&id=in.${enIds}`),
+    buscar(env, 'tipos_documento?select=codigo,nombre,obligatorio,aplica_a,orden'
+      + '&activo=is.true&order=orden.asc'),
+    buscar(env, 'v_documentos?select=id,trabajador_id,tipo,tipo_nombre,numero,fecha_emision,'
+      + `fecha_vencimiento,tiene_archivo,archivo_tipo&trabajador_id=in.${enIds}`
+      + '&vigente=is.true&order=id.asc&limit=5000'),
+  ]);
+  const cargo = new Map(fichas.map((f) => [f.id, f.cargo]));
+
+  const ultimo = new Map();
+  for (const d of docs) {
+    if (DE_CONTRATO.includes(d.tipo)) continue;
+    const k = `${d.trabajador_id}|${d.tipo}`;
+    const a = ultimo.get(k);
+    const fa = a?.fecha_vencimiento || '';
+    const fd = d.fecha_vencimiento || '';
+    if (!a || fd > fa || (fd === fa && d.id > a.id)) ultimo.set(k, d);
+  }
+
+  const doc = (d) => ({
+    id: d.id, tipo: d.tipo, nombre: d.tipo_nombre, numero: d.numero || null,
+    fecha_emision: d.fecha_emision || null, fecha_vencimiento: d.fecha_vencimiento || null,
+    tiene_archivo: !!d.tiene_archivo, archivo_tipo: d.archivo_tipo || null,
+  });
+
+  const salida = personas.filter((p) => p.trabajador_id).map((p) => {
+    const suyos = docs.filter((d) => d.trabajador_id === p.trabajador_id);
+    // Contratos y anexos van todos, no el último: un anexo no reemplaza al
+    // contrato, lo modifica, y el mandante necesita leer los dos.
+    const contratos = suyos.filter((d) => d.tipo === 'contrato').map(doc);
+    const anexos = suyos.filter((d) => d.tipo === 'anexo').map(doc);
+
+    const items = [];
+    for (const td of tipos) {
+      if (DE_CONTRATO.includes(td.codigo)) continue;
+      const d = ultimo.get(`${p.trabajador_id}|${td.codigo}`);
+      const exigido = td.obligatorio && seLeExige(td, cargo.get(p.trabajador_id));
+      if (!d && !exigido) continue;
+      if (!d) { items.push({ tipo: td.codigo, nombre: td.nombre, estado: 'falta' }); continue; }
+      const vencido = d.fecha_vencimiento && d.fecha_vencimiento < alCierre;
+      items.push({ ...doc(d), nombre: td.nombre,
+        estado: vencido ? 'vencido' : d.tiene_archivo ? 'al_dia' : 'sin_archivo' });
+    }
+    const cuenta = (e) => items.filter((x) => x.estado === e).length;
+    return {
+      trabajador_id: p.trabajador_id, nombre: p.nombre, rut: p.rut,
+      cargo: cargo.get(p.trabajador_id) || null,
+      contratos, anexos, items,
+      sin_contrato: !contratos.length,
+      contrato_sin_archivo: contratos.length > 0 && !contratos.some((c) => c.tiene_archivo),
+      faltan: cuenta('falta'), vencidos: cuenta('vencido'), sin_archivo: cuenta('sin_archivo'),
+    };
+  });
+
+  const suma = (k) => salida.reduce((a, x) => a + x[k], 0);
+  return {
+    al_cierre: alCierre,
+    personas: salida,
+    totales: {
+      personas: salida.length,
+      sin_contrato: salida.filter((x) => x.sin_contrato).length,
+      contrato_sin_archivo: salida.filter((x) => x.contrato_sin_archivo).length,
+      anexos: salida.reduce((a, x) => a + x.anexos.length, 0),
+      faltan: suma('faltan'), vencidos: suma('vencidos'), sin_archivo: suma('sin_archivo'),
+      al_dia: salida.filter((x) => !x.sin_contrato && !x.contrato_sin_archivo
+        && !x.faltan && !x.vencidos && !x.sin_archivo).length,
+    },
   };
 }
 
@@ -585,8 +900,8 @@ export async function registrarArchivo(env, quien, estadoPagoId, datos) {
     // del archivo en vez de repetir el error de Postgres.
     const esCheck = err instanceof ErrorDatos
       && (err.detalle?.code === '23514' || /check constraint/i.test(err.message || ''));
-    if (esCheck && CLASES_NUEVAS.includes(datos.clase)) {
-      return { error: FALTA_MIGRACION_CLASES, status: 503 };
+    if (esCheck && MIGRACION_DE_CLASE[datos.clase]) {
+      return { error: faltaMigracionClase(datos.clase), status: 503 };
     }
     throw err;
   }

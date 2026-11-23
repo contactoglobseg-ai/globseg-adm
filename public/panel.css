@@ -334,6 +334,29 @@ tr.fila-corr td,tr.fila-corr:hover td{background:var(--sup-2);padding:0}
    Mismo cuento que las de arriba: 1080px es para las de diez. */
 .desliza table.generados{min-width:860px}
 
+/* Ocho columnas, y la última lleva un botón: no son las diez de las tablas de
+   cobranza. Con 1080px el Mac de la oficina mostraba el libro con barra de
+   desplazamiento, y el formulario para cerrar una jornada —que vive dentro de
+   la tabla, bajo su propia fila— se corría junto con ella. */
+.desliza table.libro{min-width:940px}
+
+/* Y si aun así hay que desplazar la tabla (una pantalla angosta), el
+   formulario se queda pegado al borde izquierdo en vez de irse de vista con
+   las columnas, y se angosta hasta lo que se alcanza a ver: dentro de la
+   tabla hereda sus 940px, así que el motivo quedaba fuera de pantalla aunque
+   el primer campo se viera. El respaldo mira la ventana —que en teléfono es
+   lo mismo, porque ahí la lateral es un cajón— y la consulta de contenedor
+   mide lo que de verdad se ve, que es lo que importa en una ventana a medio
+   ancho. */
+.fila-corr>td{position:sticky;left:0}
+.fila-corr form{width:min(100%,calc(100vw - 2rem))}
+@supports (container-type:inline-size){
+  /* Solo en el libro: `container-type` pone contención en el elemento, y no
+     hay por qué dársela a todas las tablas del sistema para resolver una. */
+  .desliza--libro{container-type:inline-size}
+  .fila-corr form{width:min(100%,calc(100cqi - 2rem))}
+}
+
 /* ----------------------------------------------- documento y firma
    El cuerpo del documento es texto armado por el servidor y se muestra tal
    cual: mismo ancho de lectura que un papel, no el ancho de la pantalla. Un
@@ -546,3 +569,34 @@ tr.marcada:hover{background:var(--acento-suave)}
   background:var(--verde)}
 .recado--mal::before{background:var(--ambar)}
 body.hay-seleccion .recado{bottom:104px}
+
+/* ---------- portada tipo espacio personal ---------- */
+.inicio{max-width:1120px;margin:0 auto;padding:clamp(4px,2vw,22px) 0 30px}
+.inicio-cab{display:flex;align-items:center;justify-content:space-between;gap:20px;margin:0 0 24px}
+.inicio-saludo{font-size:.68rem;font-weight:700;letter-spacing:.12em;color:var(--texto-3)}
+.inicio-cab h2{margin:7px 0 2px;font-size:clamp(1.7rem,3vw,2.35rem);letter-spacing:-.045em}
+.inicio-cab p{margin:0;color:var(--texto-2)}
+.inicio-perfil{display:grid;grid-template-columns:46px auto;grid-template-rows:auto auto;align-items:center;column-gap:11px;text-align:left;padding:10px 14px;border:1px solid var(--borde-suave);border-radius:16px;background:var(--sup-2);color:var(--texto);font:inherit;cursor:default}
+.inicio-perfil>span{grid-row:1/3;width:46px;height:46px;display:grid;place-items:center;border-radius:50%;background:var(--acento-suave);color:var(--acento);font-weight:700}
+.inicio-perfil b{font-size:.88rem}.inicio-perfil small{color:var(--texto-3);font-size:.76rem}
+.inicio-mosaico{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.inicio-card,.inicio-area{border:1px solid var(--borde-suave);border-radius:20px;background:var(--sup-2);box-shadow:var(--sombra);color:var(--texto)}
+.inicio-card{padding:18px 20px;min-height:190px}
+.inicio-agenda{grid-column:span 2;grid-row:span 2;min-height:360px}
+.inicio-card header{display:flex;align-items:center;gap:12px}
+.inicio-card header h3{margin:0;font-size:1rem}.inicio-card header p{margin:3px 0 0;color:var(--texto-3);font-size:.8rem}
+.inicio-icono{width:40px;height:40px;display:grid;place-items:center;border-radius:13px;background:var(--acento-suave);color:var(--acento);font-size:1.25rem}
+.inicio-card header button{margin-left:auto;border:0;background:none;color:var(--texto-3);font-size:1.2rem;cursor:pointer}
+.inicio-eventos{margin:20px 0 12px}.inicio-evento{display:grid;grid-template-columns:58px 1fr auto;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--borde-suave)}
+.inicio-evento__dia{font-size:.78rem;font-weight:700;color:var(--acento)}.inicio-evento b{display:block;font-size:.86rem}.inicio-evento small{display:block;margin-top:3px;color:var(--texto-3)}.inicio-evento i{font-style:normal;font-size:.72rem;color:var(--ambar)}
+.inicio-vacio{padding:12px 0;color:var(--texto-3);font-size:.86rem;line-height:1.5}
+.inicio-link{display:flex;align-items:center;justify-content:space-between;width:100%;padding:11px 0 0;border:0;border-top:1px solid var(--borde-suave);background:none;color:var(--acento);font:600 .82rem var(--cuerpo);text-align:left;cursor:pointer}
+.inicio-tarea-cuerpo{display:flex;align-items:baseline;gap:8px;margin:18px 0 6px}.inicio-tarea-cuerpo strong{font-size:2.2rem;letter-spacing:-.05em}.inicio-tarea-cuerpo span{font-size:.8rem;color:var(--texto-2)}
+.inicio-nota{margin:0 0 14px;font-size:.78rem;line-height:1.45;color:var(--texto-3)}
+.inicio-area{display:flex;align-items:center;gap:12px;min-height:82px;padding:14px;text-align:left;font:inherit;cursor:pointer;transition:transform .18s,border-color .18s}
+.inicio-area:hover{transform:translateY(-2px);border-color:var(--acento)}.inicio-area__icon{width:42px;height:42px;flex:none;display:grid;place-items:center;border-radius:14px;font-size:1.2rem}
+.inicio-area b,.inicio-area small{display:block}.inicio-area b{font-size:.9rem}.inicio-area small{margin-top:4px;font-size:.73rem;color:var(--texto-3)}.inicio-area i{margin-left:auto;color:var(--texto-3);font-style:normal}
+.inicio-area--menta .inicio-area__icon{background:rgba(0,232,138,.13);color:#00b875}.inicio-area--azul .inicio-area__icon{background:rgba(0,167,245,.13);color:#0098dc}.inicio-area--lila .inicio-area__icon{background:rgba(147,115,255,.15);color:#9b82ff}.inicio-area--ambar .inicio-area__icon{background:var(--ambar-suave);color:var(--ambar)}.inicio-area--rosa .inicio-area__icon{background:rgba(236,117,178,.14);color:#dc64a1}
+.inicio-pie{margin:15px 2px;color:var(--texto-3);font-size:.75rem}
+@media(max-width:850px){.inicio-mosaico{grid-template-columns:repeat(2,minmax(0,1fr))}.inicio-agenda{grid-column:span 2;grid-row:auto}.inicio-tareas{min-height:190px}}
+@media(max-width:560px){.inicio-cab{align-items:flex-start}.inicio-perfil{grid-template-columns:38px auto;padding:8px 10px}.inicio-perfil>span{width:38px;height:38px}.inicio-perfil b{max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.inicio-mosaico{grid-template-columns:1fr}.inicio-agenda{grid-column:auto}.inicio-card{min-height:unset}.inicio-evento{grid-template-columns:48px 1fr}.inicio-evento i{grid-column:2}}

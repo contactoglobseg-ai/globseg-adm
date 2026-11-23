@@ -15,6 +15,14 @@
     "SUPABASE_URL": "https://hjoljdjjsobweqbvlijr.supabase.co"
   },
   "observability": { "enabled": true },
+
+  // El aviso diario de documentación pendiente (src/alertas.js). 11:00 UTC son
+  // las 8 de la mañana en Chile en verano. El correo sale por Resend: falta el
+  // secreto RESEND_API_KEY, y mientras no esté, la pasada corre igual, no
+  // manda nada y lo deja anotado. Ver COMO-ACTIVAR-AVISOS-DE-DOCUMENTOS.md.
+  "triggers": {
+    "crons": ["0 11 * * *"]
+  },
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",

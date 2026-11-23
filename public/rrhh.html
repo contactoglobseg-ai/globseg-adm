@@ -285,6 +285,9 @@ async function pintarBancos() {
 
 const VISTAS = {
   rrhh:       { rotulo: "RRHH",         pintar: pintarRrhh,       modulo: "rrhh" },
+  /* Lo pendiente de cada persona y lo subido a Pronexo (17-11-2026). Es lo
+     mismo que llega por correo cada mañana, con los botones para resolverlo. */
+  documentacion: { rotulo: "Documentación", pintar: pintarDocumentacion, modulo: "rrhh" },
   personal:   { rotulo: "Fichas",       pintar: pintarPersonal,   modulo: "rrhh" },
   /* Dos permisos porque la usan dos áreas: RRHH emite los contratos y el
      prevencionista hace firmar entregas de EPP y charlas, y no comparten
@@ -315,7 +318,7 @@ const VISTAS = {
    Fichas» en vez de solo «Fichas». */
 const GRUPOS = [
   { rotulo: "Personas",
-    vistas: ["rrhh", "personal", "documentos", "prevencion", "activos", "sueldos",
+    vistas: ["rrhh", "documentacion", "personal", "documentos", "prevencion", "activos", "sueldos",
              "carga", "transferencias"] },
 ];
 
@@ -436,6 +439,241 @@ async function subirArchivo(documentoId, archivo) {
 }
 
 // ------------------------------------------------------------- panel de RRHH
+// ------------------------------------------------------------- documentación
+/* La documentación pendiente de cada persona, y lo que está subido a Pronexo
+   (17-11-2026). Lo mismo que llega cada mañana por correo, con los botones
+   para resolverlo. El cálculo vive en src/alertas.js: esta pantalla no decide
+   nada, muestra. */
+const ROTULO_PEND = { falta: "Sin cargar", vencido: "Vencido", por_vencer: "Por vencer" };
+const SELLO_PEND = { falta: "e-rechazada", vencido: "e-rechazada", por_vencer: "e-solicitar_oc" };
+
+async function pintarDocumentacion() {
+  const D = await pedir("/rrhh/alertas");
+  RRHH.docu ||= { busca: "", inst: "", solo: true, que: "" };
+  const F = RRHH.docu;
+  const t = D.totales;
+  let html = "";
+
+  if (!D.migracion_lista) {
+    html += aviso("ojo", "Falta aplicar la migración de alertas",
+      "Pegue supabase/migrations/20261117120000_alertas_documentos.sql en el SQL Editor de "
+      + "Supabase. Mientras tanto se ve qué falta y qué vence, pero no se puede marcar lo subido "
+      + "a Pronexo ni sale el correo diario.");
+  }
+  if (!D.correo.configurado) {
+    html += aviso("ojo", "El correo diario todavía no está activado",
+      "Falta el secreto RESEND_API_KEY del Worker. Los pasos están en "
+      + "ADMINISTRACION/COMO-ACTIVAR-AVISOS-DE-DOCUMENTOS.md. Hasta entonces, la revisión de cada "
+      + "mañana corre igual y queda anotada abajo, pero no le llega a nadie.");
+  }
+  // El primer día: la empresa lleva meses subiendo a Pronexo y el sistema no lo
+  // sabe. Sin esta salida, el primer correo diría que no hay nada subido.
+  const nadaMarcado = D.migracion_lista && t.pronexo_pendiente
+    && !D.personas.some(p => p.items.some(x => x.pronexo === "subido"));
+  if (nadaMarcado) {
+    html += `<div class="aviso aviso--ojo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v5"/><circle cx="12" cy="16.5" r="1.1"
+        fill="currentColor" stroke="none"/><path d="M10.3 3.9 2.6 17.4A2 2 0 0 0 4.3 20.4h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg><div><b>Todavía no hay nada marcado como subido a Pronexo</b>
+      Si lo que está cargado acá ya lo subieron a Pronexo, márquelo de una vez y desde mañana el aviso
+      solo dirá lo nuevo: los papeles que se renueven o se carguen después.
+      <div style="margin-top:8px"><button class="bt bt--chico" id="pronexo-todo">Marcar los ${t.pronexo_pendiente}
+        documentos cargados como subidos a Pronexo</button></div></div></div>`;
+  }
+
+  html += `<dl class="resumen">
+    <div class="ficha ${t.al_dia < t.personas ? "" : "ficha--plata"}"><dt>Personas al día</dt>
+      <dd class="num">${t.al_dia}</dd>
+      <small>de ${t.personas}, con todo lo obligatorio cargado, vigente y en Pronexo</small></div>
+    <div class="ficha ${t.vencidos ? "ficha--ojo" : ""}"><dt>Vencidos</dt><dd class="num">${t.vencidos}</dd>
+      <small>Hay que renovarlos</small></div>
+    <div class="ficha ${t.faltan ? "ficha--ojo" : ""}"><dt>Sin cargar</dt><dd class="num">${t.faltan}</dd>
+      <small>Obligatorios que no están en el sistema</small></div>
+    <div class="ficha ${t.por_vencer ? "ficha--ojo" : ""}"><dt>Por vencer</dt><dd class="num">${t.por_vencer}</dd>
+      <small>En los próximos ${D.tramos[0]} días</small></div>
+    <div class="ficha ${t.pronexo_pendiente ? "ficha--ojo" : ""}"><dt>Sin subir a Pronexo</dt>
+      <dd class="num">${D.migracion_lista ? t.pronexo_pendiente : "—"}</dd>
+      <small>Cargados acá, sin marca de Pronexo</small></div>
+  </dl>`;
+
+  // ----------------------------------------------------------- correo diario
+  const ultimo = D.envios[0];
+  html += `<section class="caja">
+    <div class="caja__tit"><h2>Correo diario</h2>
+      <span class="nota">Todas las mañanas a las 8, solo si hay algo nuevo</span></div>
+    <div style="padding:0 16px 12px;font-size:.9rem;line-height:1.6">
+      <div><b>Le llega a:</b> ${D.correo.para.length ? D.correo.para.map(esc).join(", ") : "<i>nadie</i>"}
+        ${D.correo.por_confirmar ? '<span class="sello e-solicitar_oc" style="margin-left:6px">Por confirmar</span>' : ""}
+        <button class="bt bt--fino bt--chico" id="cambiar-para" style="margin-left:6px">Cambiar</button></div>
+      ${D.correo.descartados.length ? `<div style="color:var(--rojo, #c00)">No parecen correos y se ignoran:
+        ${D.correo.descartados.map(esc).join(", ")}</div>` : ""}
+      <div class="sub" style="margin:0">Avisa cuando falta un papel obligatorio, cuando uno entra a los
+        ${D.tramos.join(", ")} días de vencer o vence, y cuando uno cargado no está marcado como subido a Pronexo.</div>
+      <div style="margin-top:6px"><b>Último:</b> ${ultimo
+        ? `${new Date(ultimo.enviado_en).toLocaleString("es-CL")} · ${ultimo.origen === "a_mano"
+            ? "a mano" + (ultimo.quien ? " por " + esc(ultimo.quien) : "") : "automático"} ·
+           ${ultimo.ok ? '<span class="sello e-cerrado">Enviado</span>'
+                       : `<span class="sello e-rechazada">No salió</span> <span class="sub" style="display:inline;margin:0">${esc(ultimo.error || "")}</span>`}`
+        : "todavía no ha salido ninguno"}</div>
+      <div class="pie-form" style="padding:10px 0 0">
+        <button class="bt bt--fino" id="ver-correo">Ver el correo de hoy</button>
+        <button class="bt" id="enviar-correo"${D.migracion_lista ? "" : " disabled"}>Enviar ahora</button>
+        <span class="mensaje" id="msg-correo"></span>
+      </div>
+      <pre id="previa-correo" style="display:none;white-space:pre-wrap;font:inherit;font-size:.84rem;
+        background:var(--sup-2);border-radius:var(--r-s);padding:12px;margin:10px 0 0;max-height:420px;overflow:auto"></pre>
+    </div>
+  </section>`;
+
+  // ----------------------------------------------------------- por persona
+  const instalaciones = [...new Set(D.personas.map(p => p.instalacion).filter(Boolean))].sort();
+  const coincide = (p) => {
+    if (F.busca && !(p.nombre + " " + p.rut).toLowerCase().includes(F.busca.toLowerCase())) return false;
+    if (F.inst && (p.instalacion || "") !== F.inst) return false;
+    const pend = p.faltan + p.vencidos + p.por_vencer + p.pronexo_pendiente;
+    if (F.solo && !pend) return false;
+    if (F.que === "vencido" && !p.vencidos) return false;
+    if (F.que === "falta" && !p.faltan) return false;
+    if (F.que === "por_vencer" && !p.por_vencer) return false;
+    if (F.que === "pronexo" && !p.pronexo_pendiente) return false;
+    return true;
+  };
+  const gente = D.personas.filter(coincide)
+    .sort((a, b) => (b.vencidos - a.vencidos) || (b.faltan - a.faltan) || a.nombre.localeCompare(b.nombre));
+
+  html += `<section class="caja">
+    <div class="caja__tit"><h2>Por persona</h2>
+      <span class="nota">${gente.length} de ${D.personas.length}</span></div>
+    <div class="rejilla" style="padding:0 16px">
+      <label class="campo"><span>Buscar</span><input id="dc-busca" value="${esc(F.busca)}" placeholder="Nombre o RUT" autocomplete="off"></label>
+      <label class="campo"><span>Instalación</span><select id="dc-inst"><option value="">Todas</option>
+        ${instalaciones.map(i => `<option${i === F.inst ? " selected" : ""}>${esc(i)}</option>`).join("")}</select></label>
+      <label class="campo"><span>Mirar</span><select id="dc-que">
+        ${[["", "Todo lo pendiente"], ["vencido", "Solo vencidos"], ["falta", "Solo sin cargar"],
+           ["por_vencer", "Solo por vencer"], ["pronexo", "Solo Pronexo"]].map(([v, r]) =>
+          `<option value="${v}"${v === F.que ? " selected" : ""}>${r}</option>`).join("")}</select></label>
+      <label class="campo" style="align-self:end;flex-direction:row;gap:8px;align-items:center;display:flex">
+        <input type="checkbox" id="dc-solo"${F.solo ? " checked" : ""} style="width:auto"><span style="margin:0">Ocultar a quien está al día</span></label>
+    </div>
+    <!-- En teléfono cada persona es una ficha apilada: deslizar de lado para leer
+         qué le falta a alguien corta justo el nombre del papel. El estilo va acá
+         y no en panel.css porque ese archivo tiene cambios de otra sesión. -->
+    <style>.docu{min-width:720px}
+      @media (max-width:760px){.desliza .docu{min-width:0}.docu thead{display:none}
+        .docu,.docu tbody,.docu tr,.docu td{display:block;width:auto!important}
+        .docu tr{padding:10px 0;border-bottom:1px solid var(--borde)}.docu td{border:0;padding:4px 16px}}</style>
+    ${gente.length ? `<div class="desliza"><table class="docu">
+      <thead><tr><th style="width:24%">Persona</th><th>Pendiente</th><th style="width:1%"></th></tr></thead><tbody>
+      ${gente.map(p => {
+        const doc = p.items.filter(x => x.estado !== "al_dia");
+        const pro = p.items.filter(x => x.pronexo === "pendiente");
+        return `<tr${p.vencidos ? ' class="fila--atrasado"' : ""}>
+        <td><b>${esc(p.nombre)}</b><span class="sub">${esc(p.rut)} · ${rotCargo(p.cargo)}${
+          p.instalacion ? " · " + esc(p.instalacion) : ""}</span></td>
+        <td>${doc.length || pro.length ? "" : '<span class="sello e-cerrado">Al día</span>'}
+          ${doc.map(x => `<span class="sello ${SELLO_PEND[x.estado]}" style="margin:0 4px 4px 0"
+              title="${esc(x.nombre)}">${esc(x.nombre)}${x.estado === "falta" ? " · sin cargar"
+              : " · " + enDias(x.dias)}</span>`).join("")}
+          ${pro.length ? `<div style="margin-top:2px"><span class="sub" style="display:inline;margin:0 6px 0 0">Falta subir a Pronexo:</span>${
+            pro.map(x => `<button class="bt bt--fino bt--chico" style="margin:0 4px 4px 0" data-pronexo="${x.documento_id}"
+              title="Marcar como subido a Pronexo">${esc(x.nombre)} ✓</button>`).join("")}</div>` : ""}</td>
+        <td class="nowrap">
+          <button class="bt bt--fino bt--chico" data-ver-ficha="${p.id}">Ver ficha</button>
+          ${pro.length > 1 ? `<button class="bt bt--fino bt--chico" data-pronexo-persona="${p.id}"
+             title="Marca como subido todo lo suyo que falta">Todo en Pronexo</button>` : ""}</td>
+      </tr>`; }).join("")}
+    </tbody></table></div>`
+    : `<p class="vacio">${F.solo && !F.busca && !F.inst && !F.que
+        ? "Todo el personal activo tiene su documentación al día." : "Nadie calza con el filtro."}</p>`}
+  </section>`;
+
+  html += `<p class="sub" style="padding:0 4px">Lo exigido es lo marcado como obligatorio en el catálogo de
+    documentos (${D.exigidos.length} tipos), según el cargo de cada uno. De cada papel cuenta el último cargado:
+    si una credencial se renovó, la vieja ya no sale.</p>`;
+
+  $("#app").innerHTML = html;
+
+  // ----------------------------------------------------------- conexiones
+  const repintar = () => pintarDocumentacion().catch(e => alert(e.message));
+  let espera;
+  $("#dc-busca").oninput = e => { F.busca = e.target.value; clearTimeout(espera);
+    espera = setTimeout(() => { repintar().then(() => { const i = $("#dc-busca"); i.focus();
+      i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
+  $("#dc-inst").onchange = e => { F.inst = e.target.value; repintar(); };
+  $("#dc-que").onchange = e => { F.que = e.target.value; repintar(); };
+  $("#dc-solo").onchange = e => { F.solo = e.target.checked; repintar(); };
+
+  document.querySelectorAll("[data-ver-ficha]").forEach(b => {
+    b.onclick = () => { RRHH.verFicha = Number(b.dataset.verFicha); RRHH.editaContrato = null; ir("personal"); };
+  });
+  document.querySelectorAll("[data-pronexo]").forEach(b => {
+    b.onclick = async () => {
+      b.disabled = true;
+      try {
+        const r = await pedir(`/rrhh/documentos/${b.dataset.pronexo}/pronexo`, { method: "POST",
+          body: JSON.stringify({ subido: true }) });
+        if (r.aviso) alert(r.aviso);
+        recado("Marcado como subido a Pronexo");
+        repintar();
+      } catch (e) { b.disabled = false; alert(e.message); }
+    };
+  });
+  document.querySelectorAll("[data-pronexo-persona]").forEach(b => {
+    b.onclick = async () => {
+      const p = D.personas.find(x => x.id === Number(b.dataset.pronexoPersona));
+      if (!confirm(`¿Marcar como subidos a Pronexo los ${p.pronexo_pendiente} documentos de ${p.nombre}?`)) return;
+      try {
+        const r = await pedir("/rrhh/pronexo/todo", { method: "POST",
+          body: JSON.stringify({ trabajador_id: p.id }) });
+        recado(`${r.marcados} marcado${r.marcados === 1 ? "" : "s"}`);
+        repintar();
+      } catch (e) { alert(e.message); }
+    };
+  });
+  if ($("#pronexo-todo")) $("#pronexo-todo").onclick = async () => {
+    if (!confirm(`¿Marcar los ${t.pronexo_pendiente} documentos cargados hasta hoy como subidos a Pronexo?\n\n`
+      + "Hágalo solo si de verdad están allá: desde mañana el aviso dejará de nombrarlos. "
+      + "Cada uno se puede desmarcar después desde la ficha.")) return;
+    try {
+      const r = await pedir("/rrhh/pronexo/todo", { method: "POST", body: "{}" });
+      recado(`${r.marcados} documentos marcados`);
+      repintar();
+    } catch (e) { alert(e.message); }
+  };
+  $("#cambiar-para").onclick = async () => {
+    const v = prompt("Correos que reciben el aviso diario, separados por coma:", D.correo.para.join(", "));
+    if (v === null) return;
+    try {
+      await pedir("/documentos/empresa", { method: "POST",
+        body: JSON.stringify({ codigo: "correo_alertas_rrhh", valor: v }) });
+      recado("Guardado");
+      repintar();
+    } catch (e) { alert(e.message); }
+  };
+  $("#ver-correo").onclick = async () => {
+    const pre = $("#previa-correo");
+    if (pre.style.display === "block") { pre.style.display = "none"; return; }
+    try {
+      const r = await pedir("/rrhh/alertas/correo");
+      pre.textContent = r.pendientes
+        ? `Para: ${r.para.join(", ") || "(nadie)"}\nAsunto: ${r.asunto}\n\n${r.texto}`
+        : "Hoy no hay nada pendiente: no saldría ningún correo.";
+      pre.style.display = "block";
+    } catch (e) { alert(e.message); }
+  };
+  $("#enviar-correo").onclick = async () => {
+    const b = $("#enviar-correo"), msg = $("#msg-correo");
+    if (!confirm(`¿Mandar ahora el aviso con todo lo pendiente a ${D.correo.para.join(", ") || "nadie"}?`)) return;
+    b.disabled = true; msg.textContent = "Enviando…";
+    try {
+      const r = await pedir("/rrhh/alertas/enviar", { method: "POST", body: "{}" });
+      msg.textContent = r.enviado ? `Enviado a ${r.para.join(", ")}`
+        : (r.error || r.motivo || "No salió");
+      setTimeout(repintar, 1200);
+    } catch (e) { msg.textContent = e.message; b.disabled = false; }
+  };
+}
+
+
 async function pintarRrhh() {
   const [panel] = await Promise.all([pedir("/rrhh/panel"), catalogosRrhh()]);
   RRHH.panel = panel;
@@ -1297,6 +1535,20 @@ function seccionContratos(contratos, cv, c) {
   </section>`;
 }
 
+/** La marca de Pronexo de un documento. Sin la migración la columna no
+ *  existe en la fila y la celda queda vacía, en vez de ofrecer un botón que el
+ *  servidor va a rechazar. */
+function celdaPronexo(d) {
+  if (!("pronexo_subido_en" in d) || !d.vigente) return "";
+  if (d.pronexo_subido_en) {
+    return `<span class="sello e-cerrado">Subido</span>
+      <span class="sub">${new Date(d.pronexo_subido_en).toLocaleDateString("es-CL")}${
+        d.pronexo_por ? " · " + esc(d.pronexo_por) : ""}</span>
+      <button class="bt bt--fino bt--chico" data-pronexo-ficha="${d.id}" data-subido="0">Desmarcar</button>`;
+  }
+  return `<button class="bt bt--fino bt--chico" data-pronexo-ficha="${d.id}" data-subido="1">Marcar subido</button>`;
+}
+
 function seccionDocumentos(documentos, c, contratos = []) {
   const porGrupo = {};
   for (const d of documentos) (porGrupo[d.tipo_grupo] ||= []).push(d);
@@ -1311,7 +1563,7 @@ function seccionDocumentos(documentos, c, contratos = []) {
       <div style="padding:10px 16px 0"><b style="font-size:.84rem;color:var(--texto-2)">${esc(GRUPO[g] || g)}</b></div>
       <div class="desliza"><table>
         <thead><tr><th>Documento</th><th>N°</th><th>Emisión</th><th>Vencimiento</th>
-          <th>Estado</th><th>Archivo</th><th></th></tr></thead><tbody>
+          <th>Estado</th><th>Archivo</th><th>Pronexo</th><th></th></tr></thead><tbody>
         ${docs.map(d => `<tr${d.estado === "vencido" ? ' class="fila--atrasado"' : ""}>
           <td><b>${esc(d.tipo_nombre)}</b>${d.glosa ? `<span class="sub">${esc(d.glosa)}</span>` : ""}
             ${d.base_legal ? `<span class="sub" title="${esc(d.base_legal)}">${esc(d.base_legal.slice(0, 70))}${d.base_legal.length > 70 ? "…" : ""}</span>` : ""}</td>
@@ -1327,6 +1579,7 @@ function seccionDocumentos(documentos, c, contratos = []) {
             : `<button class="bt bt--fino bt--chico" data-subir="${d.id}">Subir archivo</button>`}
             ${d.enlace ? `<a class="sub" href="${esc(d.enlace)}" target="_blank" rel="noopener"
                  style="color:var(--acento)">También en Drive</a>` : ""}</td>
+          <td class="nowrap">${celdaPronexo(d)}</td>
           <td class="nowrap">
             ${d.archivo_ruta ? `<button class="bt bt--fino bt--chico" data-subir="${d.id}">Reemplazar</button>
                <button class="bt bt--fino bt--chico" data-quitar-archivo="${d.id}">Quitar archivo</button>` : ""}
@@ -2156,6 +2409,19 @@ function conectarFicha(datos) {
     };
   });
 
+  document.querySelectorAll("[data-pronexo-ficha]").forEach(b => {
+    b.onclick = async () => {
+      const subir = b.dataset.subido === "1";
+      if (!subir && !confirm("¿Desmarcar? El aviso diario va a volver a pedir que se suba a Pronexo.")) return;
+      b.disabled = true;
+      try {
+        const r = await pedir(`/rrhh/documentos/${b.dataset.pronexoFicha}/pronexo`, { method: "POST",
+          body: JSON.stringify({ subido: subir }) });
+        if (r.aviso) alert(r.aviso);
+        recargar();
+      } catch (e) { b.disabled = false; alert(e.message); }
+    };
+  });
   document.querySelectorAll("[data-anular-doc]").forEach(b => {
     b.onclick = async () => {
       if (!confirm("¿Anular este documento?\n\nNo se borra: queda registrado como anulado, "

@@ -31,6 +31,20 @@ import { sumarDias, esFecha } from './fechas.js';
  */
 const MAX_TURNO_HORAS = 20;
 
+/**
+ * Cuánto tiene que haber pasado desde la hora de salida que escribe la oficina
+ * para que esa salida sea suya y no del guardia.
+ *
+ * La regla de fondo no cambió: la oficina entra donde el guardia ya no
+ * alcanza. Lo que cambió es cómo se mide. Antes se esperaba a que el turno
+ * llevara veinte horas abierto, y eso dejaba a la oficina mirando toda la
+ * mañana una jornada que ya terminó: el guardia que salió a las 08:00 y se fue
+ * a dormir no la va a marcar, pero el sistema seguía diciendo «sigue en
+ * curso». Ahora se mide desde la salida que la oficina afirma: si fue hace más
+ * de una hora, el guardia ya tuvo su oportunidad.
+ */
+const MARGEN_CORRECCION_HORAS = 1;
+
 /** Dos apretones seguidos del mismo botón son el mismo apretón. */
 const SEGUNDOS_REPETIDA = 90;
 
@@ -491,11 +505,11 @@ export async function marcar(env, trabajador, cuerpo) {
 /**
  * La oficina cierra una jornada que quedó sin salida.
  *
- * No edita nada: agrega la salida que falta como una marca más, con la hora
- * real, el usuario de quien la puso y el motivo escrito. La entrada del
- * guardia no se toca, y en el libro la jornada queda señalada como corregida
- * con el nombre al lado. Si no se notara, el libro perdería lo único que lo
- * hace valer como respaldo.
+ * No edita nada: agrega la salida que falta como una marca más, con la fecha
+ * y la hora reales, el usuario de quien la puso y el motivo escrito. La
+ * entrada del guardia no se toca, y en el libro la jornada queda señalada como
+ * corregida con el nombre al lado. Si no se notara, el libro perdería lo único
+ * que lo hace valer como respaldo.
  *
  * Hoy esto cubre el único caso que existe de verdad: la salida que nadie
  * marcó. Corregir una hora YA marcada es otra cosa y a propósito no está:
@@ -540,34 +554,58 @@ export async function corregirJornada(env, quien, cuerpo) {
   }
 
   const ahora = new Date();
-  // Mientras el guardia todavía pueda marcar su salida, la marca es suya. La
-  // oficina entra donde él ya no alcanza, no antes: un turno en curso cerrado
-  // desde la oficina es una jornada escrita por quien no estuvo ahí.
-  if (turnoAbierto(entrada, ahora)) {
+  const dia = fechaChile(entrada.cuando);
+
+  // El día de la salida se puede escribir, y es lo que pidió el gerente: en un
+  // turno de noche la salida cae al día siguiente, y deducirlo en silencio
+  // dejaba a quien corrige sin ver en qué día quedó escrita. Cuando no viene,
+  // se deduce como antes —la primera vez que el reloj marcó esa hora después
+  // de la entrada—, así que el turno de noche sigue cerrándose con la hora
+  // sola y nada de lo que ya andaba cambia.
+  let cuando;
+  if (esFecha(cuerpo.fecha_salida)) {
+    cuando = instanteChile(cuerpo.fecha_salida, cuerpo.hora);
+    if (cuando <= new Date(entrada.cuando)) {
+      return {
+        error: `Entró el ${dia} a las ${horaChile(entrada.cuando)}: una salida el ` +
+               `${cuerpo.fecha_salida} a las ${cuerpo.hora} sería antes de la entrada.`,
+        status: 400,
+      };
+    }
+  } else if (cuerpo.fecha_salida) {
+    return { error: 'La fecha de salida va como AAAA-MM-DD', status: 400 };
+  } else {
+    cuando = instanteChile(dia, cuerpo.hora);
+    if (cuando <= new Date(entrada.cuando)) cuando = instanteChile(sumarDias(dia, 1), cuerpo.hora);
+  }
+
+  if (cuando > ahora) {
     return {
-      error: `Ese turno sigue en curso: entró a las ${horaChile(entrada.cuando)} ` +
-             'y el guardia todavía puede marcar su salida.',
-      status: 409,
+      error: `Las ${cuerpo.hora} del ${fechaChile(cuando)} todavía no ocurren`,
+      status: 400,
     };
   }
 
-  // La hora llega sola, sin día, y eso basta: se busca la primera vez que el
-  // reloj marcó esa hora después de la entrada. Un turno que entra a las 20:00
-  // y sale a las 08:00 cae solo en el día siguiente, sin preguntar nada.
-  const dia = fechaChile(entrada.cuando);
-  let cuando = instanteChile(dia, cuerpo.hora);
-  if (cuando <= new Date(entrada.cuando)) cuando = instanteChile(sumarDias(dia, 1), cuerpo.hora);
-
-  if (cuando > ahora) {
-    return { error: `Las ${cuerpo.hora} de esa jornada todavía no ocurren`, status: 400 };
+  // Mientras el guardia todavía pueda marcar esa salida él mismo, la marca es
+  // suya: la oficina entra donde él ya no alcanza. Se mide contra la hora que
+  // la oficina afirma y no contra la entrada, porque lo que importa es si él
+  // alcanza a marcarla, y eso se acaba cuando ya se fue. Una salida de hace un
+  // rato todavía es suya; la de anoche, no.
+  if (turnoAbierto(entrada, ahora) && horasEntre(cuando, ahora) < MARGEN_CORRECCION_HORAS) {
+    return {
+      error: `Esa salida fue hace menos de una hora y el turno sigue abierto: el ` +
+             'guardia todavía puede marcarla él mismo desde su teléfono. Si ya se ' +
+             'fue y no la va a marcar, vuelva a intentarlo más tarde.',
+      status: 409,
+    };
   }
 
   const horas = horasEntre(entrada.cuando, cuando);
   if (horas > MAX_TURNO_HORAS) {
     return {
-      error: `Entró a las ${horaChile(entrada.cuando)}: con salida a las ${cuerpo.hora} ` +
-             `serían ${horas.toFixed(1)} horas seguidas. Eso no es una jornada; ` +
-             'revise la hora.',
+      error: `Entró el ${dia} a las ${horaChile(entrada.cuando)}: con salida el ` +
+             `${fechaChile(cuando)} a las ${cuerpo.hora} serían ${horas.toFixed(1)} ` +
+             'horas seguidas. Eso no es una jornada; revise la fecha y la hora.',
       status: 400,
     };
   }
@@ -586,13 +624,20 @@ export async function corregirJornada(env, quien, cuerpo) {
     motivo,
   });
 
+  // El día de la salida se escribe en la bitácora solo cuando no es el de la
+  // jornada: repetirlo en los turnos de día sería ruido, y callarlo en los de
+  // noche dejaría «salida 08:00» sin decir de qué 08:00 se habla.
+  const diaSalida = fechaChile(cuando);
   await anotar(env, quien, 'marca', marca.id, 'cerró una jornada sin salida',
-    `${trabajador.nombre} · ${entrada.fecha} · salida ${horaChile(cuando)} ` +
+    `${trabajador.nombre} · ${entrada.fecha} · salida ${
+      diaSalida === entrada.fecha ? '' : diaSalida + ' '}${horaChile(cuando)} ` +
     `(${horas.toFixed(1)} h) · ${motivo}`);
 
   return {
     marca,
     hora: horaChile(cuando),
+    fecha_salida: diaSalida,
+    otro_dia: diaSalida !== entrada.fecha,
     horas: Number(horas.toFixed(2)),
     trabajador: trabajador.nombre,
   };

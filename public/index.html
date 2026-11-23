@@ -1392,6 +1392,45 @@ const MESES = ["enero","febrero","marzo","abril","mayo","junio",
 let mesVisto = null;   // "YYYY-MM"
 let diaAbierto = null; // "YYYY-MM-DD"
 
+/** Portada de la oficina: identidad, agenda cercana y entradas rápidas.
+ * No hay tareas personales en el sistema todavía; se muestran los cierres de
+ * periodo que ya entrega la agenda para que la portada no invente pendientes. */
+async function pintarInicio() {
+  const u = estado.usuario;
+  const nombre = (u?.nombre || "Equipo").split(/\s+/)[0];
+  const areas = [
+    { titulo: "Cobranza", texto: "Periodos, facturas y pagos", vista: "panel", icono: "₱", modulo: "facturacion", color: "menta" },
+    { titulo: "Ventas", texto: "Contactos y cotizaciones", vista: "contactos", icono: "↗", modulo: "cotizaciones", color: "azul" },
+    { titulo: "Operaciones", texto: "Servicios, turnos y asistencia", vista: "servicio", icono: "⌁", modulo: "facturacion", color: "lila" },
+    { titulo: "Contabilidad", texto: "Acceso a estados de pago", vista: "pagos", icono: "▤", modulo: "facturacion", color: "ambar" },
+    { titulo: "Personas", texto: "Trabajadores y documentación", href: "/rrhh", icono: "◎", modulo: "personal", color: "rosa" },
+    { titulo: "Calendario", texto: "Cierres y fechas de servicio", vista: "calendario", icono: "▦", modulo: "facturacion", color: "azul" },
+  ].filter(a => u?.permisos?.includes(a.modulo));
+
+  let agenda = null, agendaError = "";
+  if (u?.permisos?.includes("facturacion")) {
+    try { agenda = await pedir(`/agenda?mes=${hoyISO().slice(0, 7)}`); }
+    catch (e) { agendaError = e.message; }
+  }
+  const hoy = hoyISO();
+  const proximos = (agenda?.ciclos || []).filter(c => c.hasta >= hoy)
+    .sort((a,b) => a.hasta.localeCompare(b.hasta)).slice(0,4);
+  const iniciales = (u?.nombre || "SG").split(/\s+/).slice(0,2).map(x=>x[0]).join("").toUpperCase();
+  const fechas = proximos.length ? proximos.map(c => `<div class="inicio-evento"><span class="inicio-evento__dia">${fecha(c.hasta).slice(0,5)}</span><span><b>Cierre de periodo N°${esc(c.numero)}</b><small>${esc(c.instalacion)}</small></span><i>Preparar OC</i></div>`).join("") : `<p class="inicio-vacio">${agendaError ? `No se pudo cargar la agenda: ${esc(agendaError)}` : "No hay cierres de periodo próximos registrados."}</p>`;
+  const panel = u?.permisos?.includes("facturacion") && estado.panel;
+  const alerta = panel ? (panel.ciclos || []).filter(c => c.estado === "solicitar_oc").length : 0;
+  $("#app").innerHTML = `<section class="inicio">
+    <div class="inicio-cab"><div><span class="inicio-saludo">OFICINA · SEGURIDAD GARRIDOS</span><h2>Hola, ${esc(nombre)}</h2><p>Tu espacio de trabajo para hoy.</p></div><button class="inicio-perfil" type="button" aria-label="Perfil de ${esc(u?.nombre)}"><span>${esc(iniciales)}</span><b>${esc(u?.nombre || "Usuario")}</b><small>${esc(u?.rol || "")}</small></button></div>
+    <div class="inicio-mosaico">
+      <section class="inicio-card inicio-agenda"><header><div class="inicio-icono">▦</div><div><h3>Calendario</h3><p>${agenda ? `${agenda.ciclos.length} periodos · ${proximos.length} próximos cierres` : "Agenda de la oficina"}</p></div><button data-inicio-vista="calendario" aria-label="Abrir calendario">↗</button></header><div class="inicio-eventos">${fechas}</div><button class="inicio-link" data-inicio-vista="calendario">Ver calendario completo <span>→</span></button></section>
+      <section class="inicio-card inicio-tareas"><header><div class="inicio-icono">✓</div><div><h3>Mis tareas</h3><p>Asignadas a tu perfil</p></div></header><div class="inicio-tarea-cuerpo"><strong>${alerta || 0}</strong><span>${alerta === 1 ? "periodo requiere solicitar OC" : "periodos requieren solicitar OC"}</span></div><p class="inicio-nota">${alerta ? "Pendiente de gestión en Cobranza." : "No tienes tareas personales asignadas. Aquí aparecerán cuando activemos el módulo de tareas."}</p>${alerta ? `<button class="inicio-link" data-inicio-vista="panel">Ir a cobranza <span>→</span></button>` : ""}</section>
+      ${areas.map(a => `<button class="inicio-area inicio-area--${a.color}" ${a.href ? `data-inicio-href="${a.href}"` : `data-inicio-vista="${a.vista}"`}><span class="inicio-area__icon">${a.icono}</span><span><b>${esc(a.titulo)}</b><small>${esc(a.texto)}</small></span><i>↗</i></button>`).join("")}
+    </div><p class="inicio-pie">Accesos disponibles según tu perfil de ${esc(u?.rol || "usuario")}.</p>
+  </section>`;
+  $("#app").querySelectorAll("[data-inicio-vista]").forEach(b => b.onclick = () => ir(b.dataset.inicioVista));
+  $("#app").querySelectorAll("[data-inicio-href]").forEach(b => b.onclick = () => location.href = b.dataset.inicioHref);
+}
+
 const mesVecino = (mes, paso) => {
   const [a, m] = mes.split("-").map(Number);
   const d = new Date(Date.UTC(a, m - 1 + paso, 1));
@@ -2279,6 +2318,21 @@ async function pintarTrabajadores() {
   });
 }
 
+/**
+ * El día de hoy en Chile, no en UTC: `hoyISO()` usa UTC y después de las 21:00
+ * devuelve mañana, que como tope de «hasta cuándo pudo salir» deja escribir un
+ * día que todavía no ocurre. El servidor igual lo rechaza, pero el calendario
+ * no tiene por qué ofrecerlo.
+ */
+const hoyEnChile = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Santiago" });
+
+/** Las horas que resultan entre dos instantes, o null si falta alguno. */
+function horasEntre(desde, hasta) {
+  if (!desde || !hasta) return null;
+  const h = (hasta - desde) / 3600000;
+  return Number.isFinite(h) ? h : null;
+}
+
 async function pintarLibro() {
   const hoy = hoyISO();
   const f = estado.libroFiltro || (estado.libroFiltro = {
@@ -2302,8 +2356,9 @@ async function pintarLibro() {
     ${r.sin_salida ? aviso("ojo",
       `${r.sin_salida} jornada${r.sin_salida > 1 ? "s" : ""} sin salida marcada`,
       "El guardia entró y no marcó la salida, así que esas horas no se cuentan. " +
-      "Con el botón «Cerrar jornada» se agrega la hora real: queda como corrección " +
-      "suya, con el motivo, y la entrada del guardia no se toca.") : ""}
+      "Con el botón «Cerrar jornada» se escriben el día y la hora reales en que " +
+      "salió: queda como corrección suya, con el motivo, y la entrada del guardia " +
+      "no se toca.") : ""}
 
     <dl class="resumen">
       <div class="ficha"><dt>Jornadas</dt><dd class="num">${r.jornadas}</dd>
@@ -2337,7 +2392,7 @@ async function pintarLibro() {
               String(i.id) === String(f.instalacion) ? " selected" : ""
               }>${esc(i.nombre)}</option>`).join("")}</select></label>
       </div>
-      ${libro.jornadas.length ? `<div class="desliza"><table>
+      ${libro.jornadas.length ? `<div class="desliza desliza--libro"><table class="libro">
         <thead><tr>
           <th>Fecha</th><th>Trabajador</th><th>RUT</th><th>Instalación</th>
           <th>Entrada</th><th>Salida</th><th class="num">Horas</th><th></th>
@@ -2368,14 +2423,20 @@ async function pintarLibro() {
           </td>
         </tr>
         ${j.completa ? "" : `<tr class="fila-corr" id="corr-${i}" hidden><td colspan="8">
-          <form class="f-corregir" data-fecha="${esc(j.fecha)}" data-trab="${j.trabajador_id}">
+          <form class="f-corregir" data-fecha="${esc(j.fecha)}" data-trab="${j.trabajador_id}"
+            data-entrada="${esc(j.entrada || "")}">
             <div class="rejilla">
+              <label class="campo"><span>Día en que salió</span>
+                <input type="date" name="fecha_salida" required value="${esc(j.fecha)}"
+                  min="${esc(j.fecha)}" max="${hoyEnChile()}"></label>
               <label class="campo"><span>Hora real de salida</span>
                 <input type="time" name="hora" required></label>
               <label class="campo"><span>Motivo de la corrección</span>
                 <input name="motivo" required maxlength="300" autocomplete="off"
                   placeholder="Olvidó marcar; lo confirmó el supervisor"></label>
             </div>
+            <p class="sub" data-cuenta>Entró el ${fecha(j.fecha)}${
+              j.hora_entrada ? " a las " + j.hora_entrada : ""}.</p>
             <div class="pie-form">
               <button class="bt" type="submit">Agregar la salida</button>
               <button class="bt bt--fino" type="button" data-cancelar>Cancelar</button>
@@ -2418,11 +2479,47 @@ async function pintarLibro() {
   });
   document.querySelectorAll(".f-corregir").forEach(form => {
     form.querySelector("[data-cancelar]").onclick = () => { form.closest("tr").hidden = true; };
+
+    // Las horas que van a quedar escritas, dichas antes de guardar. Es lo que
+    // delata una hora mal tecleada: «15,0 h» en un turno de 12 salta a la
+    // vista, «08:00» solo no dice nada.
+    const entrada = form.dataset.entrada ? new Date(form.dataset.entrada) : null;
+    const cuenta = form.querySelector("[data-cuenta]");
+    const base = cuenta.textContent;
+    const repasar = () => {
+      if (!form.hora.value) { cuenta.textContent = base; return; }
+      const salida = new Date(`${form.fecha_salida.value}T${form.hora.value}`);
+      const h = horasEntre(entrada, salida);
+      cuenta.textContent = h === null ? base
+        : h <= 0 ? `${base} Esa salida es anterior a la entrada: revise el día.`
+        : `${base} Sale el ${fecha(form.fecha_salida.value)} a las ${form.hora.value}: ` +
+          `${h.toFixed(1)} horas de turno.`;
+    };
+
+    // El día de la salida se ofrece puesto en el de la jornada, que es lo
+    // correcto en un turno de día. En uno de noche la hora de salida es menor
+    // que la de entrada, y ahí el día salta solo al siguiente: es lo que ya
+    // hacía el servidor cuando la fecha no existía, solo que ahora se ve. Si
+    // quien corrige toca el calendario, manda él y esto no lo vuelve a mover.
+    form.fecha_salida.oninput = () => { form.fecha_salida.dataset.tocada = "1"; repasar(); };
+    form.hora.oninput = () => {
+      if (!form.fecha_salida.dataset.tocada && entrada && form.hora.value) {
+        const mismoDia = new Date(`${form.dataset.fecha}T${form.hora.value}`);
+        const otro = mismoDia <= entrada ? 1 : 0;
+        const d = new Date(`${form.dataset.fecha}T12:00`);
+        d.setDate(d.getDate() + otro);
+        form.fecha_salida.value = d.toLocaleDateString("en-CA");
+      }
+      repasar();
+    };
+
     form.onsubmit = async ev => {
       ev.preventDefault();
       const m = form.querySelector(".mensaje"), bt = form.querySelector("button");
-      if (!confirm(`¿Agregar la salida de las ${form.hora.value} a la jornada del ` +
-                   `${fecha(form.dataset.fecha)}?\n\n` +
+      const otroDia = form.fecha_salida.value !== form.dataset.fecha;
+      if (!confirm(`¿Agregar la salida de las ${form.hora.value}` +
+                   `${otroDia ? " del " + fecha(form.fecha_salida.value) : ""} a la ` +
+                   `jornada del ${fecha(form.dataset.fecha)}?\n\n` +
                    `Queda escrita a su nombre en el libro y no se puede deshacer.`)) return;
       decir(m, "Guardando…"); bt.disabled = true;
       try {
@@ -2431,11 +2528,13 @@ async function pintarLibro() {
           body: JSON.stringify({
             fecha: form.dataset.fecha,
             trabajador_id: form.dataset.trab,
+            fecha_salida: form.fecha_salida.value,
             hora: form.hora.value,
             motivo: form.motivo.value,
           }),
         });
-        alert(`Jornada cerrada: ${r.trabajador} salió a las ${r.hora}, ` +
+        alert(`Jornada cerrada: ${r.trabajador} salió a las ${r.hora}` +
+              `${r.otro_dia ? " del " + fecha(r.fecha_salida) : ""}, ` +
               `${r.horas.toFixed(1)} horas.\n\n` +
               `Queda en el libro como corrección suya, con el motivo a la vista.`);
         pintarLibro();
@@ -2459,7 +2558,7 @@ async function pintarLibro() {
  * intervino nunca se mezcla en silencio con lo que marcó el guardia.
  */
 
-async function bajarLibroExcel(libro) {
+async function bajarLibroExcel(libro, comoBytes = false) {
   await cargarScript(SHEETJS, "el generador de Excel");
   const XLSX = window.XLSX;
   if (!XLSX) throw new Error("No se pudo cargar el generador de Excel.");
@@ -2667,13 +2766,17 @@ async function pintarEstadosPago() {
         body: JSON.stringify({ mes: pagosEstado.mes, instalacion_id: pagosEstado.instalacion }),
       });
       pagosEstado.abierto = r.id;
+      pagosEstado.mostrar = r.id;
       await pintarEstadosPago();
       await pintarCarpeta(r.id);
     } catch (e) { recado(e.message, "mal"); }
   };
 
   $("#app").querySelectorAll("[data-ver]").forEach(b => {
-    b.onclick = () => pintarCarpeta(Number(b.dataset.ver));
+    b.onclick = () => {
+      pagosEstado.mostrar = Number(b.dataset.ver);
+      pintarCarpeta(Number(b.dataset.ver));
+    };
   });
 
   if (pagosEstado.abierto) await pintarCarpeta(pagosEstado.abierto);
@@ -2717,6 +2820,28 @@ const PAPELES = {
   deuda_fiscal: {
     sub: "Certificado de deuda fiscal de la Tesorería General de la República.",
   },
+  // Los dos que agregó el 19-11-2026. No se suben: se juntan desde la ficha de
+  // cada persona, que es donde ya están (ver papelesDelPersonal en pagos.js).
+  contratos: {
+    sub: "El contrato firmado de cada persona y todos sus anexos, en un PDF.",
+    generar: "Juntar desde las fichas", fichas: true,
+  },
+  documentacion_personal: {
+    sub: "Credencial y curso OS-10, exámenes, IRL, RIOHS, EPP… de cada persona, "
+      + "con una hoja de resumen al principio.",
+    generar: "Juntar desde las fichas", fichas: true,
+  },
+  // Según lo que pida el mandante: se ofrecen, pero no cuentan como faltantes.
+  comprobante_pago: {
+    sub: "El comprobante del banco de que se pagaron los sueldos del mes "
+      + "(la nómina de transferencias, ya autorizada).",
+  },
+  finiquitos: { sub: "Los finiquitos firmados de quien dejó la instalación este mes." },
+  entrega_epp: { sub: "El registro de entrega de elementos de protección (DS 594 art. 53)." },
+  mutual: { sub: "Certificado de adhesión o de tasa de accidentabilidad del organismo administrador." },
+  seguro_vida: { sub: "La póliza de seguro de vida del personal de seguridad, vigente." },
+  directiva_os10: { sub: "La directiva de funcionamiento de la instalación aprobada por OS-10." },
+  factura: { sub: "La factura del mes. El folio se anota arriba." },
 };
 
 /** El cuerpo del RUT, sin puntos, sin guion y sin dígito verificador. Es con lo
@@ -2750,8 +2875,12 @@ async function pintarCarpeta(id) {
 
   // Un papel puede tener más de un archivo: las liquidaciones de un mes pueden
   // llegar en dos tandas. Se muestran todos.
+  const opcionales = d.opcionales || [];
+  const conFichas = d.con_fichas !== false;
+  const personal = d.personal || null;
   const deClase = clase => d.archivos.filter(a => a.clase === clase);
-  const otros = d.archivos.filter(a => !exigidos.some(x => x.clase === a.clase));
+  const otros = d.archivos.filter(a => !exigidos.some(x => x.clase === a.clase)
+    && !opcionales.some(x => x.clase === a.clase));
 
   const archivoHTML = a => `<div style="display:flex;flex-wrap:wrap;gap:4px 8px;
     align-items:center;margin-bottom:8px">
@@ -2762,13 +2891,14 @@ async function pintarCarpeta(id) {
       href="/api/pagos/estados/${id}/archivo/${a.id}" target="_blank" rel="noopener">Abrir</a>` : ""}
     <button class="bt bt--chico bt--fino" data-quitar="${a.id}">Quitar</button></div>`;
 
-  const filaPapel = ({ clase, nombre }) => {
+  const filaPapel = ({ clase, nombre }, opcional = false) => {
     const p = PAPELES[clase] || {};
     const hay = deClase(clase);
-    const cerrado = p.sueldos && !conSueldos;
+    const cerrado = (p.sueldos && !conSueldos) || (p.fichas && !conFichas);
     return `<tr>
       <td><b>${esc(nombre)}</b><span class="sub">${esc(p.sub || "")}</span></td>
       <td>${hay.length ? hay.map(archivoHTML).join("")
+        : opcional ? `<span class="sello e-en_curso">No cargado</span>`
         : `<span class="sello e-solicitar_oc">Falta</span>`}</td>
       <td style="white-space:normal"><div style="display:flex;flex-wrap:wrap;gap:6px;
         align-items:center">
@@ -2779,8 +2909,9 @@ async function pintarCarpeta(id) {
                <input type="file" data-recortar="${clase}" accept=".xlsx,.xls,application/pdf" hidden></label>` : ""}
         <label class="bt bt--chico bt--fino">Subir
           <input type="file" data-subir="${clase}" hidden></label>
-        ${cerrado ? `<span class="sub">Lleva sueldos adentro: pide el módulo de
-          recursos humanos.</span>` : ""}</div>
+        ${cerrado ? `<span class="sub">${p.fichas
+          ? "Se arma con las fichas del personal: pide el módulo de recursos humanos."
+          : "Lleva sueldos adentro: pide el módulo de sueldos y pagos."}</span>` : ""}</div>
         <div id="ep-salida-${clase}">${
           pagosEstado.recorte?.clase === clase && pagosEstado.recorte.estado === id
             ? pagosEstado.recorte.html : ""}</div>
@@ -2814,8 +2945,19 @@ async function pintarCarpeta(id) {
     <div class="desliza"><table style="min-width:900px"><thead><tr>
       <th>Documento</th><th>Qué hay cargado</th><th>Cómo se consigue</th>
       </tr></thead><tbody>
-      ${exigidos.map(filaPapel).join("")}
+      ${exigidos.map(x => filaPapel(x)).join("")}
       </tbody></table></div>
+
+    ${tablaPersonal(personal)}
+
+    ${opcionales.length ? `<h3>Según lo que pida el mandante</h3>
+      <p class="sub" style="padding:0 16px 8px">No todos los mandantes los piden, así que
+        no cuentan como faltantes. Se cargan acá cuando éste los pide.</p>
+      <div class="desliza"><table style="min-width:900px"><thead><tr>
+        <th>Documento</th><th>Qué hay cargado</th><th>Cómo se consigue</th>
+        </tr></thead><tbody>
+        ${opcionales.map(x => filaPapel(x, true)).join("")}
+        </tbody></table></div>` : ""}
 
     ${personas.length ? `<h3>Quiénes van adentro</h3>
       <p class="sub" style="padding:0 16px 8px">${personas.length}
@@ -2899,7 +3041,70 @@ async function pintarCarpeta(id) {
     };
   });
 
+  // La carpeta se dibuja bajo la lista. Sin esto, en una pantalla baja quedaba
+  // fuera de vista y apretar «Ver» parecía no hacer nada (19-11-2026).
+  if (pagosEstado.mostrar === id) {
+    pagosEstado.mostrar = null;
+    caja.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
+      ? "auto" : "smooth", block: "start" });
+  }
+
   if (conSueldos) await pintarRemuneracionesDelMes(e);
+}
+
+/**
+ * Quién tiene qué, persona por persona. Sale de las fichas al cierre del mes:
+ * es lo que el mandante va a revisar dentro de «Contratos y anexos» y
+ * «Documentación del personal», dicho antes de que lo revise él.
+ */
+function tablaPersonal(personal) {
+  if (!personal) return "";
+  if (personal.error) return aviso("ojo", "No se pudieron leer las fichas del personal",
+    personal.error);
+  const filas = personal.personas || [];
+  if (!filas.length) return "";
+  const t = personal.totales;
+  // Una línea por estado, no una por papel: con doce papeles exigidos a cada
+  // guardia, una fila por papel hacía de cada persona una columna de doce
+  // renglones y la tabla de treinta guardias no se podía leer.
+  const grupos = items => {
+    const de = e => items.filter(x => x.estado === e);
+    const linea = (rotulo, lista, color, cada) => lista.length
+      ? `<span class="sub" style="color:var(${color})"><b>${rotulo}:</b> ${
+          lista.map(cada).map(esc).join(" · ")}</span>` : "";
+    return linea("Vencido", de("vencido"), "--rojo",
+             x => `${x.nombre} (${fecha(x.fecha_vencimiento)})`)
+      + linea("Falta", de("falta"), "--ambar", x => x.nombre)
+      + linea("Sin archivo", de("sin_archivo"), "--ambar", x => x.nombre);
+  };
+  const malos = (t.sin_contrato + t.contrato_sin_archivo + t.faltan + t.vencidos + t.sin_archivo);
+  return `<h3>El personal: contratos y documentación</h3>
+    <p class="sub" style="padding:0 16px 8px">Se mira al <b>${esc(fecha(personal.al_cierre))}</b>,
+      el último día del mes de la carpeta. De cada papel cuenta el último cargado. Lo que falta se
+      carga en Personas → Fichas, y después se vuelve a «Juntar desde las fichas».</p>
+    ${malos ? aviso("ojo", `${t.al_dia} de ${t.personas} personas con todo al día`,
+        [t.sin_contrato && `${t.sin_contrato} sin contrato cargado`,
+         t.contrato_sin_archivo && `${t.contrato_sin_archivo} con el contrato registrado pero sin el archivo`,
+         t.vencidos && `${t.vencidos} ${t.vencidos === 1 ? "papel vencido" : "papeles vencidos"}`,
+         t.faltan && `${t.faltan} ${t.faltan === 1 ? "papel que falta" : "papeles que faltan"}`,
+         t.sin_archivo && `${t.sin_archivo} sin archivo, que no van a entrar al PDF`,
+        ].filter(Boolean).join(" · "))
+      : aviso("bien", "Todo el personal al día", `${t.personas} personas con contrato y documentación completos.`)}
+    <div class="desliza"><table style="min-width:860px"><thead><tr>
+      <th>Persona</th><th>Contrato</th><th class="num">Anexos</th><th>Documentación</th>
+      </tr></thead><tbody>
+      ${filas.map(p => {
+        const malos = p.items.filter(x => x.estado !== "al_dia");
+        return `<tr><td>${esc(p.nombre)}<span class="sub">${esc(p.rut || "")}${
+            p.cargo ? ` · ${esc(p.cargo)}` : ""}</span></td>
+          <td>${p.sin_contrato ? `<span class="sello e-rechazada">Falta</span>`
+            : p.contrato_sin_archivo ? `<span class="sello e-solicitar_oc">Sin archivo</span>`
+            : `<span class="sello e-cerrado">Cargado</span>`}</td>
+          <td class="num">${p.anexos.length || "—"}</td>
+          <td style="white-space:normal">${malos.length ? grupos(p.items)
+            : `<span class="sello e-cerrado">Al día · ${p.items.length}</span>`}</td></tr>`;
+      }).join("")}
+      </tbody></table></div>`;
 }
 
 /** Un botón que se apaga mientras trabaja: armar un PDF de treinta
@@ -2927,11 +3132,175 @@ async function armarYAdjuntar(id, clase, e) {
   if (clase === "libro_asistencia")          hecho = await armarAsistencia(e, true);
   else if (clase === "libro_remuneraciones") hecho = await bajarLibroRemuneraciones(e, true);
   else if (clase === "liquidaciones")        hecho = await bajarLiquidaciones(e, true);
+  else if (clase === "contratos" || clase === "documentacion_personal") {
+    hecho = await juntarDesdeFichas(e, clase, pagosEstado.detalle?.personal);
+  }
   else throw new Error("Ese papel no lo arma el sistema.");
   await subirBytes(id, clase, hecho.nombre, hecho.bytes, hecho.nota);
   pagosEstado.recorte = null;
   recado("Quedó en la carpeta");
   await pintarEstadosPago();
+}
+
+/**
+ * Junta en un PDF los papeles que ya están en la ficha de cada persona
+ * (19-11-2026): «Contratos y anexos» o «Documentación del personal».
+ *
+ * Abre con una hoja de resumen que dice, persona por persona, qué va adentro y
+ * qué no —y por qué—. Eso es lo que el mandante revisa primero, y es mejor que
+ * lo diga el papel antes de que lo descubra él hoja por hoja.
+ *
+ * Qué entra y qué no, a propósito:
+ *  - Un papel **vencido al cierre del mes no entra**: mandarlo sería entregar
+ *    como respaldo algo que no respalda. Sale nombrado en el resumen.
+ *  - Lo registrado sin archivo no puede entrar, y también se nombra.
+ *  - Un PDF entra con todas sus hojas; una foto (JPG o PNG) entra como una
+ *    hoja A4. WebP y HEIC no los sabe incrustar el armador: se nombran para
+ *    que alguien los vuelva a subir como PDF o JPG.
+ */
+async function juntarDesdeFichas(e, clase, personal) {
+  const gente = personal?.personas || [];
+  if (!gente.length) throw new Error("Esta carpeta no tiene personas: no hay de quién juntar papeles.");
+  await cargarScript(PDFLIB, "el armador de PDF");
+  if (!window.PDFLib) throw new Error("No se pudo cargar el armador de PDF.");
+  const { PDFDocument, StandardFonts, rgb } = window.PDFLib;
+
+  const esContratos = clase === "contratos";
+  const titulo = esContratos ? "Contratos y anexos" : "Documentación del personal";
+
+  // Qué va de cada persona, y lo que queda fuera con su motivo.
+  const plan = gente.map(p => {
+    const lineas = [];
+    const van = [];
+    if (esContratos) {
+      if (!p.contratos.length) lineas.push({ texto: "Contrato: no está cargado en la ficha", mal: true });
+      for (const d of [...p.contratos, ...p.anexos]) {
+        const que = d.tipo === "anexo" ? "Anexo" : "Contrato";
+        const cuando = d.fecha_emision ? ` del ${fecha(d.fecha_emision)}` : "";
+        if (d.tiene_archivo) { van.push({ ...d, rotulo: `${que}${cuando}` }); lineas.push({ texto: `${que}${cuando}` }); }
+        else lineas.push({ texto: `${que}${cuando}: registrado sin archivo, no va adentro`, mal: true });
+      }
+    } else {
+      for (const x of p.items) {
+        const n = String(x.nombre);
+        if (x.estado === "falta") lineas.push({ texto: `${n}: falta`, mal: true });
+        else if (x.estado === "vencido") lineas.push({ texto: `${n}: venció el ${fecha(x.fecha_vencimiento)}, no va adentro`, mal: true });
+        else if (x.estado === "sin_archivo") lineas.push({ texto: `${n}: registrado sin archivo, no va adentro`, mal: true });
+        else {
+          van.push({ ...x, rotulo: n });
+          lineas.push({ texto: n + (x.fecha_vencimiento ? ` (vigente hasta el ${fecha(x.fecha_vencimiento)})` : "") });
+        }
+      }
+    }
+    return { p, lineas, van };
+  });
+  const total = plan.reduce((a, x) => a + x.van.length, 0);
+  if (!total) {
+    throw new Error(`Nadie de esta instalación tiene ${esContratos ? "contratos" : "documentos"} `
+      + "con el archivo cargado en su ficha. Se suben en Personas → Fichas, y después se vuelve acá.");
+  }
+
+  const pdf = await PDFDocument.create();
+  const normal = await pdf.embedFont(StandardFonts.Helvetica);
+  const negrita = await pdf.embedFont(StandardFonts.HelveticaBold);
+  // La Helvetica del armador solo escribe el juego WinAnsi: una flecha o una
+  // raya larga rompen el documento entero. Lo que no está, se cambia.
+  const ansi = t => String(t ?? "").replace(/[—–]/g, "-").replace(/…/g, "...")
+    .replace(/[^\x20-\x7E\xA0-\xFF]/g, "?");
+  const A4 = [595.28, 841.89], M = 48;
+  const tinta = rgb(0.1, 0.1, 0.15), gris = rgb(0.4, 0.4, 0.45), rojo = rgb(0.7, 0.12, 0.1);
+
+  // ---- la hoja de resumen
+  let hoja = pdf.addPage(A4), y = A4[1] - M;
+  const nueva = () => { hoja = pdf.addPage(A4); y = A4[1] - M; };
+  const escribir = (texto, { tam = 10, fuente = normal, color = tinta, sangria = 0 } = {}) => {
+    const ancho = A4[0] - 2 * M - sangria;
+    const palabras = ansi(texto).split(" ");
+    let linea = "";
+    const sale = l => {
+      if (y < M + tam) nueva();
+      hoja.drawText(l, { x: M + sangria, y, size: tam, font: fuente, color });
+      y -= tam * 1.4;
+    };
+    for (const w of palabras) {
+      const prueba = linea ? `${linea} ${w}` : w;
+      if (fuente.widthOfTextAtSize(prueba, tam) > ancho && linea) { sale(linea); linea = w; }
+      else linea = prueba;
+    }
+    if (linea) sale(linea);
+  };
+  escribir(titulo, { tam: 18, fuente: negrita });
+  escribir(`${e.instalacion} · ${mesLindo(e.mes)}`, { tam: 12, fuente: negrita });
+  if (e.cliente) escribir(`Mandante: ${e.cliente}`, { tam: 10, color: gris });
+  escribir(`Vigencia revisada al ${fecha(personal.al_cierre)}, último día del mes. `
+    + `Generado el ${fecha(hoyISO())} desde las fichas del personal.`, { tam: 9, color: gris });
+  y -= 8;
+  for (const { p, lineas } of plan) {
+    if (y < M + 60) nueva();
+    escribir(`${p.nombre}${p.rut ? ` · ${p.rut}` : ""}`, { tam: 11, fuente: negrita });
+    for (const l of lineas) escribir(`${l.mal ? "x" : "·"}  ${l.texto}`, { tam: 9.5, sangria: 12,
+      color: l.mal ? rojo : tinta });
+    y -= 6;
+  }
+
+  // ---- los archivos, persona por persona
+  const fuera = [];
+  for (const { p, van } of plan) {
+    for (const d of van) {
+      const cual = `${p.nombre}: ${d.rotulo}`;
+      try {
+        const r = await fetch(`/api/rrhh/documentos/${d.id}/archivo`, { credentials: "same-origin" });
+        if (!r.ok) throw new Error(`el servidor contestó ${r.status}`);
+        const tipo = (r.headers.get("content-type") || "").split(";")[0];
+        const bytes = new Uint8Array(await r.arrayBuffer());
+        if (tipo === "application/pdf") {
+          const origen = await PDFDocument.load(bytes, { ignoreEncryption: true });
+          const hojas = await pdf.copyPages(origen, origen.getPageIndices());
+          hojas.forEach(h => pdf.addPage(h));
+        } else if (tipo === "image/jpeg" || tipo === "image/png") {
+          const img = tipo === "image/png" ? await pdf.embedPng(bytes) : await pdf.embedJpg(bytes);
+          const h = pdf.addPage(A4);
+          h.drawText(ansi(cual), { x: M, y: A4[1] - M + 16, size: 9, font: normal, color: gris });
+          const cabe = Math.min((A4[0] - 2 * M) / img.width, (A4[1] - 2 * M - 10) / img.height, 1);
+          const w = img.width * cabe, alto = img.height * cabe;
+          h.drawImage(img, { x: (A4[0] - w) / 2, y: A4[1] - M - 10 - alto, width: w, height: alto });
+        } else {
+          throw new Error("es una imagen WebP o HEIC, que no se puede meter en un PDF");
+        }
+      } catch (err) {
+        fuera.push(`${cual} (${err.message || "no se pudo leer"})`);
+      }
+    }
+  }
+
+  if (fuera.length) {
+    nueva();
+    escribir("No se pudieron incluir", { tam: 14, fuente: negrita, color: rojo });
+    for (const f of fuera) escribir(`x  ${f}`, { tam: 9.5, color: rojo });
+  }
+
+  const bytes = await pdf.save();
+  const nombre = `${titulo} ${e.instalacion} ${e.mes}.pdf`;
+  // El bucket acepta hasta 10 MB por archivo. Treinta credenciales escaneadas
+  // pueden pasarse: entonces se baja al computador y se dice, en vez de perder
+  // el trabajo de armarlo.
+  if (bytes.length > 10 * 1048576) {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+    a.download = nombre;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    throw new Error(`El PDF pesa ${Math.round(bytes.length / 1048576)} MB y la carpeta acepta hasta 10. `
+      + "Se bajó a su computador; súbalo comprimido con «Subir».");
+  }
+  const incluidos = total - fuera.length;
+  const nota = `${incluidos} ${incluidos === 1 ? "documento" : "documentos"} de ${gente.length} `
+    + `${gente.length === 1 ? "persona" : "personas"}`
+    + (fuera.length ? ` · ${fuera.length === 1 ? "1 no se pudo incluir"
+                                               : `${fuera.length} no se pudieron incluir`}` : "");
+  if (fuera.length) recado(`${fuera.length} ${fuera.length === 1 ? "archivo no entró" : "archivos no entraron"}: `
+    + "están nombrados en la última hoja del PDF.", "mal");
+  return { nombre, bytes, nota };
 }
 
 /** La lista de quiénes van en la carpeta, para el trámite del F30-1. */
@@ -4545,6 +4914,7 @@ function enganchesRotacion(dependencias, conDeps) {
 }
 
 const VISTAS = {
+  inicio: { rotulo: "Inicio", pintar: pintarInicio },
   panel: { rotulo: "Panel", pintar: pintarPanel, modulo: "facturacion" },
   calendario: { rotulo: "Calendario", pintar: pintarCalendario, modulo: "facturacion" },
   contactos: { rotulo: "Contactos web", pintar: pintarContactos, modulo: "facturacion" },
@@ -4588,6 +4958,7 @@ const VISTAS = {
    El orden de acá manda también para qué se abre al entrar: la primera
    sección que la cuenta pueda ver. */
 const GRUPOS = [
+  { rotulo: "Espacio de trabajo", vistas: ["inicio"] },
   { rotulo: "Cobranza",    vistas: ["panel", "calendario", "pagos", "bitacora"] },
   { rotulo: "Comercial",   vistas: ["contactos", "cotizaciones"] },
   { rotulo: "Operaciones", vistas: ["servicio", "instalaciones", "extra", "rotacion", "libro", "trabajadores"] },

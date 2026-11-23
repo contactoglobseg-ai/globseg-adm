@@ -28,6 +28,7 @@ import * as activos from './activos.js';
 import * as rotaciones from './rotaciones.js';
 import * as pagos from './pagos.js';
 import * as usr from './usuarios.js';
+import * as alertas from './alertas.js';
 import { redireccionHttps, cabecerasSeguridad, conCabeceras, soloHttps }
   from './seguridad.js';
 import { ipDe, huellaDe, revisarLimite, limpiarHuellas, MENSAJES as MENSAJES_LIMITE,
@@ -695,6 +696,33 @@ async function api(request, env, url, usuario) {
       const estado = p.get('estado');
       return json({ documentos: estado ? lista.filter((d) => d.estado === estado) : lista });
     }
+    // ------------------------------------------- alertas y Pronexo (17-11)
+    // La pantalla Documentación: el estado de cada persona, a quién se le
+    // manda el correo diario y cómo salieron los últimos.
+    if (sub === '/alertas' && metodo === 'GET') return json(await alertas.pantalla(env));
+    if (sub === '/alertas/correo' && metodo === 'GET') {
+      const r = await alertas.enviarResumen(env, { soloVer: true });
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+    if (sub === '/alertas/enviar' && metodo === 'POST') {
+      const r = await alertas.enviarResumen(env, { origen: 'a_mano', quien: usuario.usuario });
+      if (r.error && r.status) return error(r.error, r.status);
+      return json(r);
+    }
+    m = sub.match(/^\/documentos\/(\d+)\/pronexo$/);
+    if (m && metodo === 'POST') {
+      const r = await alertas.marcarPronexo(env, usuario.usuario, Number(m[1]), cuerpo.subido !== false);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+    if (sub === '/pronexo/todo' && metodo === 'POST') {
+      const id = Number(cuerpo.trabajador_id) || null;
+      const r = await alertas.marcarPronexoTodo(env, usuario.usuario, id);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+
     if (sub === '/documentos' && metodo === 'POST') {
       const r = await rrhh.crearDocumento(env, usuario.usuario, cuerpo);
       if (r.error) return error(r.error, r.status);
@@ -1065,6 +1093,11 @@ async function api(request, env, url, usuario) {
       // Las liquidaciones de la carpeta solo salen si la cuenta abre sueldos.
       // El resto de la carpeta —qué papel hay y cuál falta— lo ve cobranza.
       if (!conSueldos) { r.remuneraciones = []; r.totales = null; r.sin_sueldos = true; }
+      // Juntar los contratos y los papeles de cada persona baja los archivos
+      // por la ruta de RRHH, que pide `rrhh`: un contrato lleva el sueldo y la
+      // cuenta escritos adentro. Quien entró por cobranza ve la tabla de
+      // quién tiene qué, pero el botón le dice a quién pedírselo.
+      r.con_fichas = puede(usuario, 'rrhh');
       return json(r);
     }
     if (mEstado && metodo === 'PATCH') {
@@ -2461,6 +2494,7 @@ const RELACIONES = [
   'documentos_guardados', 'v_documentos_guardados',
   'rotaciones', 'rotacion_puntos', 'rotacion_dias', 'v_rotacion_dias',
   'dependencias', 'v_dependencias',
+  'avisos_documentos', 'envios_alertas',
 ];
 
 const COLUMNAS = [
@@ -2474,6 +2508,7 @@ const COLUMNAS = [
   ['contacto_con_limite',          'contactos',              ['ip_huella']],
   ['ficha_rrhh',                   'trabajadores',           ['fecha_ingreso', 'afp', 'salud_sistema']],
   ['documentos_con_archivo',       'documentos_trabajador',  ['archivo_ruta']],
+  ['documentos_con_pronexo',       'documentos_trabajador',  ['pronexo_subido_en', 'pronexo_por']],
   ['documentos_desde_archivo',     'documentos_generados',   ['archivo_ruta', 'envio_id', 'tipo_documento']],
   ['documentos_desde_biblioteca',  'documentos_generados',   ['guardado_id', 'firmas_posicion']],
   ['instalaciones_con_direccion',  'instalaciones',          ['direccion']],
@@ -2750,6 +2785,7 @@ export default {
           clave_tiene_caracteres_raros: /[^\x21-\x7E]/.test(k),
           clave_parece_recortada: k.length > 0 && k.length < 30,
           secreto_de_sesion_configurado: !!env.SESION_SECRETO,
+          correo_de_alertas_configurado: !!env.RESEND_API_KEY,
           tablas: await revisarTablas(env),
         });
       }
@@ -2811,5 +2847,21 @@ export default {
       console.error(e);
       return error('Error inesperado: ' + e.message, 500);
     }
+  },
+
+  // El aviso diario de documentación pendiente (17-11-2026). Corre a las 11:00
+  // UTC, que son las 8 de la mañana en Chile en horario de verano y las 7 en
+  // invierno. Manda solo si hay algo nuevo, y deja anotado en envios_alertas
+  // lo que hizo, también cuando falla: un aviso que falla en silencio todos
+  // los días es peor que no tener aviso.
+  async scheduled(evento, env, ctx) {
+    ctx.waitUntil((async () => {
+      try {
+        const r = await alertas.enviarResumen(env, { origen: 'diario' });
+        console.log('alertas:', JSON.stringify(r).slice(0, 300));
+      } catch (e) {
+        console.error('alertas:', e.message);
+      }
+    })());
   },
 };
