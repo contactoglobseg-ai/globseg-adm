@@ -448,8 +448,9 @@ const ROTULO_PEND = { falta: "Sin cargar", vencido: "Vencido", por_vencer: "Por 
 const SELLO_PEND = { falta: "e-rechazada", vencido: "e-rechazada", por_vencer: "e-solicitar_oc" };
 
 async function pintarDocumentacion() {
+  RRHH.docu ||= { busca: "", inst: "", solo: true, que: "", subir: null };
+  if (RRHH.docu.subir) return pintarSubirFaltan(RRHH.docu.subir);
   const D = await pedir("/rrhh/alertas");
-  RRHH.docu ||= { busca: "", inst: "", solo: true, que: "" };
   const F = RRHH.docu;
   const t = D.totales;
   let html = "";
@@ -577,6 +578,8 @@ async function pintarDocumentacion() {
             pro.map(x => `<button class="bt bt--fino bt--chico" style="margin:0 4px 4px 0" data-pronexo="${x.documento_id}"
               title="Marcar como subido a Pronexo">${esc(x.nombre)} ✓</button>`).join("")}</div>` : ""}</td>
         <td class="nowrap">
+          ${p.faltan + p.vencidos + p.por_vencer ? `<button class="bt bt--chico" data-subir-faltan="${p.id}"
+             title="Subir de una vez los archivos que le faltan">Subir lo que falta</button>` : ""}
           <button class="bt bt--fino bt--chico" data-ver-ficha="${p.id}">Ver ficha</button>
           ${pro.length > 1 ? `<button class="bt bt--fino bt--chico" data-pronexo-persona="${p.id}"
              title="Marca como subido todo lo suyo que falta">Todo en Pronexo</button>` : ""}</td>
@@ -605,6 +608,7 @@ async function pintarDocumentacion() {
   document.querySelectorAll("[data-ver-ficha]").forEach(b => {
     b.onclick = () => { RRHH.verFicha = Number(b.dataset.verFicha); RRHH.editaContrato = null; ir("personal"); };
   });
+  conectarSubirFaltan();
   document.querySelectorAll("[data-pronexo]").forEach(b => {
     b.onclick = async () => {
       b.disabled = true;
@@ -673,6 +677,256 @@ async function pintarDocumentacion() {
   };
 }
 
+
+// ------------------------------------------------------ subir lo que falta
+/* Pedido del gerente (23-11-2026): a un guardia le faltan trece papeles y
+   cargarlos de a uno desde la ficha son trece formularios. Acá se elige a la
+   persona, se sueltan todos sus archivos de una vez y la pantalla propone a
+   qué papel va cada uno por el nombre del archivo. Lo que se propone se
+   corrige con el menú: el nombre de un archivo lo escribió cualquiera.
+
+   No hay ruta nueva en el servidor: cada archivo es el mismo par de pasos que
+   el formulario de la ficha —crear el documento y subirle el archivo—, así
+   que pasa por las mismas revisiones de tipo, de bytes y de tamaño.
+
+   El contenido del archivo no se lee: adivinar qué papel es mirando un
+   escaneo pediría mandar cédulas y antecedentes a un servicio de afuera. */
+
+/** Palabras del nombre del archivo que delatan el papel. Va de lo más
+ *  específico a lo más general: «licencia de conducir» antes que «licencia»,
+ *  «curso OS-10» antes que «OS-10». La primera que calza gana. */
+const PISTAS_DOC = [
+  ["examen_psico",      /psico|sensotec|bateria/],
+  ["examen_preocup",    /preocup|pre.?ocup/],
+  ["examen_altura_geo", /geograf|hipobar/],
+  ["examen_altura",     /altura/],
+  ["licencia_conducir", /conduc|licencia.?(de.?)?manejo|clase.?[abc]\b/],
+  ["os10_curso",        /curso|formacion|perfeccion|reentren/],
+  ["os10_nombramiento", /nombramiento|nomina/],
+  ["os10_credencial",   /credencial|os.?10/],
+  ["antecedentes",      /antecedente|papel.?de.?antec/],
+  ["estudios",          /ensenanza|estudio|licencia.?media|cuarto.?medio|\b4\w{0,2}.?medio|titulo/],
+  ["afiliacion",        /afp|fonasa|isapre|salud|afiliacion|previsi/],
+  ["cuenta_banco",      /banco|cuenta.?rut|cuentarut|bancari|cuenta/],
+  ["ley_karin",         /karin|acoso/],
+  ["riohs",             /riohs|reglamento/],
+  ["irl",               /\birl\b|derecho.?a.?saber|\bods?i\b/],
+  ["epp",               /\bepp\b|proteccion|elementos/],
+  ["capacitacion",      /capacitacion|induccion|charla/],
+  ["finiquito",         /finiquito/],
+  ["anexo",             /anexo/],
+  ["contrato",          /contrato/],
+  ["cedula",            /cedula|carnet|\bci\b|identidad|\brun\b|\brut\b/],
+];
+
+/** El nombre del archivo, sin tildes, en minúscula y con separadores en vez
+ *  de guiones bajos: «Cédula_Alan.PDF» → «cedula alan pdf». */
+const normalNombre = n => (n || "").normalize("NFD").replace(/[̀-ͯ]/g, "")
+  .toLowerCase().replace(/[_\-.]+/g, " ");
+
+function adivinarTipo(nombreArchivo, existentes) {
+  const n = normalNombre(nombreArchivo);
+  for (const [codigo, re] of PISTAS_DOC) {
+    if (re.test(n) && existentes.has(codigo)) return codigo;
+  }
+  return "";
+}
+
+/** Qué fecha pide el papel. Los que vencen a plazo fijo (antecedentes, OS-10,
+ *  exámenes) piden la emisión y el servidor calcula el vencimiento, que es lo
+ *  que hace también la ficha. Los que vencen sin plazo fijo (la cédula, la
+ *  licencia) piden la fecha impresa de vencimiento. Un papel que vence y entra
+ *  sin fecha no vuelve a salir en ninguna alerta: por eso es obligatoria. */
+function fechaQuePide(td) {
+  if (!td || !td.vence) return null;
+  return td.meses_validez ? "emision" : "vencimiento";
+}
+
+function conectarSubirFaltan() {
+  document.querySelectorAll("[data-subir-faltan]").forEach(b => {
+    b.onclick = () => {
+      RRHH.docu ||= { busca: "", inst: "", solo: true, que: "", subir: null };
+      RRHH.docu.subir = Number(b.dataset.subirFaltan);
+      if (estado.vista === "documentacion") pintarDocumentacion().catch(e => alert(e.message));
+      else ir("documentacion");
+    };
+  });
+}
+
+/** Salir de Documentación suelta a la persona que se estaba cargando: volver
+ *  después por la lateral tiene que mostrar la lista, no el cargador de alguien
+ *  de hace una hora. Entrar a Documentación no lo suelta, porque es justamente
+ *  como se llega acá desde el panel de RRHH. */
+function alCambiarVista(vista) {
+  if (vista !== "documentacion" && RRHH.docu) RRHH.docu.subir = null;
+}
+
+async function pintarSubirFaltan(id) {
+  const [D, cat] = await Promise.all([pedir("/rrhh/alertas"), catalogosRrhh()]);
+  const p = D.personas.find(x => x.id === id);
+  const volver = () => { RRHH.docu.subir = null; pintarDocumentacion().catch(e => alert(e.message)); };
+  if (!p) {
+    $("#app").innerHTML = aviso("ojo", "Esa persona no está en la lista",
+      "Puede que la hayan dado de baja. Vuelva a la lista de Documentación.")
+      + `<p><button class="bt" id="sf-volver">Volver a la lista</button></p>`;
+    $("#sf-volver").onclick = volver;
+    return;
+  }
+
+  const tipos = cat.tipos_documento;
+  const porCodigo = new Map(tipos.map(t => [t.codigo, t]));
+  const pendientes = p.items.filter(x => x.estado !== "al_dia");
+  const codPend = new Set(pendientes.map(x => x.tipo));
+  // Lo que ya se subió en esta pasada, para tacharlo de la lista sin esperar
+  // a que el servidor recalcule.
+  const S = RRHH.docu.cargador?.id === id ? RRHH.docu.cargador
+    : (RRHH.docu.cargador = { id, filas: [], hechos: new Set(), ocupado: false });
+
+  const opciones = (elegido) => {
+    const lo = (t) => `<option value="${t.codigo}"${t.codigo === elegido ? " selected" : ""}>${esc(t.nombre)}</option>`;
+    const faltan = tipos.filter(t => codPend.has(t.codigo));
+    const otros = tipos.filter(t => !codPend.has(t.codigo));
+    return `<option value="">Elegir qué papel es…</option>
+      ${faltan.length ? `<optgroup label="Lo que le falta o vence">${faltan.map(lo).join("")}</optgroup>` : ""}
+      <optgroup label="Otros papeles">${otros.map(lo).join("")}</optgroup>`;
+  };
+
+  const pintar = () => {
+    const repetidos = new Map();
+    S.filas.forEach(f => { if (f.tipo && f.estado !== "hecho") repetidos.set(f.tipo, (repetidos.get(f.tipo) || 0) + 1); });
+    const porSubir = S.filas.filter(f => f.estado !== "hecho");
+    const listos = porSubir.filter(f => f.tipo && (!fechaQuePide(porCodigo.get(f.tipo)) || f.fecha));
+
+    let html = `<div class="pie-form" style="padding:0 0 12px;justify-content:flex-start">
+      <button class="bt bt--fino" id="sf-volver">← Volver a la lista</button></div>
+    <section class="caja">
+      <div class="caja__tit"><h2>Subir lo que falta · ${esc(p.nombre)}</h2>
+        <span class="nota">${esc(p.rut)} · ${rotCargo(p.cargo)}${p.instalacion ? " · " + esc(p.instalacion) : ""}</span></div>
+      <div style="padding:0 16px 14px">
+        <div class="sub" style="margin:0 0 6px">Pendiente${pendientes.length ? "" : ": nada, está al día"}</div>
+        ${pendientes.map(x => {
+          const hecho = S.hechos.has(x.tipo);
+          return `<span class="sello ${hecho ? "e-cerrado" : SELLO_PEND[x.estado]}" style="margin:0 4px 4px 0">${
+            hecho ? "✓ " : ""}${esc(x.nombre)}${hecho ? " · cargado"
+            : x.estado === "falta" ? " · sin cargar" : " · " + enDias(x.dias)}</span>`;
+        }).join("")}
+      </div>
+    </section>
+
+    <section class="caja">
+      <label id="sf-zona" style="display:block;margin:0 16px 14px;padding:28px 16px;text-align:center;cursor:pointer;
+          border:2px dashed var(--borde);border-radius:var(--r);background:var(--sup-2)">
+        <b>Arrastre aquí los archivos de ${esc(p.nombre.split(" ")[0])}</b>
+        <span class="sub" style="display:block;margin:4px 0 0">o toque para elegirlos · PDF o foto (JPG, PNG, HEIC), hasta 10 MB cada uno.
+          El papel se propone por el nombre del archivo; revíselo antes de subir.</span>
+        <input type="file" id="sf-archivos" multiple accept="application/pdf,image/*" style="display:none">
+      </label>
+
+      ${porSubir.length ? `<div class="desliza"><table style="min-width:720px">
+        <thead><tr><th>Archivo</th><th style="width:34%">Qué papel es</th><th style="width:22%">Fecha</th><th style="width:1%"></th></tr></thead><tbody>
+        ${S.filas.map((f, i) => {
+          if (f.estado === "hecho") return "";
+          const td = porCodigo.get(f.tipo);
+          const pide = fechaQuePide(td);
+          const repetido = f.tipo && repetidos.get(f.tipo) > 1;
+          const yaLoTiene = f.tipo && !codPend.has(f.tipo) && !S.hechos.has(f.tipo);
+          return `<tr>
+            <td><b style="word-break:break-all">${esc(f.archivo.name)}</b><span class="sub">${pesoArchivo(f.archivo.size)}${
+              f.adivinado ? " · propuesto por el nombre" : ""}</span>
+              ${f.estado === "error" ? `<span class="sub" style="color:var(--rojo)">${esc(f.error)}</span>` : ""}
+              ${f.estado === "subiendo" ? `<span class="sub">Subiendo…</span>` : ""}</td>
+            <td><select data-sf-tipo="${i}"${S.ocupado || f.documentoId ? " disabled" : ""}>${opciones(f.tipo)}</select>
+              ${!f.tipo ? `<span class="sub" style="color:var(--ambar)">No se reconoció: elija el papel</span>` : ""}
+              ${repetido ? `<span class="sub" style="color:var(--ambar)">Hay otro archivo para este mismo papel: quedarán como dos documentos (sirve para cédula por los dos lados)</span>` : ""}
+              ${yaLoTiene ? `<span class="sub">Ya tiene uno cargado y vigente: este pasa a ser el último</span>` : ""}</td>
+            <td>${pide ? `<label class="campo" style="margin:0"><span>${pide === "emision" ? "Emitido el" : "Vence el"}</span>
+                <input type="date" data-sf-fecha="${i}" value="${f.fecha || ""}"${pide === "emision" ? ` max="${hoyISO()}"` : ""}${S.ocupado || f.documentoId ? " disabled" : ""}></label>
+                ${!f.fecha ? `<span class="sub" style="color:var(--ambar)">Obligatoria: sin fecha nunca avisa que venció</span>` : ""}`
+              : f.tipo ? '<span class="sub">No vence</span>' : ""}</td>
+            <td class="nowrap"><button class="bt bt--fino bt--chico" data-sf-quitar="${i}"${S.ocupado ? " disabled" : ""}>Quitar</button></td>
+          </tr>`;
+        }).join("")}
+        </tbody></table></div>
+        <div class="pie-form" style="padding:12px 16px">
+          <button class="bt" id="sf-subir"${!listos.length || listos.length < porSubir.length || S.ocupado ? " disabled" : ""}>Subir ${
+            porSubir.length} documento${porSubir.length === 1 ? "" : "s"}</button>
+          <span class="mensaje" id="sf-msg">${listos.length < porSubir.length
+            ? `Faltan ${porSubir.length - listos.length} por completar (papel o fecha)` : ""}</span>
+        </div>` : ""}
+    </section>`;
+
+    $("#app").innerHTML = html;
+    $("#sf-volver").onclick = volver;
+
+    const agregar = (lista) => {
+      for (const archivo of lista) {
+        if (archivo.size > MAX_ARCHIVO) {
+          alert(`«${archivo.name}» pesa ${pesoArchivo(archivo.size)} y el máximo es 10 MB. `
+            + "Si es una foto, sáquela con menos resolución o conviértala a PDF.");
+          continue;
+        }
+        const tipo = adivinarTipo(archivo.name, porCodigo);
+        S.filas.push({ archivo, tipo, adivinado: !!tipo, fecha: "", estado: "nuevo" });
+      }
+      pintar();
+    };
+    const zona = $("#sf-zona");
+    $("#sf-archivos").onchange = e => agregar([...e.target.files]);
+    zona.ondragover = e => { e.preventDefault(); zona.style.borderColor = "var(--acento)"; };
+    zona.ondragleave = () => { zona.style.borderColor = ""; };
+    zona.ondrop = e => { e.preventDefault(); zona.style.borderColor = ""; if (!S.ocupado) agregar([...e.dataTransfer.files]); };
+
+    document.querySelectorAll("[data-sf-tipo]").forEach(s => {
+      s.onchange = () => { const f = S.filas[s.dataset.sfTipo]; f.tipo = s.value; f.adivinado = false; f.fecha = ""; pintar(); };
+    });
+    document.querySelectorAll("[data-sf-fecha]").forEach(inp => {
+      inp.onchange = () => { S.filas[inp.dataset.sfFecha].fecha = inp.value; pintar(); };
+    });
+    document.querySelectorAll("[data-sf-quitar]").forEach(b => {
+      b.onclick = () => { S.filas.splice(Number(b.dataset.sfQuitar), 1); pintar(); };
+    });
+
+    const bt = $("#sf-subir");
+    if (bt) bt.onclick = async () => {
+      S.ocupado = true;
+      let bien = 0, mal = 0;
+      for (const f of S.filas) {
+        if (f.estado === "hecho") continue;
+        f.estado = "subiendo"; pintar();
+        try {
+          // Si en un intento anterior el documento se creó y el archivo no
+          // subió, se reintenta solo el archivo: crear de nuevo dejaría dos.
+          if (!f.documentoId) {
+            const pide = fechaQuePide(porCodigo.get(f.tipo));
+            const r = await pedir("/rrhh/documentos", { method: "POST", body: JSON.stringify({
+              trabajador_id: id, tipo: f.tipo,
+              ...(pide === "emision" ? { fecha_emision: f.fecha } : {}),
+              ...(pide === "vencimiento" ? { fecha_vencimiento: f.fecha } : {}),
+              observacion: "Cargado desde «Subir lo que falta»",
+            }) });
+            f.documentoId = r.documento.id;
+          }
+          await subirArchivo(f.documentoId, f.archivo);
+          f.estado = "hecho"; S.hechos.add(f.tipo); bien++;
+        } catch (e) {
+          f.estado = "error"; mal++;
+          f.error = f.documentoId
+            ? `El documento quedó creado pero el archivo no subió: ${e.message}. «Subir» lo reintenta sin duplicarlo.`
+            : e.message;
+        }
+      }
+      S.ocupado = false;
+      S.filas = S.filas.filter(f => f.estado !== "hecho");
+      recado(mal ? `${bien} subido${bien === 1 ? "" : "s"}, ${mal} con error` : `${bien} documento${bien === 1 ? "" : "s"} cargado${bien === 1 ? "" : "s"}`,
+        mal ? "mal" : "ok");
+      // Si todo salió, se vuelve a pedir la lista para que lo pendiente lo
+      // diga el servidor y no esta pantalla.
+      if (!mal) { RRHH.docu.cargador = null; pintarSubirFaltan(id).catch(e => alert(e.message)); }
+      else pintar();
+    };
+  };
+  pintar();
+}
 
 async function pintarRrhh() {
   const [panel] = await Promise.all([pedir("/rrhh/panel"), catalogosRrhh()]);
@@ -813,7 +1067,8 @@ async function pintarRrhh() {
         ${panel.faltantes.map(t => `<tr>
           <td><b>${esc(t.nombre)}</b><span class="sub">${rotCargo(t.cargo)}</span></td>
           <td>${t.faltan.map(f => `<span class="sello e-en_curso" style="margin:0 4px 4px 0">${esc(f)}</span>`).join("")}</td>
-          <td class="nowrap"><button class="bt bt--fino bt--chico" data-ver-ficha="${t.id}">Abrir ficha</button></td>
+          <td class="nowrap"><button class="bt bt--chico" data-subir-faltan="${t.id}">Subir lo que falta</button>
+            <button class="bt bt--fino bt--chico" data-ver-ficha="${t.id}">Abrir ficha</button></td>
         </tr>`).join("")}
       </tbody></table></div></section>`;
   }
@@ -858,6 +1113,7 @@ async function pintarRrhh() {
   }
 
   $("#app").innerHTML = html;
+  conectarSubirFaltan();
   document.querySelectorAll("[data-ver-ficha]").forEach(b => {
     b.onclick = () => {
       RRHH.verFicha = Number(b.dataset.verFicha); RRHH.editaContrato = null; ir("personal");
