@@ -2459,7 +2459,7 @@ async function pintarLibro() {
  * intervino nunca se mezcla en silencio con lo que marcó el guardia.
  */
 
-async function bajarLibroExcel(libro) {
+async function bajarLibroExcel(libro, comoBytes = false) {
   await cargarScript(SHEETJS, "el generador de Excel");
   const XLSX = window.XLSX;
   if (!XLSX) throw new Error("No se pudo cargar el generador de Excel.");
