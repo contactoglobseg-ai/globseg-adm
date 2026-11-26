@@ -3938,6 +3938,9 @@ const DOCS = {
     fuente: "",
     guardar: { nombre: "", tipo: "", archivo: null, paginas: null, abierto: false },
     marcando: null, marcas: [], tipoPunto: "firma", verBajasGuardados: false,
+    /* Lo marcado para descargar en ZIP, una lista por sección: los firmados
+       del envío abierto, los envíos enteros y los papeles de la carpeta. */
+    selDocs: new Set(), selEnvios: new Set(), selCarpeta: new Set(),
   },
 };
 
@@ -4490,6 +4493,10 @@ async function pintarPrevencion() {
 
   const { tipos, personas, envios } = P.datos;
   const guardados = P.datos.guardados || [];
+  // Lo marcado que ya no está en la lista (otro filtro, una baja) se olvida:
+  // un ZIP con algo que no se ve en pantalla sería una sorpresa.
+  podarSeleccion(P.selEnvios, envios.filter(e => Number(e.firmados || 0)).map(e => e.envio_id));
+  podarSeleccion(P.selCarpeta, (P.datos.carpeta || []).filter(x => x.tiene_archivo).map(x => x.id));
   const elegido = guardados.find(g => String(g.id) === String(P.fuente));
   const tipo = tipos.find(t => t.codigo === P.tipo);
   const instalaciones = [...new Map(personas.filter(x => x.instalacion_id)
@@ -4604,10 +4611,13 @@ async function pintarPrevencion() {
     <section class="caja">
       <div class="caja__tit"><h2>Lo mandado a firmar</h2>
         <span class="nota">${envios.length} ${envios.length === 1 ? "envío" : "envíos"}</span></div>
-      ${envios.length ? `<div class="desliza"><table class="envios" style="min-width:860px">
-        <thead><tr><th>Cuándo</th><th>Documento</th><th>Archivo</th>
+      ${envios.length ? barraSeleccion("e", P.selEnvios.size, "Descargar firmados (ZIP)") : ""}
+      ${envios.length ? `<div class="desliza"><table class="envios" style="min-width:900px">
+        <thead><tr><th></th><th>Cuándo</th><th>Documento</th><th>Archivo</th>
           <th>Firmaron</th><th>Lo mandó</th><th></th></tr></thead><tbody>
         ${envios.map(e => `<tr>
+          <td>${casillaSel("e", e.envio_id, P.selEnvios.has(e.envio_id),
+            !Number(e.firmados || 0), "Este envío todavía no tiene firmados")}</td>
           <td class="nowrap">${fecha(String(e.creado_en).slice(0, 10))}</td>
           <td>${esc(e.tipo_nombre || e.tipo_documento || "—")}</td>
           <td>${esc(e.archivo_nombre || "—")}${e.archivo_paginas
@@ -4690,6 +4700,8 @@ async function pintarPrevencion() {
       if (el) el.textContent = ` · ${hojas} ${hojas === 1 ? "hoja" : "hojas"}`;
     }).catch(() => {});
   }
+  conectarSeleccion("e", P.selEnvios, () => descargarEnvios()
+    .catch(e => decir($("#m-sel-e"), e.message, "error")));
   if (P.envio) pintarEnvio().catch(() => {});
   conectarBiblioteca(P);
   conectarCarpeta(P);
@@ -5167,10 +5179,13 @@ function seccionCarpeta(P) {
           <span>Ver también las dadas de baja</span></label>
       </div>
     </div>
-    ${d.carpeta.length ? `<div class="desliza"><table class="envios" style="min-width:900px">
-      <thead><tr><th>Documento</th><th>De dónde</th><th>Emitido</th><th>Vence</th>
+    ${d.carpeta.length ? barraSeleccion("c", P.selCarpeta.size, "Descargar seleccionados (ZIP)") : ""}
+    ${d.carpeta.length ? `<div class="desliza"><table class="envios" style="min-width:940px">
+      <thead><tr><th></th><th>Documento</th><th>De dónde</th><th>Emitido</th><th>Vence</th>
         <th>Lo subió</th><th></th></tr></thead><tbody>
       ${d.carpeta.map(x => `<tr${x.vigente ? "" : ' style="opacity:.55"'}>
+        <td>${casillaSel("c", x.id, P.selCarpeta.has(x.id), !x.tiene_archivo,
+          "No tiene archivo")}</td>
         <td><b>${esc(nombreClase(d.clases, x.clase))}</b><br>
           <span class="sub" style="margin:0;font-size:.78rem">${esc(x.titulo)}</span>
           ${x.observacion ? `<br><span class="sub" style="margin:0;font-size:.76rem">${
@@ -5253,6 +5268,8 @@ function conectarCarpeta(P) {
     b.onclick = () => darDeBajaCarpeta(Number(b.dataset.baja))
       .catch(e => decir($("#m-carpeta"), e.message, "error"));
   }
+  conectarSeleccion("c", P.selCarpeta, () => descargarCarpeta()
+    .catch(e => decir($("#m-sel-c"), e.message, "error")), Number);
 }
 
 async function guardarEnCarpeta() {
@@ -5412,6 +5429,12 @@ async function pintarEnvio() {
   if (!caja || !DOCS.prev.envio) return;
   const { documentos } = await pedir(`/documentos/prevencion/${DOCS.prev.envio}`);
   const faltan = documentos.filter(d => d.estado === "por_firmar");
+  // Cambiar de envío empieza de cero; repintar el mismo conserva lo marcado.
+  if (DOCS.prev.selDocsEnvio !== DOCS.prev.envio) {
+    DOCS.prev.selDocs.clear(); DOCS.prev.selDocsEnvio = DOCS.prev.envio;
+  }
+  podarSeleccion(DOCS.prev.selDocs, documentos.filter(d => d.estado === "firmado").map(d => d.id));
+  DOCS.prev.docsEnvio = documentos;
 
   caja.innerHTML = `
     <section class="caja">
@@ -5423,10 +5446,15 @@ async function pintarEnvio() {
         "Lo ven al entrar a asistencia.seggarridos.com con su propia cuenta, la misma "
         + "con la que marcan turno.") : aviso("bien", "Firmado por todos. ",
         "Cada uno se puede guardar en su ficha desde «Abrir».")}
-      <div class="desliza"><table class="envios" style="min-width:820px">
-        <thead><tr><th>Persona</th><th>RUT</th><th>N°</th><th>Estado</th>
+      ${barraSeleccion("d", DOCS.prev.selDocs.size, "Descargar seleccionados (ZIP)",
+        `<button class="bt bt--fino" type="button" id="sel-d-fichas" disabled>
+          Guardar seleccionados en sus fichas</button>`, "Seleccionar todos los firmados")}
+      <div class="desliza"><table class="envios" style="min-width:860px">
+        <thead><tr><th></th><th>Persona</th><th>RUT</th><th>N°</th><th>Estado</th>
           <th>En su ficha</th><th></th></tr></thead><tbody>
         ${documentos.map(d => `<tr>
+          <td>${casillaSel("d", d.id, DOCS.prev.selDocs.has(d.id), d.estado !== "firmado",
+            d.estado === "anulado" ? "Anulado" : "Todavía no lo firma")}</td>
           <td>${esc(d.trabajador || "—")}</td>
           <td class="nowrap">${esc(rutLindoSeguro(d.trabajador_rut))}</td>
           <td class="nowrap">${esc(d.numero)}</td>
@@ -5447,6 +5475,13 @@ async function pintarEnvio() {
       .catch(e => decir($("#m-envio"), e.message, "error"));
   }
   $("#p-cerrar-envio").onclick = () => { DOCS.prev.envio = null; caja.innerHTML = ""; };
+  const sinFicha = () => documentos.some(d => DOCS.prev.selDocs.has(d.id) && !d.documento_id);
+  const botonFichas = () => { $("#sel-d-fichas").disabled = !sinFicha(); };
+  conectarSeleccion("d", DOCS.prev.selDocs, () => descargarFirmados()
+    .catch(e => decir($("#m-sel-d"), e.message, "error")), Number, botonFichas);
+  botonFichas();
+  $("#sel-d-fichas").onclick = () => guardarSeleccionadosEnFichas()
+    .catch(e => decir($("#m-sel-d"), e.message, "error"));
 }
 
 const selloDoc = d => d.estado === "firmado"
@@ -5454,6 +5489,244 @@ const selloDoc = d => d.estado === "firmado"
   : d.estado === "anulado"
     ? '<span class="sello e-rechazada">Anulado</span>'
     : '<span class="sello e-solicitar_oc">Por firmar</span>';
+
+/* ------------------------------------------- marcar y bajar en un ZIP
+
+   Prevención pidió poder sacar varios papeles de una vez —para una
+   fiscalización, para mandárselos a un mandante— sin abrir uno por uno. Cada
+   lista tiene su casilla por fila, «Seleccionar todos» y la cuenta de cuántos
+   van; el botón de descarga se prende recién con uno marcado.
+
+   Solo va lo firmado. Lo que está por firmar no tiene casilla (no hay copia
+   firmada que bajar) y en los envíos completos se avisa al final cuántos
+   quedaron fuera. El ZIP se arma acá en el navegador, sin comprimir: los PDF
+   ya vienen comprimidos y así no hace falta otra librería. */
+
+const limpioZip = s => String(s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Za-z0-9.]+/g, "-")
+  .replace(/^[-.]+|[-.]+$/g, "").slice(0, 70);
+
+function nombreUnico(nombre, usados) {
+  const punto = nombre.lastIndexOf(".");
+  let n = nombre, i = 2;
+  while (usados.has(n.toLowerCase())) {
+    n = punto > 0 ? `${nombre.slice(0, punto)}-${i}${nombre.slice(punto)}` : `${nombre}-${i}`;
+    i++;
+  }
+  usados.add(n.toLowerCase());
+  return n;
+}
+
+const hoyLocal = () => {
+  const d = new Date(), p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
+
+/** 2026-0048_Araya-Gonzales-Alan_22.400.071-5.pdf */
+const nombreFirmado = d => [d.numero, d.trabajador, d.trabajador_rut ? rutLindoSeguro(d.trabajador_rut) : ""]
+  .map(limpioZip).filter(Boolean).join("_") + ".pdf";
+
+/** IRL_2026-11-20: el documento y el día en que se mandó. */
+const carpetaEnvio = e => [e && (e.tipo_nombre || e.tipo_documento), e && String(e.creado_en || "").slice(0, 10)]
+  .map(limpioZip).filter(Boolean).join("_") || "Envio";
+
+function barraSeleccion(k, n, textoBajar, extra = "", textoTodos = "Seleccionar todos") {
+  return `<div class="sel-prev" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:0 16px 10px">
+    <button class="bt bt--fino bt--chico" type="button" id="sel-${k}-todos">${esc(textoTodos)}</button>
+    <button class="bt bt--fino bt--chico" type="button" id="sel-${k}-ninguno">Ninguno</button>
+    <span class="nota" id="sel-${k}-cuenta" style="min-width:8.5em">${n} ${n === 1 ? "seleccionado" : "seleccionados"}</span>
+    <button class="bt bt--chico" type="button" id="sel-${k}-bajar"${n ? "" : " disabled"}>${esc(textoBajar)}</button>
+    ${extra}
+    <span class="mensaje" id="m-sel-${k}"></span>
+  </div>`;
+}
+
+const casillaSel = (k, valor, marcada, apagada, motivo) =>
+  `<input type="checkbox" class="sel-${k}" value="${esc(valor)}" style="${ESTILO_CASILLA}"
+    aria-label="Seleccionar"${marcada ? " checked" : ""}${apagada ? ` disabled title="${esc(motivo)}"` : ""}>`;
+
+function podarSeleccion(set, validos) {
+  const v = new Set(validos);
+  for (const x of [...set]) if (!v.has(x)) set.delete(x);
+}
+
+/** Marcar no repinta: solo se mueven la cuenta y el botón. */
+function conectarSeleccion(k, set, alBajar, convertir = String, alCambiar) {
+  const bajar = $(`#sel-${k}-bajar`);
+  if (!bajar) return;
+  const casillas = [...document.querySelectorAll(`.sel-${k}`)];
+  const pintarCuenta = () => {
+    $(`#sel-${k}-cuenta`).textContent = `${set.size} ${set.size === 1 ? "seleccionado" : "seleccionados"}`;
+    bajar.disabled = !set.size;
+    if (alCambiar) alCambiar();
+  };
+  for (const c of casillas) {
+    c.onchange = () => {
+      if (c.checked) set.add(convertir(c.value)); else set.delete(convertir(c.value));
+      pintarCuenta();
+    };
+  }
+  $(`#sel-${k}-todos`).onclick = () => {
+    for (const c of casillas) if (!c.disabled) { c.checked = true; set.add(convertir(c.value)); }
+    pintarCuenta();
+  };
+  $(`#sel-${k}-ninguno`).onclick = () => {
+    set.clear();
+    for (const c of casillas) c.checked = false;
+    pintarCuenta();
+  };
+  bajar.onclick = async () => {
+    bajar.disabled = true;
+    try { await alBajar(); } finally { bajar.disabled = !set.size; }
+  };
+}
+
+/** La copia firmada, en bytes. `null` si resulta que no está firmado. */
+async function bytesFirmado(id) {
+  const { documento } = await pedir(`/documentos/${id}`);
+  if (documento.estado !== "firmado") return null;
+  const blob = await pdfDocumento(documento, { descargar: false });
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
+const cuantos = (n, uno, varios) => `${n} ${n === 1 ? uno : varios}`;
+
+/** «Quiénes lo tienen»: los firmados marcados, sueltos en el ZIP. */
+async function descargarFirmados() {
+  const P = DOCS.prev, m = $("#m-sel-d");
+  const filas = (P.docsEnvio || []).filter(d => P.selDocs.has(d.id));
+  if (!filas.length) throw new Error("Marque al menos uno.");
+  const usados = new Set(), archivos = [];
+  for (const [i, f] of filas.entries()) {
+    decir(m, `Armando ${i + 1} de ${filas.length}…`);
+    const datos = await bytesFirmado(f.id);
+    if (datos) archivos.push({ nombre: nombreUnico(nombreFirmado(f), usados), datos, fecha: new Date() });
+  }
+  if (!archivos.length) throw new Error("Ninguno de los marcados está firmado.");
+  const env = (P.datos?.envios || []).find(e => e.envio_id === P.envio);
+  bajarBlob(zipSinComprimir(archivos), `${carpetaEnvio(env)}_firmados.zip`);
+  decir(m, `Listo: ${cuantos(archivos.length, "documento", "documentos")} en el ZIP.`, "ok");
+}
+
+/** «Lo mandado a firmar»: una carpeta por envío, con sus firmados adentro. */
+async function descargarEnvios() {
+  const P = DOCS.prev, m = $("#m-sel-e");
+  const envios = (P.datos?.envios || []).filter(e => P.selEnvios.has(e.envio_id));
+  if (!envios.length) throw new Error("Marque al menos un envío.");
+  const carpetas = new Set(), archivos = [];
+  let fuera = 0;
+  for (const [i, e] of envios.entries()) {
+    decir(m, `Envío ${i + 1} de ${envios.length}: buscando quiénes firmaron…`);
+    const { documentos } = await pedir(`/documentos/prevencion/${encodeURIComponent(e.envio_id)}`);
+    fuera += documentos.filter(d => d.estado === "por_firmar").length;
+    const firmados = documentos.filter(d => d.estado === "firmado");
+    const carpeta = nombreUnico(carpetaEnvio(e), carpetas);
+    const usados = new Set();
+    for (const [j, f] of firmados.entries()) {
+      decir(m, `Envío ${i + 1} de ${envios.length}: documento ${j + 1} de ${firmados.length}…`);
+      const datos = await bytesFirmado(f.id);
+      if (datos) archivos.push({ nombre: `${carpeta}/${nombreUnico(nombreFirmado(f), usados)}`,
+                                 datos, fecha: new Date() });
+    }
+  }
+  if (!archivos.length) throw new Error("Los envíos marcados no tienen nada firmado todavía.");
+  bajarBlob(zipSinComprimir(archivos), `Prevencion_firmados_${hoyLocal()}.zip`);
+  decir(m, `Listo: ${cuantos(archivos.length, "documento", "documentos")} en `
+    + `${cuantos(envios.length, "carpeta", "carpetas")}.`
+    + (fuera ? ` ${cuantos(fuera, "quedó fuera porque está", "quedaron fuera porque están")} por firmar.` : ""),
+    fuera ? "" : "ok");
+}
+
+/** Guarda en la ficha de cada uno los firmados marcados que no estaban. Es lo
+ *  mismo que «Guardar en su ficha» al abrir uno, hecho de corrido. */
+async function guardarSeleccionadosEnFichas() {
+  const P = DOCS.prev;
+  const filas = (P.docsEnvio || []).filter(d => P.selDocs.has(d.id) && !d.documento_id);
+  if (!filas.length) throw new Error("Los marcados ya están guardados en sus fichas.");
+  let hechos = 0, sinFicha = 0;
+  for (const [i, f] of filas.entries()) {
+    decir($("#m-sel-d"), `Guardando ${i + 1} de ${filas.length}…`);
+    const { documento: d } = await pedir(`/documentos/${f.id}`);
+    if (d.estado !== "firmado" || d.documento_id) continue;
+    if (!d.trabajador_id) { sinFicha++; continue; }
+    const blob = await pdfDocumento(d, { descargar: false });
+    const r = await pedir(`/documentos/${d.id}/archivar`, { method: "POST" });
+    const nombre = `${d.numero} ${d.titulo}.pdf`.replace(/[\\/:*?"<>|]/g, "-");
+    await subirArchivo(r.documento_id, new File([blob], nombre, { type: "application/pdf" }));
+    hechos++;
+  }
+  await pintarEnvio();
+  decir($("#m-sel-d"), `Guardados ${hechos} en sus fichas.`
+    + (sinFicha ? ` ${cuantos(sinFicha, "no tiene", "no tienen")} ficha de trabajador.` : ""), "ok");
+}
+
+/** «Carpeta de prevención»: los papeles de la empresa marcados. */
+async function descargarCarpeta() {
+  const P = DOCS.prev, m = $("#m-sel-c");
+  const filas = (P.datos?.carpeta || []).filter(x => P.selCarpeta.has(x.id) && x.tiene_archivo);
+  if (!filas.length) throw new Error("Marque al menos uno.");
+  const usados = new Set(), archivos = [];
+  for (const [i, x] of filas.entries()) {
+    decir(m, `Bajando ${i + 1} de ${filas.length}…`);
+    const r = await fetch(`/api/documentos/prevencion/carpeta/${x.id}/archivo`, { credentials: "same-origin" });
+    if (!r.ok) throw new Error(`No se pudo bajar «${x.titulo}».`);
+    const tipo = r.headers.get("content-type") || "";
+    const nom = String(x.archivo_nombre || "");
+    const ext = /\.[A-Za-z0-9]{2,5}$/.test(nom) ? nom.split(".").pop().toLowerCase()
+      : /png/.test(tipo) ? "png" : /jpe?g/.test(tipo) ? "jpg" : "pdf";
+    const base = [nombreClase(P.datos.clases || [], x.clase), x.titulo, x.instalacion || "Empresa"]
+      .map(limpioZip).filter(Boolean).join("_") || "documento";
+    archivos.push({ nombre: nombreUnico(`${base}.${ext}`, usados),
+                    datos: new Uint8Array(await r.arrayBuffer()), fecha: new Date() });
+  }
+  bajarBlob(zipSinComprimir(archivos), `Carpeta_prevencion_${hoyLocal()}.zip`);
+  decir(m, `Listo: ${cuantos(archivos.length, "documento", "documentos")} en el ZIP.`, "ok");
+}
+
+/* ZIP mínimo (método «stored», sin compresión) según la especificación de
+ * PKWARE: encabezado local por archivo, directorio central y cierre. Nombres
+ * en UTF-8 (bit 11). Suficiente para fotos y un CSV; Windows, macOS y los
+ * teléfonos lo abren sin programas extra. */
+const ZIP_CRC = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; }
+  return t;
+})();
+function zipCrc32(datos) {
+  let c = 0xffffffff;
+  for (let i = 0; i < datos.length; i++) c = ZIP_CRC[(c ^ datos[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+function zipSinComprimir(archivos) {
+  const partes = [], central = [];
+  let desplazamiento = 0;
+  const enc = new TextEncoder();
+  for (const f of archivos) {
+    const nombre = enc.encode(f.nombre);
+    const crc = zipCrc32(f.datos);
+    const d = f.fecha;
+    const hora = (d.getHours() << 11) | (d.getMinutes() << 5) | Math.floor(d.getSeconds() / 2);
+    const dia = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+    const local = new DataView(new ArrayBuffer(30));
+    local.setUint32(0, 0x04034b50, true); local.setUint16(4, 20, true); local.setUint16(6, 0x0800, true);
+    local.setUint16(8, 0, true); local.setUint16(10, hora, true); local.setUint16(12, dia, true);
+    local.setUint32(14, crc, true); local.setUint32(18, f.datos.length, true); local.setUint32(22, f.datos.length, true);
+    local.setUint16(26, nombre.length, true); local.setUint16(28, 0, true);
+    partes.push(local.buffer, nombre, f.datos);
+    const cen = new DataView(new ArrayBuffer(46));
+    cen.setUint32(0, 0x02014b50, true); cen.setUint16(4, 20, true); cen.setUint16(6, 20, true); cen.setUint16(8, 0x0800, true);
+    cen.setUint16(10, 0, true); cen.setUint16(12, hora, true); cen.setUint16(14, dia, true);
+    cen.setUint32(16, crc, true); cen.setUint32(20, f.datos.length, true); cen.setUint32(24, f.datos.length, true);
+    cen.setUint16(28, nombre.length, true); cen.setUint32(42, desplazamiento, true);
+    central.push(cen.buffer, nombre);
+    desplazamiento += 30 + nombre.length + f.datos.length;
+  }
+  const tamCentral = central.reduce((s, p) => s + p.byteLength, 0);
+  const fin = new DataView(new ArrayBuffer(22));
+  fin.setUint32(0, 0x06054b50, true);
+  fin.setUint16(8, archivos.length, true); fin.setUint16(10, archivos.length, true);
+  fin.setUint32(12, tamCentral, true); fin.setUint32(16, desplazamiento, true);
+  return new Blob([...partes, ...central, fin.buffer], { type: "application/zip" });
+}
 
 /* ------------------------------------------------- los datos de la empresa
 
