@@ -607,14 +607,22 @@ async function api(request, env, url, usuario) {
         const r = await asis.editarTrabajador(env, usuario.usuario, id, cuerpo);
         if (r.error) return error(r.error, r.status);
       }
+      // Nombre y RUT van primero y por su lado: si el RUT viene malo, no se
+      // guarda nada de la ficha, y la persona corrige y vuelve a guardar todo.
+      const conIdentidad = rrhh.CAMPOS_IDENTIDAD.some((k) => k in cuerpo);
+      let identidad = { cambios: 0 };
+      if (conIdentidad) {
+        identidad = await rrhh.editarIdentidad(env, usuario.usuario, id, cuerpo);
+        if (identidad.error) return error(identidad.error, identidad.status);
+      }
       const ficha = rrhh.camposFicha(cuerpo);
       if (Object.keys(ficha).length) {
         const r = await rrhh.editarFicha(env, usuario.usuario, id, cuerpo);
         if (r.error) return error(r.error, r.status);
-      } else if (!deAsistencia) {
+      } else if (!deAsistencia && !conIdentidad) {
         return error('No hay nada que cambiar', 400);
       }
-      return json({ ok: true });
+      return json({ ok: true, identidad_cambiada: identidad.cambios > 0 });
     }
 
     // ------------------------------------------------------------ contratos

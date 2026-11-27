@@ -2502,6 +2502,19 @@ function seccionDatos(t, c) {
     <div class="caja__tit"><h2>Datos personales y previsionales</h2>
       <span class="nota">Usuario de asistencia: ${esc(t.usuario)}</span></div>
     <form id="f-ficha">
+      <p class="nota" style="margin:0;padding:0 16px .4rem">Nombre y RUT: corrija acá si quedaron mal escritos
+        (por ejemplo, los dos apellidos en un solo campo). No cambia su usuario ni su clave,
+        y lo ya firmado conserva el nombre con que se firmó.</p>
+      <div class="rejilla">
+        <label class="campo"><span>Nombres *</span><input name="nombres" value="${v("nombres")}"
+          autocomplete="off"${t.nombres || t.apellido_paterno ? " required" : ""}></label>
+        <label class="campo"><span>Apellido paterno *</span><input name="apellido_paterno"
+          value="${v("apellido_paterno")}" autocomplete="off"${t.nombres || t.apellido_paterno ? " required" : ""}></label>
+        <label class="campo"><span>Apellido materno</span><input name="apellido_materno"
+          value="${v("apellido_materno")}" autocomplete="off"></label>
+        <label class="campo"><span>RUT${t.rut ? " *" : ""}</span><input name="rut" autocomplete="off"
+          value="${t.rut ? esc(rutLindoSeguro(t.rut)) : ""}" placeholder="12.345.678-9"${t.rut ? " required" : ""}></label>
+      </div>
       <div class="rejilla">
         <label class="campo"><span>Teléfono</span><input name="telefono" value="${v("telefono")}"></label>
         <label class="campo"><span>Correo</span><input name="email" type="email" value="${v("email")}"></label>
@@ -2723,11 +2736,14 @@ function conectarFicha(datos) {
       const m = ff.querySelector(".mensaje"), bt = ff.querySelector("button[type=submit]");
       decir(m, "Guardando…"); bt.disabled = true;
       try {
-        await pedir(`/rrhh/personal/${id}`, { method: "PATCH",
+        const r = await pedir(`/rrhh/personal/${id}`, { method: "PATCH",
           body: JSON.stringify(Object.fromEntries(new FormData(ff))) });
+        RRHH.panel = null;
+        // Si cambió el nombre o el RUT, se repinta: el título de la ficha y
+        // las listas tienen que mostrar el nuevo.
+        if (r.identidad_cambiada) return recargar();
         decir(m, "Guardado", "ok");
         bt.disabled = false;
-        RRHH.panel = null;
       } catch (e) { decir(m, e.message, "error"); bt.disabled = false; }
     };
     $("#bt-baja").onclick = async () => {

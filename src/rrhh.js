@@ -185,6 +185,73 @@ export async function editarFicha(env, quien, id, cuerpo) {
   return { ok: true };
 }
 
+// ------------------------------------------------- nombre y RUT de la ficha
+/**
+ * Corregir el nombre y el RUT de una persona desde su ficha.
+ *
+ * Hasta el 27-11-2026 no había dónde hacerlo: quedaban como se escribieron al
+ * crearla o como los llenó la persona en la ficha de ingreso, y ahí aparecieron
+ * casos con los dos apellidos metidos en el paterno o en el materno. Va aparte
+ * de `camposFicha` a propósito: esa función también la usan la carga masiva y
+ * la ficha de ingreso, y ninguna de las dos debe poder renombrar a alguien.
+ *
+ * Lo que NO cambia: el usuario con que entra a marcar ni su clave. Los
+ * contratos, documentos y actas ya emitidos conservan el nombre con que se
+ * firmaron; los que se emitan desde ahora salen con el nuevo.
+ */
+export const CAMPOS_IDENTIDAD = ['nombres', 'apellido_paterno', 'apellido_materno', 'rut'];
+
+export async function editarIdentidad(env, quien, id, cuerpo) {
+  if (!CAMPOS_IDENTIDAD.some((k) => k in cuerpo)) return { ok: true, cambios: 0 };
+  const t = await primero(env,
+    `trabajadores?select=id,nombre,nombres,apellido_paterno,apellido_materno,rut&id=eq.${id}`);
+  if (!t) return { error: 'Esa persona no está en el registro', status: 404 };
+
+  const nuevo = {
+    nombres: 'nombres' in cuerpo ? limpio(cuerpo.nombres, 80) : t.nombres,
+    apellido_paterno: 'apellido_paterno' in cuerpo ? limpio(cuerpo.apellido_paterno, 60) : t.apellido_paterno,
+    apellido_materno: 'apellido_materno' in cuerpo ? limpio(cuerpo.apellido_materno, 60) : t.apellido_materno,
+  };
+
+  // Una ficha antigua sin el nombre separado, guardada sin tocar esos campos,
+  // no debe trabarse por eso: se sigue de largo.
+  const habiaSeparado = t.nombres || t.apellido_paterno || t.apellido_materno;
+  const traeSeparado = nuevo.nombres || nuevo.apellido_paterno || nuevo.apellido_materno;
+  const campos = {};
+  if (habiaSeparado || traeSeparado) {
+    if (!nuevo.nombres) return { error: 'Falta el nombre', status: 400 };
+    if (!nuevo.apellido_paterno) return { error: 'Falta el apellido paterno', status: 400 };
+    const completo = [nuevo.nombres, nuevo.apellido_paterno, nuevo.apellido_materno]
+      .filter(Boolean).join(' ').replace(/\s+/g, ' ');
+    for (const k of ['nombres', 'apellido_paterno', 'apellido_materno']) {
+      if ((nuevo[k] || null) !== (t[k] || null)) campos[k] = nuevo[k] || null;
+    }
+    if (completo !== t.nombre) campos.nombre = completo;
+  }
+
+  if ('rut' in cuerpo && String(cuerpo.rut ?? '').trim()) {
+    const rut = normalizarRut(cuerpo.rut);
+    if (!rut || !dvCorrecto(rut)) {
+      return { error: 'El RUT no es válido: revise los números y el dígito verificador', status: 400 };
+    }
+    if (rut !== t.rut) {
+      const otro = await primero(env, `trabajadores?select=id,nombre&rut=eq.${rut}&id=neq.${t.id}`);
+      if (otro) return { error: `Ese RUT ya es de ${otro.nombre}`, status: 409 };
+      campos.rut = rut;
+    }
+  }
+
+  if (!Object.keys(campos).length) return { ok: true, cambios: 0 };
+
+  await actualizar(env, `trabajadores?id=eq.${t.id}`, campos);
+  const detalle = [];
+  if (campos.nombre) detalle.push(`nombre: «${t.nombre}» → «${campos.nombre}»`);
+  if (campos.rut) detalle.push(`RUT: ${formatearRut(t.rut)} → ${formatearRut(campos.rut)}`);
+  if (!detalle.length) detalle.push('nombre separado en nombres y apellidos');
+  await anotar(env, quien, 'ficha_rrhh', t.id, 'corrigió nombre o RUT', detalle.join(' · '));
+  return { ok: true, cambios: Object.keys(campos).length };
+}
+
 // ---------------------------------------------------------------- feriado
 /**
  * Saldo de feriado legal, en días hábiles.
