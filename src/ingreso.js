@@ -29,7 +29,8 @@
 
 import { buscar, primero, insertar, actualizar, anotar } from './datos.js';
 import { normalizarRut, dvCorrecto, formatearRut } from './rut.js';
-import { camposFicha, editarFicha } from './rrhh.js';
+import { camposFicha, editarFicha, crearContrato, crearDocumento } from './rrhh.js';
+import * as arch from './archivos.js';
 import { crearTrabajador, CARGOS } from './asistencia.js';
 import { hoyISO } from './fechas.js';
 
@@ -117,6 +118,78 @@ export const CAMPOS_INGRESO = {
   observaciones:     { rotulo: 'Algo que debamos saber', max: 1000 },
 };
 
+/**
+ * Lo que la persona TIENE que mandar (27-11-2026, pedido de gerencia). Es la
+ * lista que antes se pedía por WhatsApp; el resto del formulario sigue siendo
+ * opcional. El RUT va aparte, porque se revisa con su dígito.
+ */
+export const OBLIGATORIOS = {
+  nombres: 'su nombre', apellido_paterno: 'su apellido paterno',
+  fecha_nacimiento: 'su fecha de nacimiento', estado_civil: 'su estado civil',
+  nacionalidad: 'su nacionalidad', email: 'su correo', telefono: 'su teléfono',
+};
+
+/**
+ * Los papeles que se le piden en foto o PDF, y en qué documento de su carpeta
+ * quedan al aceptar la ficha. La cédula va por los dos lados porque así se
+ * pide para el contrato y para el OS-10.
+ */
+export const ARCHIVOS_INGRESO = {
+  cedula_frente:  { rotulo: 'Cédula de identidad, por delante', tipo: 'cedula', obs: 'Frente' },
+  cedula_reverso: { rotulo: 'Cédula de identidad, por detrás', tipo: 'cedula', obs: 'Reverso' },
+  cert_afp:       { rotulo: 'Certificado de AFP', tipo: 'afiliacion', obs: 'Certificado de AFP' },
+  cert_salud:     { rotulo: 'Certificado de salud (Fonasa o Isapre)', tipo: 'afiliacion',
+                    obs: 'Certificado de salud (Fonasa o Isapre)' },
+};
+
+/** Lo que se acepta en esos papeles: fotos y PDF, nunca una planilla. */
+const TIPOS_FOTO = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/heic'];
+
+const TIPOS_CONTRATO_INGRESO = { indefinido: 'Indefinido', plazo_fijo: 'Plazo fijo' };
+
+/**
+ * Lo que pone la oficina antes de mandar el enlace: la obra, su dirección, el
+ * sueldo, la fecha de ingreso, el tipo de contrato y el cargo. Todo es
+ * obligatorio: es justamente lo que después faltaba para hacer el contrato.
+ */
+export async function revisarCondiciones(env, cuerpo) {
+  const instalacionId = Math.round(Number(cuerpo.instalacion_id)) || 0;
+  const inst = instalacionId
+    ? await primero(env, `instalaciones?select=id,nombre&id=eq.${instalacionId}`)
+    : null;
+  if (!inst) return { error: 'Elija la obra o instalación donde va a trabajar' };
+
+  const direccion = limpio(cuerpo.obra_direccion, 200);
+  if (!direccion) return { error: 'Escriba la dirección de la obra' };
+
+  const sueldo = Math.round(Number(String(cuerpo.sueldo_base ?? '').replace(/[^\d]/g, '')));
+  if (!(sueldo > 0)) return { error: 'Escriba el sueldo a pagar, en pesos' };
+
+  const fechaIngreso = /^\d{4}-\d{2}-\d{2}$/.test(cuerpo.fecha_ingreso || '') ? cuerpo.fecha_ingreso : null;
+  if (!fechaIngreso) return { error: 'Escriba la fecha de ingreso' };
+
+  const tipo = cuerpo.tipo_contrato in TIPOS_CONTRATO_INGRESO ? cuerpo.tipo_contrato : null;
+  if (!tipo) return { error: 'Elija el tipo de contrato: indefinido o a plazo fijo' };
+  let termino = null;
+  if (tipo === 'plazo_fijo') {
+    termino = /^\d{4}-\d{2}-\d{2}$/.test(cuerpo.fecha_termino || '') ? cuerpo.fecha_termino : null;
+    if (!termino) return { error: 'Un contrato a plazo fijo necesita su fecha de término' };
+    if (termino <= fechaIngreso) return { error: 'La fecha de término tiene que ser después del ingreso' };
+    // Art. 159 N°4: el plazo fijo no pasa de un año. Mejor saberlo acá que al aceptar.
+    const unAnio = new Date(Date.parse(fechaIngreso) + 366 * 86400000).toISOString().slice(0, 10);
+    if (termino > unAnio) return { error: 'Un contrato a plazo fijo no puede durar más de un año' };
+  }
+
+  const cargo = CARGOS.includes(cuerpo.cargo) ? cuerpo.cargo : null;
+  if (!cargo) return { error: 'Elija el cargo del trabajador' };
+
+  return { condiciones: {
+    instalacion_id: inst.id, obra_nombre: inst.nombre, obra_direccion: direccion,
+    sueldo_base: sueldo, fecha_ingreso: fechaIngreso, tipo_contrato: tipo,
+    fecha_termino: termino, cargo,
+  } };
+}
+
 /** Los que son de la persona y no de la ficha de RRHH. */
 const CAMPOS_NOMBRE = ['nombres', 'apellido_paterno', 'apellido_materno'];
 
@@ -158,8 +231,8 @@ export function revisarEnvio(cuerpo, ficha) {
     datos[campo] = t;
   }
 
-  if (!datos.nombres || !datos.apellido_paterno) {
-    return { error: 'Escriba su nombre y su apellido paterno' };
+  for (const [campo, que] of Object.entries(OBLIGATORIOS)) {
+    if (!datos[campo]) return { error: `Falta ${que}.`, campo };
   }
 
   const rut = normalizarRut(cuerpo.rut);
@@ -174,7 +247,7 @@ export function revisarEnvio(cuerpo, ficha) {
   datos.rut = rut;
 
   if (datos.email && !/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(datos.email)) {
-    return { error: 'Ese correo no se entiende. Revíselo o déjelo en blanco.' };
+    return { error: 'Ese correo no se entiende. Revíselo.' };
   }
   if (datos.fecha_nacimiento) {
     const hoy = hoyISO();
@@ -206,9 +279,17 @@ const NO_HAY_TABLA = {
  * columnas que no conviene andar paseando.
  */
 const sinSecretos = (f) => {
-  const { token_hash, recibido_huella, ...resto } = f;
+  const { token_hash, recibido_huella, archivos, ...resto } = f;
   return resto;
 };
+
+/** Los papeles subidos, sin la ruta del bucket, que no le sirve a la pantalla. */
+const listaArchivos = (archivos) => Object.entries(ARCHIVOS_INGRESO)
+  .map(([clave, def]) => {
+    const a = (archivos || {})[clave];
+    return { clave, rotulo: def.rotulo,
+             ...(a ? { nombre: a.nombre, tipo: a.tipo, bytes: a.bytes, subido: true } : { subido: false }) };
+  });
 
 /** El estado que se muestra. "Vencida" no se guarda: se cumple sola. */
 export function estadoVisible(f, ahora = Date.now()) {
@@ -255,8 +336,12 @@ export async function crearEnlace(env, quien, cuerpo, base) {
     }
   }
 
+  const cond = await revisarCondiciones(env, cuerpo);
+  if (cond.error) return { error: cond.error, status: 400 };
+
   const token = tokenNuevo();
   const fila = {
+    condiciones: cond.condiciones,
     trabajador_id: trabajador?.id ?? null,
     token_hash: await hashToken(token, env),
     nombre_referencia: nombre,
@@ -290,7 +375,7 @@ export async function listarEnlaces(env) {
   try {
     filas = await buscar(env,
       'fichas_ingreso?select=id,trabajador_id,nombre_referencia,rut_esperado,estado,'
-      + 'vence_en,enviado_a,nota,creado_por,creado_en,recibido_en,revisado_por,revisado_en,'
+      + 'vence_en,enviado_a,nota,creado_por,creado_en,recibido_en,revisado_por,revisado_en,condiciones,'
       + 'trabajadores(nombre,activo)&order=creado_en.desc&limit=200');
   } catch (e) {
     if (faltaTabla(e)) return { fichas: [], sin_tabla: true, aviso: NO_HAY_TABLA.error };
@@ -365,6 +450,7 @@ export async function detalleEnlace(env, id) {
   if (trabajador) delete trabajador.clave;
 
   return {
+    _archivos: f.archivos || {},
     ficha: { ...sinSecretos(f), estado_visible: estadoVisible(f),
              rut_esperado: f.rut_esperado ? formatearRut(f.rut_esperado) : null },
     rut: datos.rut ? formatearRut(datos.rut) : null,
@@ -377,7 +463,19 @@ export async function detalleEnlace(env, id) {
     // la clave de asistencia sin decirlo, así que se avisa y no se toca.
     rut_distinto: !!(trabajador && datos.rut && trabajador.rut !== datos.rut),
     cargos: CARGOS,
+    archivos: listaArchivos(f.archivos),
+    tipos_contrato: TIPOS_CONTRATO_INGRESO,
   };
+}
+
+/** Un papel subido, para verlo desde la oficina. Null si no está. */
+export async function archivoDeFicha(env, id, clave) {
+  if (!(clave in ARCHIVOS_INGRESO)) return null;
+  const f = await primero(env,
+    `fichas_ingreso?select=id,archivos&id=eq.${Math.round(Number(id)) || 0}`);
+  const a = f?.archivos?.[clave];
+  if (!a) return null;
+  return { ...a, contenido: await arch.bajar(env, a.ruta) };
 }
 
 export async function anularEnlace(env, quien, id, motivo) {
@@ -431,8 +529,9 @@ export async function aceptarFicha(env, quien, id, cuerpo) {
       apellido_materno: datos.apellido_materno,
       rut: datos.rut,
       telefono: datos.telefono,
-      cargo: CARGOS.includes(cuerpo.cargo) ? cuerpo.cargo : 'guardia',
-      instalacion_id: cuerpo.instalacion_id,
+      cargo: CARGOS.includes(cuerpo.cargo) ? cuerpo.cargo
+        : (f.condiciones?.cargo || 'guardia'),
+      instalacion_id: cuerpo.instalacion_id || f.condiciones?.instalacion_id,
     });
     if (r.error) return r;
     trabajador = { id: r.trabajador.id, nombre: r.trabajador.nombre };
@@ -483,6 +582,58 @@ export async function aceptarFicha(env, quien, id, cuerpo) {
     }
   }
 
+  // Lo que puso la oficina al generar el enlace: el contrato. Solo si la
+  // persona no tiene ya uno vigente, porque `crearContrato` cerraría el que
+  // tiene, y eso no se hace de pasada al aceptar una ficha.
+  const avisos = [];
+  const cond = f.condiciones;
+  if (cond) {
+    const vigente = await primero(env,
+      `contratos?select=id&trabajador_id=eq.${trabajador.id}&estado=eq.vigente`);
+    if (vigente) {
+      avisos.push('Ya tenía un contrato vigente, así que no se creó otro. Las condiciones '
+        + 'del enlace (sueldo, obra, tipo de contrato) revíselas en su contrato.');
+    } else {
+      const rc = await crearContrato(env, quien, {
+        trabajador_id: trabajador.id, tipo: cond.tipo_contrato,
+        fecha_inicio: cond.fecha_ingreso, fecha_termino: cond.fecha_termino,
+        cargo: cond.cargo, instalacion_id: cond.instalacion_id, sueldo_base: cond.sueldo_base,
+      });
+      if (rc.error) {
+        avisos.push(`El contrato no se pudo crear solo: ${rc.error}. Créelo desde su ficha.`);
+      } else {
+        avisos.push(...(rc.avisos || []));
+        await actualizar(env, `trabajadores?id=eq.${trabajador.id}`,
+          { fecha_ingreso: cond.fecha_ingreso });
+      }
+    }
+  }
+
+  // Los papeles que subió pasan a su carpeta. No se copian: la fila nueva
+  // apunta a la misma ruta del bucket. Cada uno se marca al crearse, para que
+  // un reintento después de un error a medias no los duplique.
+  const archivos = { ...(d._archivos || {}) };
+  const hoy = hoyISO();
+  for (const [clave, def] of Object.entries(ARCHIVOS_INGRESO)) {
+    const a = archivos[clave];
+    if (!a || a.documento_id) continue;
+    const rd = await crearDocumento(env, quien, {
+      trabajador_id: trabajador.id, tipo: def.tipo,
+      fecha_emision: (f.recibido_en || '').slice(0, 10) || hoy,
+      observacion: `${def.obs} · llegó con la ficha de ingreso`,
+    });
+    if (rd.error) { avisos.push(`${def.rotulo}: ${rd.error}`); continue; }
+    const docId = rd.documento?.id ?? rd.id;
+    if (!docId) continue;
+    await actualizar(env, `documentos_trabajador?id=eq.${docId}`, {
+      archivo_ruta: a.ruta, archivo_nombre: a.nombre, archivo_tipo: a.tipo,
+      archivo_bytes: a.bytes, archivo_subido_por: '(enlace de ingreso)',
+      archivo_subido_en: a.subido_en,
+    });
+    archivos[clave] = { ...a, documento_id: docId };
+    await actualizar(env, `fichas_ingreso?id=eq.${f.id}`, { archivos });
+  }
+
   await actualizar(env, `fichas_ingreso?id=eq.${f.id}`, {
     estado: 'aceptada',
     trabajador_id: trabajador.id,
@@ -495,7 +646,7 @@ export async function aceptarFicha(env, quien, id, cuerpo) {
     creado ? 'aceptó la ficha de ingreso y creó al trabajador' : 'aceptó la ficha de ingreso',
     `${trabajador.nombre} · ${[...elegidos].join(', ') || 'sin cambios'}`.slice(0, 900));
 
-  return { ok: true, trabajador_id: trabajador.id, creado, aplicados: [...elegidos] };
+  return { ok: true, trabajador_id: trabajador.id, creado, aplicados: [...elegidos], avisos };
 }
 
 // ---------------------------------------------------------------- público
@@ -547,6 +698,9 @@ export async function abrir(env, token) {
     rut_fijo: f.rut_esperado ? formatearRut(f.rut_esperado) : null,
     vence_en: f.vence_en,
     afps: afps.map((a) => a.nombre),
+    // Qué papeles se piden y cuáles ya subió: si cierra la página a la mitad y
+    // la vuelve a abrir, no tiene que subirlos de nuevo.
+    archivos: listaArchivos(f.archivos),
   };
 }
 
@@ -562,7 +716,12 @@ export async function recibir(env, token, cuerpo, huella) {
   if (!f) return NO_SIRVE;
 
   const r = revisarEnvio(cuerpo, f);
-  if (r.error) return { error: r.error, status: 400 };
+  if (r.error) return { error: r.error, status: 400, campo: r.campo };
+  const faltan = Object.entries(ARCHIVOS_INGRESO)
+    .filter(([clave]) => !(f.archivos || {})[clave]).map(([, def]) => def.rotulo.toLowerCase());
+  if (faltan.length) {
+    return { error: `Falta la foto de: ${faltan.join(', ')}.`, status: 400, campo: 'archivos' };
+  }
 
   // La condición `estado=eq.pendiente` va en el filtro y no solo en la
   // comprobación de arriba: dos envíos a la vez con el mismo token entrarían
@@ -584,6 +743,58 @@ export async function recibir(env, token, cuerpo, huella) {
     'llenó su ficha de ingreso',
     `${r.datos.nombres} ${r.datos.apellido_paterno} · ${formatearRut(r.datos.rut)}`);
   return { ok: true, nombre: r.datos.nombres };
+}
+
+/**
+ * Sube la foto o el PDF de un papel, desde el formulario público.
+ *
+ * Mismo cuidado que la subida de la oficina: el tipo se decide por los bytes y
+ * no por lo que diga el teléfono, y el archivo va al bucket privado. Si ya
+ * había uno para ese papel, se reemplaza: es la persona corrigiendo una foto
+ * borrosa, no una segunda copia.
+ */
+export async function subirArchivo(env, token, clave, bytes, nombreOriginal) {
+  const def = ARCHIVOS_INGRESO[clave];
+  if (!def) return { error: 'Ese papel no está en la lista', status: 400 };
+  let f;
+  try {
+    f = await fichaDelToken(env, token);
+  } catch (e) {
+    if (faltaTabla(e)) return NO_HAY_TABLA;
+    throw e;
+  }
+  if (!f) return NO_SIRVE;
+  if (!bytes?.length) return { error: 'No llegó ningún archivo', status: 400 };
+  if (bytes.length > arch.MAX_BYTES) {
+    return { error: 'El archivo pesa demasiado. Saque la foto de nuevo o mande un PDF más liviano.',
+             status: 413 };
+  }
+  const reconocido = arch.reconocer(bytes);
+  if (!reconocido || !TIPOS_FOTO.includes(reconocido.tipo)) {
+    return { error: 'Eso no es una foto ni un PDF. Saque una foto del papel y súbala.', status: 415 };
+  }
+
+  const azar = [...crypto.getRandomValues(new Uint8Array(8))]
+    .map((b) => b.toString(16).padStart(2, '0')).join('');
+  const ruta = `ingreso/${f.id}/${clave}-${azar}.${reconocido.ext}`;
+  const nombre = arch.nombreSeguro(nombreOriginal || def.rotulo, reconocido.ext);
+  await arch.subir(env, ruta, bytes, reconocido.tipo);
+
+  const anterior = (f.archivos || {})[clave];
+  const archivos = { ...(f.archivos || {}), [clave]: {
+    ruta, nombre, tipo: reconocido.tipo, bytes: bytes.length, subido_en: new Date().toISOString(),
+  } };
+  const filas = await actualizar(env, `fichas_ingreso?id=eq.${f.id}&estado=eq.pendiente`, { archivos })
+    .catch(async (e) => { await arch.borrar(env, ruta).catch(() => {}); throw e; });
+  if (!Array.isArray(filas) || !filas.length) {
+    await arch.borrar(env, ruta).catch(() => {});
+    return NO_SIRVE;
+  }
+  if (anterior?.ruta && anterior.ruta !== ruta) {
+    await arch.borrar(env, anterior.ruta).catch(
+      (e) => console.error('ficha: no se pudo borrar la foto reemplazada:', e.message));
+  }
+  return { ok: true, archivo: { clave, nombre, tipo: reconocido.tipo, bytes: bytes.length } };
 }
 
 /** Cuántas esperan revisión. El panel de RRHH lo muestra arriba. */

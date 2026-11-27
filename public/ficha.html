@@ -33,9 +33,12 @@ try {
      a la derecha de otro.
    · Los campos miden 16px de letra como mínimo. Con menos, Safari hace zoom
      solo al tocarlos y deja la página corrida hacia un lado.
-   · Nada es obligatorio salvo el nombre y el RUT. De lo demás, lo que no
-     sepan se deja en blanco y lo completa RRHH: un formulario que no deja
-     avanzar hasta llenar veinte campos es un formulario que nadie termina.
+   · Obligatorio es solo la lista que antes se pedía por WhatsApp (27-11-2026):
+     nombre, RUT, fecha de nacimiento, estado civil, nacionalidad, correo,
+     teléfono y las fotos de la cédula y de los certificados de AFP y salud.
+     Lo demás, lo que no sepan, se deja en blanco y lo completa RRHH.
+   · Cada foto se sube apenas se elige, no al final: con mala señal, perder
+     cuatro fotos por un envío que falló es la razón para no terminar nunca.
    · El botón de enviar vive pegado abajo. En un formulario largo, tener que
      scrollear hasta el final para encontrarlo es la última oportunidad de
      abandonar.
@@ -121,6 +124,16 @@ textarea{min-height:88px;resize:vertical}
 .mensaje.error{color:var(--rojo);font-weight:500}
 .mensaje.ok{color:var(--verde);font-weight:600}
 
+.papel{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--borde);
+  border-radius:var(--r-s);background:var(--sup)}
+.papel.listo{border-color:var(--verde)}
+.papel .que{flex:1;min-width:0}
+.papel .que b{display:block;font-weight:500;font-size:.92rem}
+.papel .que small{display:block;color:var(--texto-3);font-size:.8rem;overflow-wrap:anywhere}
+.papel .que small.error{color:var(--rojo);font-weight:500}
+.papel .ok{color:var(--verde);font-size:1.3rem;line-height:1}
+.papel label.bt{width:auto;padding:9px 14px;font-size:.88rem;flex:none}
+.papel input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
 .pared{max-width:460px;margin:48px auto;padding:26px 22px;text-align:center;
   background:var(--sup);border:1px solid var(--borde-suave);border-radius:16px;
   box-shadow:var(--sombra-alta)}
@@ -227,9 +240,10 @@ function pintarFormulario(d) {
       <h1>Hola, ${esc((d.nombre_referencia || "").split(" ")[0] || "")}</h1>
       <p>Esto es para tener su ficha lista antes del primer turno, y para no andar
         pidiéndole los datos por teléfono. Son unos minutos.<br>
-        <b>Lo único que no puede quedar en blanco es su nombre y su RUT.</b>
-        Lo que no sepa de memoria —el número de cuenta, el plan de la isapre— déjelo
-        vacío y lo vemos después.
+        <b>Lo marcado con <span style="color:var(--rojo)">*</span> es obligatorio, y también
+        las fotos de su cédula y de sus certificados de AFP y de salud.</b>
+        Lo demás, si no lo sabe de memoria —el número de cuenta, el plan de la isapre—,
+        déjelo vacío y lo vemos después.
         ${diaVence ? `<br>Este enlace sirve hasta el ${esc(diaVence)}, y una sola vez.` : ""}</p>
     </div>
 
@@ -246,14 +260,17 @@ function pintarFormulario(d) {
                  <span class="pista-campo">Este enlace está a su nombre, así que el RUT ya viene puesto.</span></label>`
             : CAMPO("rut", "RUT", { req: true, place: "12.345.678-9",
                 pista: "Con puntos o sin ellos, da lo mismo." })}
-          ${CAMPO("fecha_nacimiento", "Fecha de nacimiento", { tipo: "date" })}
+          ${CAMPO("fecha_nacimiento", "Fecha de nacimiento", { tipo: "date", req: true })}
           <label class="campo"><span>Sexo</span><select name="sexo">
             <option value="">Prefiero no decirlo</option>
             <option value="F">Femenino</option>
             <option value="M">Masculino</option>
             <option value="X">Otro</option></select></label>
-          ${CAMPO("nacionalidad", "Nacionalidad", { place: "Chilena" })}
-          ${CAMPO("estado_civil", "Estado civil", { place: "Soltero, casado…" })}
+          ${CAMPO("nacionalidad", "Nacionalidad", { place: "Chilena", req: true })}
+          <label class="campo"><span>Estado civil <i class="req">*</i></span><select name="estado_civil" required>
+            <option value="">Elija…</option>
+            ${["Soltero(a)", "Casado(a)", "Conviviente civil", "Separado(a)", "Divorciado(a)", "Viudo(a)"]
+              .map(x => `<option>${x}</option>`).join("")}</select></label>
           ${CAMPO("nivel_estudios", "Hasta dónde estudió", { place: "Enseñanza media completa" })}
         </div>
       </section>
@@ -262,11 +279,26 @@ function pintarFormulario(d) {
         <h2>Dónde ubicarlo</h2>
         <p class="pista">El teléfono es por el que lo vamos a llamar para el turno.</p>
         <div class="campos">
-          ${CAMPO("telefono", "Teléfono", { modo: "tel", auto: "tel", place: "+56 9 ..." })}
-          ${CAMPO("email", "Correo", { tipo: "email", modo: "email", auto: "email" })}
+          ${CAMPO("telefono", "Teléfono", { modo: "tel", auto: "tel", place: "+56 9 ...", req: true })}
+          ${CAMPO("email", "Correo", { tipo: "email", modo: "email", auto: "email", req: true })}
           ${CAMPO("direccion", "Dirección", { auto: "street-address", place: "Calle y número" })}
           ${CAMPO("comuna", "Comuna", { auto: "address-level2" })}
           ${CAMPO("region", "Región")}
+        </div>
+      </section>
+
+      <section class="grupo" id="papeles">
+        <h2>Fotos de sus papeles <i class="req" style="color:var(--rojo)">*</i></h2>
+        <p class="pista">Saque una foto con el teléfono, que se lea bien y sin reflejos,
+          o suba el PDF si lo tiene. Los certificados de AFP y de salud se descargan gratis
+          desde la página de su AFP y de Fonasa o su isapre.</p>
+        <div class="campos">
+          ${(d.archivos || []).map(a => `<div class="papel${a.subido ? " listo" : ""}" data-papel="${esc(a.clave)}">
+            <span class="ok">${a.subido ? "✓" : ""}</span>
+            <div class="que"><b>${esc(a.rotulo)}</b><small>${a.subido ? "Recibida: " + esc(a.nombre) : "Falta"}</small></div>
+            <label class="bt bt--fino">${a.subido ? "Cambiar" : "Subir foto"}
+              <input type="file" accept="image/*,application/pdf"></label>
+          </div>`).join("")}
         </div>
       </section>
 
@@ -358,11 +390,78 @@ function pintarFormulario(d) {
   salud.onchange = verSalud;
   verSalud();
 
+  document.querySelectorAll("[data-papel] input[type=file]").forEach(inp => {
+    inp.onchange = () => { if (inp.files[0]) subirPapel(inp.closest("[data-papel]"), inp.files[0]); inp.value = ""; };
+  });
+
   $("#enviar").onclick = () => enviar(d);
+}
+
+// ------------------------------------------------------------- fotos
+/* Una foto de teléfono pesa 3 a 6 MB. Con la señal de un pueblo eso es un
+   minuto por foto, así que antes de subirla se achica a un tamaño en que el
+   papel se sigue leyendo perfecto (2000 px por el lado largo). Si el
+   navegador no puede abrirla —un HEIC en Android, por ejemplo— se sube tal
+   cual y la achica nadie: el servidor acepta hasta 10 MB. Los PDF nunca se tocan. */
+async function achicar(archivo) {
+  if (!/^image\/(jpeg|png|webp)$/.test(archivo.type) || archivo.size < 1200000
+      || typeof createImageBitmap !== "function") return archivo;
+  try {
+    const img = await createImageBitmap(archivo);
+    const escala = Math.min(1, 2000 / Math.max(img.width, img.height));
+    const lienzo = document.createElement("canvas");
+    lienzo.width = Math.round(img.width * escala);
+    lienzo.height = Math.round(img.height * escala);
+    lienzo.getContext("2d").drawImage(img, 0, 0, lienzo.width, lienzo.height);
+    const blob = await new Promise(r => lienzo.toBlob(r, "image/jpeg", 0.85));
+    return blob && blob.size < archivo.size ? blob : archivo;
+  } catch (_) { return archivo; }
+}
+
+async function subirPapel(caja, archivo) {
+  const aviso = caja.querySelector("small"), boton = caja.querySelector("label.bt");
+  aviso.className = ""; aviso.textContent = "Subiendo…";
+  boton.style.pointerEvents = "none"; boton.style.opacity = ".5";
+  try {
+    const cuerpo = await achicar(archivo);
+    const r = await fetch("/api/ficha/archivo", {
+      method: "POST",
+      headers: { "x-ficha-token": TOKEN, "x-ficha-papel": caja.dataset.papel,
+                 "x-archivo-nombre": encodeURIComponent(archivo.name || "foto.jpg") },
+      body: cuerpo,
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || "No se pudo subir. Revise su señal e intente de nuevo.");
+    caja.classList.add("listo");
+    caja.querySelector(".ok").textContent = "✓";
+    aviso.textContent = "Recibida: " + (archivo.name || "foto");
+    boton.firstChild.textContent = "Cambiar";
+  } catch (e) {
+    aviso.className = "error"; aviso.textContent = e.message;
+  } finally {
+    boton.style.pointerEvents = ""; boton.style.opacity = "";
+  }
 }
 
 async function enviar(d) {
   const f = $("#f"), m = $("#m"), bt = $("#enviar");
+  // Lo que falta se avisa acá mismo, sin ir al servidor: el campo vacío queda
+  // marcado por el navegador y a la vista.
+  const vacio = [...f.querySelectorAll("[required]")].find(x => !String(x.value || "").trim());
+  if (vacio) {
+    m.className = "mensaje error";
+    m.textContent = "Falta: " + (vacio.closest("label")?.querySelector("span")?.textContent || "un dato")
+      .replace("*", "").trim().toLowerCase() + ".";
+    vacio.focus(); vacio.scrollIntoView({ block: "center", behavior: "smooth" });
+    return;
+  }
+  const sinFoto = [...document.querySelectorAll("[data-papel]:not(.listo)")];
+  if (sinFoto.length) {
+    m.className = "mensaje error";
+    m.textContent = "Falta la foto de: " + sinFoto.map(x => x.querySelector("b").textContent.toLowerCase()).join(", ") + ".";
+    sinFoto[0].scrollIntoView({ block: "center", behavior: "smooth" });
+    return;
+  }
   const cuerpo = Object.fromEntries(new FormData(f));
   // Si el enlace venía a nombre de alguien, el RUT ni siquiera está en el
   // formulario: lo pone el servidor desde la fila del token. Acá se manda solo
@@ -384,7 +483,11 @@ async function enviar(d) {
     bt.disabled = false;
     // El error habla de un campo que puede estar arriba de todo: si no se ve,
     // el mensaje no sirve.
+    if (/foto/i.test(e.message)) { $("#papeles").scrollIntoView({ block: "start", behavior: "smooth" }); return; }
     const malo = /RUT/i.test(e.message) ? (f.rut || null)
+      : /estado civil/i.test(e.message) ? f.estado_civil
+      : /nacionalidad/i.test(e.message) ? f.nacionalidad
+      : /tel[eé]fono/i.test(e.message) ? f.telefono
       : /correo/i.test(e.message) ? f.email
       : /isapre/i.test(e.message) ? f.salud_isapre
       : /nacimiento/i.test(e.message) ? f.fecha_nacimiento

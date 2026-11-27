@@ -346,6 +346,7 @@ function sinNada(usuario) {
  */
 const RRHH = {
   catalogos: null, panel: null, personal: null, ficha: null,
+  selMand: new Set(),        // personas marcadas en Personal para bajar su carpeta
   verFicha: null,            // id de la persona abierta, o null para la lista
   editaContrato: null,       // contrato que se está corrigiendo dentro de esa ficha
   ingresos: null, verIngreso: null,   // enlaces de ficha de ingreso y el que se revisa
@@ -1221,10 +1222,14 @@ async function pintarPersonal() {
             <option value="no"${RRHH.soloActivos ? "" : " selected"}>Todos, incluidos los de baja</option>
           </select></label>
       </div>
+      ${lista.length ? barraSeleccion("m", RRHH.selMand.size, "Carpetas para la mandante (ZIP)",
+        `<button class="bt bt--fino bt--chico" type="button" id="m-solo-fichas"${RRHH.selMand.size ? "" : " disabled"}>Solo las fichas (ZIP)</button>`,
+        `Seleccionar los ${lista.length} de la lista`) : ""}
       ${lista.length ? `<div class="desliza"><table>
-        <thead><tr><th>Persona</th><th>RUT</th><th>Cargo</th><th>Instalación</th>
+        <thead><tr><th></th><th>Persona</th><th>RUT</th><th>Cargo</th><th>Instalación</th>
           <th>Contrato</th><th>Ingreso</th><th>Previsión</th><th></th></tr></thead><tbody>
         ${lista.map(t => `<tr${t.activo ? "" : ' class="fila--cerrado"'}>
+          <td>${casillaSel("m", t.id, RRHH.selMand.has(t.id))}</td>
           <td><b>${esc(t.nombre)}</b><span class="sub">${esc(t.usuario)}${
             t.telefono ? " · " + esc(t.telefono) : ""}</span></td>
           <td class="nowrap num">${rutLindoSeguro(t.rut)}</td>
@@ -1262,6 +1267,17 @@ async function pintarPersonal() {
     };
   });
   $("#nueva-persona").onclick = pintarNuevaPersona;
+  if ($("#sel-m-bajar")) {
+    const solo = $("#m-solo-fichas");
+    conectarSeleccion("m", RRHH.selMand, () => bajarCarpetasMandante([...RRHH.selMand], $("#m-sel-m"))
+      .catch(e => decir($("#m-sel-m"), e.message, "error")), Number, () => { solo.disabled = !RRHH.selMand.size; });
+    solo.onclick = async () => {
+      solo.disabled = true;
+      try { await bajarCarpetasMandante([...RRHH.selMand], $("#m-sel-m"), { soloFichas: true }); }
+      catch (e) { decir($("#m-sel-m"), e.message, "error"); }
+      finally { solo.disabled = !RRHH.selMand.size; }
+    };
+  }
   conectarIngresos();
 }
 
@@ -1363,6 +1379,30 @@ function conectarIngresos() {
           <span class="sub" style="margin:0">Pasado el plazo deja de abrir, y hay que generar otro.</span></label>
         <label class="campo"><span>Nota para la oficina</span><input name="nota" autocomplete="off"></label>
       </div>
+      <h3 style="margin:18px 0 4px;font-size:.95rem">Lo que pone la oficina</h3>
+      <p class="sub" style="margin:0 0 10px">Se llena antes de mandar el enlace y con esto se arma su
+        contrato al aceptar la ficha. La persona no lo ve.</p>
+      <div class="rejilla">
+        <label class="campo"><span>Nombre de la obra *</span><select name="instalacion_id" required>
+          <option value="">Elija…</option>
+          ${((RRHH.catalogos || {}).instalaciones || []).map(i =>
+            `<option value="${i.id}">${esc(i.nombre)}</option>`).join("")}</select></label>
+        <label class="campo"><span>Dirección de la obra *</span>
+          <input name="obra_direccion" required autocomplete="off" placeholder="Calle, número y comuna"></label>
+        <label class="campo"><span>Sueldo a pagar (base, en pesos) *</span>
+          <input name="sueldo_base" required inputmode="numeric" autocomplete="off" placeholder="600.000"></label>
+        <label class="campo"><span>Fecha de ingreso *</span><input type="date" name="fecha_ingreso" required></label>
+        <label class="campo"><span>Tipo de contrato *</span><select name="tipo_contrato" id="e-tipo" required>
+          <option value="">Elija…</option>
+          <option value="plazo_fijo">Plazo fijo</option>
+          <option value="indefinido">Indefinido</option></select></label>
+        <label class="campo" id="e-termino"><span>Fecha de término *</span>
+          <input type="date" name="fecha_termino"></label>
+        <label class="campo"><span>Cargo del trabajador *</span><select name="cargo" required>
+          <option value="">Elija…</option>
+          ${((RRHH.catalogos || {}).cargos || []).map(x =>
+            `<option value="${x}">${rotCargo(x)}</option>`).join("")}</select></label>
+      </div>
       <div class="pie-form">
         <button class="bt" type="submit">Generar el enlace</button>
         <span class="mensaje"></span>
@@ -1377,6 +1417,15 @@ function conectarIngresos() {
     };
     quien.onchange = verQuien;
     verQuien();
+    const tipo = $("#e-tipo");
+    const verTipo = () => { $("#e-termino").style.display = tipo.value === "plazo_fijo" ? "" : "none"; };
+    tipo.onchange = verTipo;
+    verTipo();
+    const sueldo = $("#f-enlace").sueldo_base;
+    sueldo.onblur = () => {
+      const n = Number(sueldo.value.replace(/[^\d]/g, ""));
+      if (n) sueldo.value = n.toLocaleString("es-CL");
+    };
 
     const f = $("#f-enlace");
     f.onsubmit = async ev => {
@@ -1422,8 +1471,9 @@ function conectarIngresos() {
 function mostrarEnlace(r) {
   const caja = $("#enlace-recien");
   const mensaje = `Hola ${r.ficha.nombre_referencia.split(" ")[0]}, le dejo el enlace para que `
-    + `llene su ficha de ingreso en Seguridad Garridos. Son unos minutos y se hace desde el `
-    + `teléfono. Sirve ${r.dias} días y una sola vez: ${r.enlace}`;
+    + `llene su ficha de ingreso en Seguridad Garridos. Se hace desde el teléfono y le va a `
+    + `pedir sus datos y una foto de su cédula (por los dos lados) y de sus certificados de AFP `
+    + `y de salud (Fonasa o Isapre): téngalos a mano. Sirve ${r.dias} días y una sola vez: ${r.enlace}`;
   caja.innerHTML = `<div style="padding:4px 16px 18px">
     ${aviso("bien", "Enlace listo para " + r.ficha.nombre_referencia,
       "Cópielo ahora: el sistema no lo guarda en claro en ninguna parte, así que esta es la "
@@ -1502,6 +1552,30 @@ async function pintarFichaIngreso(id) {
         <small>${pisados.length} cambian algo que ya había</small></div>
     </dl>
 
+    ${f.condiciones ? `<section class="caja">
+      <div class="caja__tit"><h2>Lo que puso la oficina</h2>
+        <span class="nota">Con esto se crea su contrato al aceptar</span></div>
+      <div class="desliza"><table class="comparar"><tbody>
+        <tr><td><b>Obra</b></td><td>${esc(f.condiciones.obra_nombre)}</td></tr>
+        <tr><td><b>Dirección de la obra</b></td><td>${esc(f.condiciones.obra_direccion)}</td></tr>
+        <tr><td><b>Sueldo base</b></td><td>${clp(f.condiciones.sueldo_base)}</td></tr>
+        <tr><td><b>Fecha de ingreso</b></td><td>${fecha(f.condiciones.fecha_ingreso)}</td></tr>
+        <tr><td><b>Tipo de contrato</b></td><td>${esc((d.tipos_contrato || {})[f.condiciones.tipo_contrato] || f.condiciones.tipo_contrato)}${
+          f.condiciones.fecha_termino ? ` hasta el ${fecha(f.condiciones.fecha_termino)}` : ""}</td></tr>
+        <tr><td><b>Cargo</b></td><td>${rotCargo(f.condiciones.cargo)}</td></tr>
+      </tbody></table></div></section>` : ""}
+
+    <section class="caja">
+      <div class="caja__tit"><h2>Fotos de sus papeles</h2>
+        <span class="nota">Al aceptar quedan en su carpeta de documentos</span></div>
+      <div class="desliza"><table class="comparar"><tbody>
+        ${(d.archivos || []).map(a => `<tr><td><b>${esc(a.rotulo)}</b></td><td>${a.subido
+          ? `<a href="/api/rrhh/fichas-ingreso/${id}/archivo/${a.clave}" target="_blank" rel="noopener">Ver ${a.tipo === "application/pdf" ? "PDF" : "foto"}</a>
+             <span class="sub" style="margin:0">${esc(a.nombre)}</span>`
+          : '<span class="sello e-rechazada">No la mandó</span>'}</td></tr>`).join("")}
+      </tbody></table></div>
+    </section>
+
     <section class="caja">
       <div class="caja__tit"><h2>Lo que llegó</h2>
         <span class="nota">Destilde lo que no quiera escribir</span></div>
@@ -1521,11 +1595,11 @@ async function pintarFichaIngreso(id) {
       <div style="padding:14px 16px 4px">
         ${d.trabajador ? "" : `<div class="rejilla">
           <label class="campo"><span>Cargo</span><select id="i-cargo">
-            ${(d.cargos || c.cargos).map(x => `<option value="${x}">${rotCargo(x)}</option>`).join("")}</select>
+            ${(d.cargos || c.cargos).map(x => `<option value="${x}"${f.condiciones?.cargo === x ? " selected" : ""}>${rotCargo(x)}</option>`).join("")}</select>
             <span class="sub" style="margin:0">Esto no se le pregunta a la persona: lo decide la oficina.</span></label>
           <label class="campo"><span>Instalación habitual</span><select id="i-instalacion">
             <option value="">Sin asignar</option>
-            ${c.instalaciones.map(i => `<option value="${i.id}">${esc(i.nombre)}</option>`).join("")}</select></label>
+            ${c.instalaciones.map(i => `<option value="${i.id}"${f.condiciones?.instalacion_id === i.id ? " selected" : ""}>${esc(i.nombre)}</option>`).join("")}</select></label>
         </div>`}
         <label class="campo" style="margin-top:10px"><span>Nota de la revisión</span>
           <input id="i-nota" autocomplete="off" placeholder="Qué confirmó por teléfono, si confirmó algo"></label>
@@ -1555,8 +1629,10 @@ async function pintarFichaIngreso(id) {
           nota_revision: $("#i-nota").value,
         }) });
       RRHH.verIngreso = null; RRHH.panel = null; RRHH.personal = null;
-      // Se abre su ficha: lo siguiente que hay que hacer con esta persona es
-      // cargarle el contrato y sus papeles, y eso está ahí.
+      // Lo que no se pudo hacer solo (el contrato si ya tenía uno, un sueldo
+      // bajo el mínimo) se dice antes de irse: en su ficha ya no se vería.
+      if (r.avisos && r.avisos.length) alert("Ficha aceptada. Ojo:\n\n• " + r.avisos.join("\n• "));
+      // Se abre su ficha: ahí quedan su contrato y sus papeles.
       RRHH.verFicha = r.trabajador_id;
       pintarFicha(r.trabajador_id);
     } catch (e) { decir(m, e.message, "error"); bt.disabled = false; }
@@ -1653,8 +1729,12 @@ async function pintarFicha(id) {
   const porVencer = documentos.filter(d => d.estado === "por_vencer");
 
   $("#app").innerHTML = `
-    <p style="margin-bottom:14px">
-      <button class="bt bt--fino bt--chico" id="volver">← Volver al personal</button></p>
+    <p style="margin-bottom:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button class="bt bt--fino bt--chico" id="volver">← Volver al personal</button>
+      <span style="flex:1"></span>
+      <button class="bt bt--fino bt--chico" id="f-pdf-mandante">Ficha PDF para la mandante</button>
+      <button class="bt bt--chico" id="f-zip-mandante">Carpeta completa (ZIP)</button>
+      <span class="mensaje" id="m-f-mandante"></span></p>
 
     ${!cv ? aviso("mal", "Esta persona no tiene contrato cargado",
       "Sin contrato no se puede calcular el sueldo, ni el feriado, ni un finiquito, "
@@ -1693,6 +1773,14 @@ async function pintarFicha(id) {
     ${seccionHistorial()}
     ${seccionDatos(t, c)}`;
 
+  $("#f-pdf-mandante").onclick = () => bajarFichaMandante(id, $("#m-f-mandante"))
+    .catch(e => decir($("#m-f-mandante"), e.message, "error"));
+  $("#f-zip-mandante").onclick = async () => {
+    const b = $("#f-zip-mandante"); b.disabled = true;
+    try { await bajarCarpetasMandante([Number(id)], $("#m-f-mandante")); }
+    catch (e) { decir($("#m-f-mandante"), e.message, "error"); }
+    finally { b.disabled = false; }
+  };
   $("#volver").onclick = () => {
     RRHH.verFicha = null; RRHH.editaContrato = null; pintarPersonal();
   };
@@ -3941,6 +4029,8 @@ const DOCS = {
     /* Lo marcado para descargar en ZIP, una lista por sección: los firmados
        del envío abierto, los envíos enteros y los papeles de la carpeta. */
     selDocs: new Set(), selEnvios: new Set(), selCarpeta: new Set(),
+    /* Las carpetas para la mandante: el personal, el filtro y lo marcado. */
+    mand: { personas: null, instalacion: "", busca: "", sel: new Set() },
   },
 };
 
@@ -4636,6 +4726,8 @@ async function pintarPrevencion() {
 
     ${seccionBiblioteca(P)}
 
+    ${seccionMandante(P)}
+
     ${seccionCarpeta(P)}
 
     <div id="d-abierto"></div>`;
@@ -4705,6 +4797,17 @@ async function pintarPrevencion() {
   if (P.envio) pintarEnvio().catch(() => {});
   conectarBiblioteca(P);
   conectarCarpeta(P);
+  // Solo se repinta esta sección: repintar Prevención entera perdería lo que
+  // se está llenando arriba.
+  const repintarMandante = () => {
+    const viejo = $("#sec-mandante");
+    if (!viejo) return;
+    const t = document.createElement("div");
+    t.innerHTML = seccionMandante(P);
+    viejo.replaceWith(t.firstElementChild);
+    conectarMandante(P, repintarMandante);
+  };
+  conectarMandante(P, repintarMandante);
 }
 
 
@@ -6324,6 +6427,291 @@ async function sellarEnLosPuntos(d, bytesOriginal, puntos, op) {
   if (op.descargar === false) return blob;
   bajarBlob(blob, `${d.numero} ${d.titulo}.pdf`);
   return null;
+}
+
+// ------------------------------------------- carpeta para la empresa mandante
+/* 27-11-2026, pedido de gerencia. Por cada guardia que entra a una obra, la
+   mandante pide su ficha y sus papeles. Esto arma, en el navegador:
+   · la ficha en PDF, con el membrete de la empresa: datos personales, datos
+     laborales y el estado de cada documento (sin sueldo, ni banco, ni
+     previsión: la ficha sale de la empresa);
+   · un ZIP con una carpeta por persona: su ficha y los archivos de sus
+     documentos vigentes, con nombres que se entienden en el portal de la
+     mandante.
+   Lo usan RRHH (en Personal y en la ficha de cada uno) y Prevención. Los
+   datos y los archivos vienen de /documentos/mandante (src/mandante.js). */
+
+const ESTADO_DOC_PDF = {
+  vigente: ["Vigente", [31, 122, 77]], por_vencer: ["Por vencer", [163, 91, 0]],
+  vencido: ["Vencido", [180, 35, 24]], sin_vencimiento: ["Sin vencimiento", [90, 90, 110]],
+};
+
+let LOGO_PDF;
+const logoPdf = async () => (LOGO_PDF === undefined ? (LOGO_PDF = await cargarLogo("logo.png", 220)) : LOGO_PDF);
+
+/** La ficha de una persona, en PDF. Devuelve un Blob. */
+async function pdfFichaMandante(t, empresa, emitido) {
+  await cargarScript(JSPDF);
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const A = 210, H = 297, M = 16, ancho = A - M * 2;
+  const tinta = [19, 0, 82], gris = [105, 105, 125], linea = [225, 223, 235], suave = [246, 245, 250];
+  const logo = await logoPdf();
+  const nombreEmpresa = empresa.nombre_fantasia || "Seguridad Garridos";
+  let y = 0;
+
+  // ---- membrete: franja de color con el logo y los datos de la empresa
+  const membrete = () => {
+    doc.setFillColor(...tinta).rect(0, 0, A, 30, "F");
+    if (logo) {
+      doc.setFillColor(255, 255, 255).circle(M + 10, 15, 10.5, "F");
+      doc.addImage(logo, "PNG", M + 1.5, 6.5, 17, 17);
+    }
+    const x = logo ? M + 25 : M;
+    doc.setTextColor(255, 255, 255).setFont("helvetica", "bold").setFontSize(14);
+    doc.text(nombreEmpresa.toUpperCase(), x, 13.5);
+    doc.setFont("helvetica", "normal").setFontSize(8.2);
+    doc.text([empresa.razon_social, empresa.rut && `RUT ${empresa.rut}`].filter(Boolean).join("  ·  "), x, 19);
+    doc.text([empresa.domicilio, empresa.telefono].filter(Boolean).join("  ·  "), x, 23.5, { maxWidth: A - x - M });
+    y = 40;
+  };
+  const pie = () => {
+    doc.setDrawColor(...linea).line(M, H - 14, A - M, H - 14);
+    doc.setFont("helvetica", "normal").setFontSize(7.5).setTextColor(...gris);
+    doc.text(`Ficha del trabajador · ${t.nombre} · emitida el ${fecha(emitido)} por ${nombreEmpresa}`, M, H - 9);
+    doc.text(`Página ${doc.getNumberOfPages()}`, A - M, H - 9, { align: "right" });
+  };
+  const saltar = alto => {
+    if (y + alto <= H - 20) return;
+    pie(); doc.addPage(); membrete();
+  };
+  const seccion = titulo => {
+    saltar(16);
+    doc.setFont("helvetica", "bold").setFontSize(10).setTextColor(...tinta);
+    doc.text(titulo.toUpperCase(), M, y);
+    y += 2;
+    doc.setDrawColor(...tinta).setLineWidth(0.6).line(M, y, M + 14, y);
+    doc.setLineWidth(0.2).setDrawColor(...linea).line(M + 14, y, A - M, y);
+    y += 6;
+  };
+  // Dos columnas de rótulo y valor.
+  const rejilla = pares => {
+    const col = ancho / 2, filas = [];
+    for (let i = 0; i < pares.length; i += 2) filas.push(pares.slice(i, i + 2));
+    for (const fila of filas) {
+      saltar(11);
+      fila.forEach(([rotulo, valor], j) => {
+        const x = M + j * col;
+        doc.setFont("helvetica", "normal").setFontSize(7.3).setTextColor(...gris);
+        doc.text(rotulo.toUpperCase(), x, y);
+        doc.setFont("helvetica", "bold").setFontSize(9.6).setTextColor(25, 25, 40);
+        doc.text(String(valor || "-"), x, y + 4.6, { maxWidth: col - 6 });
+      });
+      y += 11;
+    }
+    y += 2;
+  };
+
+  membrete();
+
+  // ---- título y nombre
+  doc.setFont("helvetica", "bold").setFontSize(9).setTextColor(...gris);
+  doc.text("FICHA DEL TRABAJADOR", M, y);
+  y += 7;
+  doc.setFontSize(17).setTextColor(...tinta);
+  doc.text(t.nombre || "", M, y, { maxWidth: ancho - 50 });
+  doc.setFont("helvetica", "normal").setFontSize(10).setTextColor(...gris);
+  doc.text(`RUT ${rutLindoSeguro(t.rut)}`, A - M, y, { align: "right" });
+  y += 5;
+  doc.setFontSize(9);
+  doc.text([t.cargo ? rotCargo(t.cargo) : "", t.instalacion].filter(Boolean).join("  ·  "), M, y);
+  y += 10;
+
+  seccion("Datos personales");
+  rejilla([
+    ["Nombre completo", t.nombre], ["RUT", rutLindoSeguro(t.rut)],
+    ["Fecha de nacimiento", t.fecha_nacimiento ? fecha(t.fecha_nacimiento) : ""],
+    ["Nacionalidad", t.nacionalidad], ["Estado civil", t.estado_civil],
+    ["Teléfono", t.telefono], ["Correo", t.email],
+    ["Dirección", [t.direccion, t.comuna, t.region].filter(Boolean).join(", ")],
+  ]);
+
+  seccion("Datos laborales");
+  rejilla([
+    ["Cargo", t.cargo ? rotCargo(t.cargo) : ""], ["Obra o instalación", t.instalacion],
+    ["Fecha de ingreso", t.fecha_ingreso ? fecha(t.fecha_ingreso) : ""],
+    ["Tipo de contrato", t.sin_contrato ? "Sin contrato cargado"
+      : (ROTULO_CONTRATO[t.contrato_tipo] || t.contrato_tipo || "")],
+    ["Contrato vigente desde", t.contrato_desde ? fecha(t.contrato_desde) : ""],
+    ["Contrato vigente hasta", t.contrato_hasta ? fecha(t.contrato_hasta)
+      : (t.sin_contrato ? "" : "Indefinido")],
+  ]);
+
+  // ---- documentos: tabla con estado de color
+  seccion("Estado de documentos");
+  const docs = t.documentos || [];
+  const cols = [{ t: "Documento", w: 74 }, { t: "N°", w: 26 }, { t: "Emisión", w: 22 },
+                { t: "Vence", w: 22 }, { t: "Estado", w: ancho - 144 }];
+  const cabecera = () => {
+    doc.setFillColor(...suave).rect(M, y - 4.2, ancho, 6.6, "F");
+    doc.setFont("helvetica", "bold").setFontSize(7.6).setTextColor(...gris);
+    let x = M + 2;
+    for (const c of cols) { doc.text(c.t.toUpperCase(), x, y); x += c.w; }
+    y += 6;
+  };
+  if (!docs.length) {
+    doc.setFont("helvetica", "normal").setFontSize(9).setTextColor(...gris);
+    doc.text("No tiene documentos cargados.", M, y);
+    y += 6;
+  } else {
+    cabecera();
+    for (const d of docs) {
+      const nombre = doc.splitTextToSize(d.tipo_nombre || d.tipo || "", cols[0].w - 3);
+      const alto = Math.max(6.2, nombre.length * 4 + 2.2);
+      if (y + alto > H - 20) { pie(); doc.addPage(); membrete(); cabecera(); }
+      let x = M + 2;
+      doc.setFont("helvetica", "normal").setFontSize(8.6).setTextColor(25, 25, 40);
+      doc.text(nombre, x, y); x += cols[0].w;
+      doc.setTextColor(...gris);
+      doc.text(String(d.numero || "-"), x, y, { maxWidth: cols[1].w - 2 }); x += cols[1].w;
+      doc.text(d.fecha_emision ? fecha(d.fecha_emision) : "-", x, y); x += cols[2].w;
+      doc.text(d.fecha_vencimiento ? fecha(d.fecha_vencimiento) : "-", x, y); x += cols[3].w;
+      const [rot, color] = ESTADO_DOC_PDF[d.estado] || [d.estado || "-", gris];
+      doc.setFillColor(...color).circle(x + 1.2, y - 1.1, 1.2, "F");
+      doc.setFont("helvetica", "bold").setTextColor(...color).text(rot, x + 4, y);
+      y += alto - 2.2;
+      doc.setDrawColor(...linea).line(M, y - 2.4, A - M, y - 2.4);
+      y += 2.2;
+    }
+  }
+
+  // ---- certificación
+  saltar(26);
+  y += 8;
+  doc.setFont("helvetica", "normal").setFontSize(8.2).setTextColor(...gris);
+  doc.text(doc.splitTextToSize(`${empresa.razon_social || nombreEmpresa} certifica que los datos de esta ficha `
+    + "corresponden a los registros de la empresa a la fecha de emisión. Los documentos listados se "
+    + "adjuntan por separado.", ancho), M, y);
+  pie();
+  return doc.output("blob");
+}
+
+const carpetaPersona = t => [t.nombre, t.rut ? rutLindoSeguro(t.rut) : ""].map(limpioZip).filter(Boolean).join("_") || `persona-${t.id}`;
+const EXT_TIPO = { "application/pdf": "pdf", "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/heic": "heic" };
+
+/** Ficha sola de una persona, en PDF. */
+async function bajarFichaMandante(id, m) {
+  decir(m, "Armando la ficha…");
+  const r = await pedir("/documentos/mandante/fichas", { method: "POST", body: JSON.stringify({ ids: [id] }) });
+  const t = r.trabajadores[0];
+  if (!t) throw new Error("No encontré a esa persona.");
+  bajarBlob(await pdfFichaMandante(t, r.empresa, r.emitido_en.slice(0, 10)), `Ficha_${carpetaPersona(t)}.pdf`);
+  decir(m, "Listo: ficha descargada.", "ok");
+}
+
+/** ZIP con una carpeta por persona: su ficha y sus documentos con archivo. */
+async function bajarCarpetasMandante(ids, m, { soloFichas = false } = {}) {
+  if (!ids.length) throw new Error("Marque al menos una persona.");
+  decir(m, "Buscando sus datos…");
+  const r = await pedir("/documentos/mandante/fichas", { method: "POST", body: JSON.stringify({ ids }) });
+  const emitido = r.emitido_en.slice(0, 10);
+  const archivos = [], carpetas = new Set();
+  let sinArchivo = 0, fallaron = 0;
+  for (const [i, t] of r.trabajadores.entries()) {
+    const carpeta = nombreUnico(carpetaPersona(t), carpetas);
+    const usados = new Set();
+    decir(m, `${i + 1} de ${r.trabajadores.length}: ficha de ${t.nombre}…`);
+    const pdf = await pdfFichaMandante(t, r.empresa, emitido);
+    archivos.push({ nombre: `${carpeta}/${nombreUnico("00_Ficha_" + carpetaPersona(t) + ".pdf", usados)}`,
+                    datos: new Uint8Array(await pdf.arrayBuffer()), fecha: new Date() });
+    if (soloFichas) continue;
+    for (const d of t.documentos) {
+      if (!d.tiene_archivo) { sinArchivo++; continue; }
+      decir(m, `${i + 1} de ${r.trabajadores.length}: ${t.nombre}, ${d.tipo_nombre}…`);
+      const resp = await fetch(`/api/documentos/mandante/archivo/${d.id}`, { credentials: "same-origin" });
+      if (!resp.ok) { fallaron++; continue; }
+      const ext = EXT_TIPO[d.archivo_tipo] || (d.archivo_nombre || "").split(".").pop() || "pdf";
+      const nombre = [d.tipo_nombre, d.observacion && /frente|reverso|afp|salud/i.test(d.observacion)
+        ? d.observacion.split("·")[0] : "", d.fecha_vencimiento ? "vence " + d.fecha_vencimiento : d.fecha_emision]
+        .map(limpioZip).filter(Boolean).join("_");
+      archivos.push({ nombre: `${carpeta}/${nombreUnico(`${nombre || "documento"}.${ext}`, usados)}`,
+                      datos: new Uint8Array(await resp.arrayBuffer()), fecha: new Date() });
+    }
+  }
+  const nombreZip = r.trabajadores.length === 1
+    ? `Carpeta_${carpetaPersona(r.trabajadores[0])}.zip`
+    : `Carpetas_mandante_${r.trabajadores.length}_personas_${hoyLocal()}.zip`;
+  bajarBlob(zipSinComprimir(archivos), nombreZip);
+  decir(m, `Listo: ${cuantos(r.trabajadores.length, "carpeta", "carpetas")}, `
+    + `${cuantos(archivos.length, "archivo", "archivos")}.`
+    + (sinArchivo ? ` ${cuantos(sinArchivo, "documento no tiene", "documentos no tienen")} archivo cargado (salen en la ficha igual).` : "")
+    + (fallaron ? ` ${cuantos(fallaron, "archivo no se pudo bajar", "archivos no se pudieron bajar")}.` : ""),
+    fallaron ? "error" : "ok");
+}
+
+/** La sección de Prevención: marcar personas y bajar sus carpetas. */
+function seccionMandante(P) {
+  const M = P.mand;
+  if (!M.personas) {
+    return `<section class="caja" id="sec-mandante"><div class="caja__tit"><h2>Carpetas para la empresa mandante</h2></div>
+      <p class="cargando">Cargando el personal…</p></section>`;
+  }
+  const insts = [...new Map(M.personas.filter(x => x.instalacion_id).map(x => [x.instalacion_id, x.instalacion])).entries()]
+    .sort((a, b) => String(a[1]).localeCompare(String(b[1])));
+  const q = (M.busca || "").trim().toLowerCase();
+  const visibles = M.personas
+    .filter(x => !M.instalacion || String(x.instalacion_id) === String(M.instalacion))
+    .filter(x => !q || [x.nombre, x.rut, x.cargo].some(v => String(v || "").toLowerCase().includes(q)));
+  podarSeleccion(M.sel, M.personas.map(x => x.id));
+  return `<section class="caja" id="sec-mandante">
+    <div class="caja__tit"><h2>Carpetas para la empresa mandante</h2>
+      <span class="nota">Una carpeta por persona: su ficha en PDF y sus documentos</span></div>
+    <div class="rejilla">
+      <label class="campo"><span>Instalación</span><select id="w-inst">
+        <option value="">Todas</option>
+        ${insts.map(([id, nom]) => `<option value="${id}"${String(id) === String(M.instalacion) ? " selected" : ""}>${esc(nom)}</option>`).join("")}
+      </select></label>
+      <label class="campo"><span>Buscar</span><input id="w-busca" value="${esc(M.busca || "")}"
+        placeholder="Nombre, RUT o cargo" autocomplete="off"></label>
+    </div>
+    ${barraSeleccion("w", M.sel.size, "Descargar carpetas (ZIP)",
+      `<button class="bt bt--fino bt--chico" type="button" id="w-solo-fichas"${M.sel.size ? "" : " disabled"}>Solo las fichas (ZIP)</button>`,
+      `Seleccionar los ${visibles.length} de la lista`)}
+    <div style="margin:0 16px 16px;max-height:340px;overflow:auto;border:1px solid var(--borde);
+      border-radius:var(--r-s);padding:8px 10px;display:grid;
+      grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:4px 14px">
+      ${visibles.map(x => `<label style="display:flex;gap:9px;align-items:center;padding:4px 0;font-size:.86rem;cursor:pointer">
+        ${casillaSel("w", x.id, M.sel.has(x.id))}
+        <span><b style="font-weight:500">${esc(x.nombre)}</b><br>
+          <span class="sub" style="margin:0;font-size:.76rem">${esc(rutLindoSeguro(x.rut))}${
+            x.cargo ? " · " + esc(rotCargo(x.cargo)) : ""}${!M.instalacion && x.instalacion ? " · " + esc(x.instalacion) : ""}</span></span>
+      </label>`).join("") || '<p class="sub">No hay nadie que calce.</p>'}
+    </div>
+  </section>`;
+}
+
+function conectarMandante(P, repintar) {
+  const M = P.mand;
+  if (!M.personas) {
+    pedir("/documentos/mandante/personas")
+      .then(r => { M.personas = r.personas; repintar(); })
+      .catch(e => { const s = $("#sec-mandante .cargando"); if (s) s.textContent = e.message; });
+    return;
+  }
+  $("#w-inst").onchange = e => { M.instalacion = e.target.value; repintar(); };
+  $("#w-busca").oninput = e => {
+    M.busca = e.target.value; clearTimeout(M._t);
+    M._t = setTimeout(() => { repintar(); const b = $("#w-busca"); b.focus(); b.setSelectionRange(b.value.length, b.value.length); }, 250);
+  };
+  const solo = $("#w-solo-fichas");
+  conectarSeleccion("w", M.sel, () => bajarCarpetasMandante([...M.sel], $("#m-sel-w"))
+    .catch(e => decir($("#m-sel-w"), e.message, "error")), Number, () => { solo.disabled = !M.sel.size; });
+  solo.onclick = async () => {
+    solo.disabled = true;
+    try { await bajarCarpetasMandante([...M.sel], $("#m-sel-w"), { soloFichas: true }); }
+    catch (e) { decir($("#m-sel-w"), e.message, "error"); }
+    finally { solo.disabled = !M.sel.size; }
+  };
 }
 
 /** Descarga un blob con un nombre de archivo que el sistema acepte. */

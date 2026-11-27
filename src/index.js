@@ -29,6 +29,7 @@ import * as rotaciones from './rotaciones.js';
 import * as pagos from './pagos.js';
 import * as usr from './usuarios.js';
 import * as alertas from './alertas.js';
+import * as mandante from './mandante.js';
 import { redireccionHttps, cabecerasSeguridad, conCabeceras, soloHttps }
   from './seguridad.js';
 import { ipDe, huellaDe, revisarLimite, limpiarHuellas, MENSAJES as MENSAJES_LIMITE,
@@ -671,6 +672,24 @@ async function api(request, env, url, usuario) {
       const r = await ing.anularEnlace(env, usuario.usuario, Number(m[1]), cuerpo.motivo);
       if (r.error) return error(r.error, r.status);
       return json(r);
+    }
+    // La foto o el PDF de un papel que mandó la persona. Mismas cabeceras que
+    // el archivo de un documento: se abre en una pestaña, sin poder correr nada.
+    m = sub.match(/^\/fichas-ingreso\/(\d+)\/archivo\/([a-z_]+)$/);
+    if (m && metodo === 'GET') {
+      const a = await ing.archivoDeFicha(env, Number(m[1]), m[2]);
+      if (!a) return error('Ese papel no se subió', 404);
+      return new Response(a.contenido, { headers: {
+        'content-type': a.tipo,
+        'content-disposition': arch.comoAdjunto(a.nombre),
+        // Lo mismo que el archivo de un documento: CSP cerrada para las
+        // imágenes, ninguna para el PDF, que si no el visor queda en blanco.
+        ...(a.tipo === 'application/pdf' ? {} : { 'content-security-policy': "default-src 'none'" }),
+        'x-content-type-options': 'nosniff',
+        'x-frame-options': 'DENY',
+        'cache-control': 'no-store, private',
+        ...soloHttps(),
+      } });
     }
     m = sub.match(/^\/fichas-ingreso\/(\d+)\/aceptar$/);
     if (m && metodo === 'POST') {
@@ -1429,6 +1448,31 @@ async function api(request, env, url, usuario) {
     }
 
     const puedeLaboral = puede(usuario, 'rrhh');
+
+    // ------------------------------------------ carpeta para la mandante
+    // La ficha en PDF y los papeles de cada persona marcada. Lo abren RRHH y
+    // Prevención: ver src/mandante.js.
+    if (sub === '/mandante/personas' && metodo === 'GET') {
+      return json({ personas: await buscar(env,
+        'v_personal?select=id,nombre,rut,cargo,instalacion_id,instalacion&activo=is.true&order=nombre.asc') });
+    }
+    if (sub === '/mandante/fichas' && metodo === 'POST') {
+      const r = await mandante.fichas(env, cuerpo.ids);
+      if (r.error) return error(r.error, r.status);
+      return json(r);
+    }
+    const mMand = sub.match(/^\/mandante\/archivo\/(\d+)$/);
+    if (mMand && metodo === 'GET') {
+      const a = await mandante.archivo(env, Number(mMand[1]));
+      if (!a) return error('Ese documento no tiene archivo cargado', 404);
+      return new Response(a.contenido, { headers: {
+        'content-type': a.archivo_tipo || 'application/octet-stream',
+        'content-disposition': arch.comoAdjunto(a.archivo_nombre || 'documento'),
+        'x-content-type-options': 'nosniff',
+        'cache-control': 'no-store, private',
+        ...soloHttps(),
+      } });
+    }
 
     if (sub === '/catalogos' && metodo === 'GET') {
       const c = await docs.catalogos(env);
@@ -2750,6 +2794,22 @@ export default {
         await anotarIntento(env, 'ficha', huella)
           .catch(e => console.error('anotar intento ficha:', e.message));
 
+        // La foto de un papel llega como bytes, no como JSON: el token y cuál
+        // papel es vienen en cabeceras. El tamaño se mira antes de leer nada.
+        if (url.pathname === '/api/ficha/archivo') {
+          const declarado = Number(request.headers.get('content-length') || 0);
+          if (declarado > arch.MAX_BYTES) {
+            return error('El archivo pesa demasiado. Saque la foto de nuevo o mande un PDF más liviano.', 413);
+          }
+          const bytes = new Uint8Array(await request.arrayBuffer());
+          let nombre = '';
+          try { nombre = decodeURIComponent(request.headers.get('x-archivo-nombre') || ''); } catch (_) {}
+          const r = await ing.subirArchivo(env, request.headers.get('x-ficha-token') || '',
+            request.headers.get('x-ficha-papel') || '', bytes, nombre);
+          if (r.error) return error(r.error, r.status);
+          return json(r, 201);
+        }
+
         const d = await request.json().catch(() => ({}));
         const token = typeof d.token === 'string' ? d.token : '';
 
@@ -2760,7 +2820,9 @@ export default {
         }
         if (url.pathname === '/api/ficha/enviar') {
           const r = await ing.recibir(env, token, d, huella);
-          if (r.error) return error(r.error, r.status);
+          if (r.error) {
+            return r.campo ? json({ error: r.error, campo: r.campo }, r.status) : error(r.error, r.status);
+          }
           // Después de una buena, nunca después de una rechazada: así la
           // limpieza queda acotada por el propio tope.
           await limpiarIntentos(env).catch(e => console.error('limpiar intentos:', e.message));
