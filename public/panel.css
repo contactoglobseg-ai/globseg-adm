@@ -555,3 +555,95 @@ tr.marcada:hover{background:var(--acento-suave)}
   background:var(--verde)}
 .recado--mal::before{background:var(--ambar)}
 body.hay-seleccion .recado{bottom:104px}
+
+/* ---------- Inicio: la portada (27-11-2026) ----------
+   Inspirada en la portada de iCloud: un saludo grande, el perfil a la
+   derecha y tarjetas de vidrio con esquinas generosas. Usa los mismos
+   tokens que el resto (apariencia.css), así que respeta el tema claro, el
+   oscuro y el tamaño de letra elegido. Tres columnas en el computador, una
+   en el teléfono. */
+.inicio{max-width:1180px}
+.ini-hola{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;flex-wrap:wrap;margin:4px 0 22px}
+.ini-ceja{margin:0 0 8px;font-size:.72rem;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--texto-3)}
+.ini-tit{margin:0;font-family:var(--display);font-size:clamp(2rem,4.4vw,2.9rem);font-weight:700;letter-spacing:-.035em;line-height:1.02}
+.ini-sub{margin:8px 0 0;color:var(--texto-2);font-size:1rem}
+.ini-sub::first-letter{text-transform:uppercase}
+.ini-perfil{display:flex;align-items:center;gap:13px;padding:12px 18px 12px 12px;background:var(--sup);
+  border:1px solid var(--borde-suave);border-radius:calc(var(--r) + 6px);box-shadow:var(--sombra),var(--brillo);
+  -webkit-backdrop-filter:var(--desenfoque);backdrop-filter:var(--desenfoque);min-width:0}
+.ini-perfil b{display:block;font-size:1rem;letter-spacing:-.01em}
+.ini-perfil small{display:block;color:var(--texto-2);font-size:.82rem;margin-top:2px}
+.ini-avatar{flex:none;width:48px;height:48px;border-radius:50%;display:grid;place-items:center;
+  font-weight:700;font-size:1.02rem;letter-spacing:.02em;color:var(--acento);background:var(--acento-suave)}
+
+.ini-rejilla{display:grid;grid-template-columns:2fr 1fr;gap:16px;margin-bottom:26px}
+.ini-caja{background:var(--sup);border:1px solid var(--borde-suave);border-radius:calc(var(--r) + 8px);
+  box-shadow:var(--sombra),var(--brillo);-webkit-backdrop-filter:var(--desenfoque);backdrop-filter:var(--desenfoque);
+  padding:20px 22px;display:flex;flex-direction:column;min-width:0}
+.ini-caja__tit{display:flex;align-items:center;gap:13px;padding-bottom:14px;border-bottom:1px solid var(--borde-suave)}
+.ini-caja__tit b{display:block;font-size:1.12rem;letter-spacing:-.015em}
+.ini-caja__tit small{display:block;color:var(--texto-2);font-size:.84rem;margin-top:2px}
+.ini-vacio{color:var(--texto-3);font-size:.88rem;line-height:1.5;margin:14px 0 0}
+.ini-vacio--grande{margin:auto 0;padding:22px 0 6px}
+.ini-vacio--grande b{display:block;color:var(--texto);font-size:1rem;margin-bottom:6px}
+
+.ini-eventos{list-style:none;margin:0;padding:0}
+.ini-eventos li+li{border-top:1px solid var(--borde-suave)}
+.ini-eventos button{all:unset;box-sizing:border-box;width:100%;display:grid;grid-template-columns:52px 1fr auto;
+  align-items:center;gap:14px;padding:12px 6px;cursor:pointer;border-radius:var(--r-s)}
+.ini-eventos button:hover{background:var(--sup-3)}
+.ini-eventos button:focus-visible{outline:2px solid var(--acento);outline-offset:2px}
+.ini-ev__dia{display:flex;flex-direction:column;align-items:center;color:var(--acento);font-size:.72rem;
+  text-transform:uppercase;letter-spacing:.06em;line-height:1.1}
+.ini-ev__dia b{font-size:1.35rem;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.ini-ev__txt{min-width:0}
+.ini-ev__txt b{display:block;font-weight:600;font-size:.95rem;overflow-wrap:anywhere}
+.ini-ev__txt small{display:block;color:var(--texto-2);font-size:.82rem;margin-top:2px}
+.ini-ev__est{font-size:.78rem;font-weight:600;white-space:nowrap;color:var(--texto-2)}
+.ini-ev__est.est-solicitar_oc{color:var(--ambar)}
+.ini-ev__est.est-pendiente_facturacion{color:var(--rojo)}
+.ini-ev__est.est-en_curso{color:var(--verde)}
+.ini-mas{all:unset;box-sizing:border-box;cursor:pointer;margin-top:auto;padding:14px 6px 2px;border-top:1px solid var(--borde-suave);
+  display:flex;justify-content:space-between;color:var(--acento);font-weight:600;font-size:.92rem}
+.ini-mas:hover{text-decoration:underline}
+.ini-mas:focus-visible{outline:2px solid var(--acento);outline-offset:2px;border-radius:var(--r-xs)}
+
+.ini-seccion{margin:0 0 12px;font-size:.72rem;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--texto-3)}
+.ini-accesos{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.ini-acc{all:unset;box-sizing:border-box;display:flex;align-items:center;gap:15px;padding:18px 18px;cursor:pointer;
+  background:var(--sup);border:1px solid var(--borde-suave);border-radius:calc(var(--r) + 8px);
+  box-shadow:var(--sombra),var(--brillo);-webkit-backdrop-filter:var(--desenfoque);backdrop-filter:var(--desenfoque);
+  transition:transform .18s cubic-bezier(.2,.8,.2,1),border-color .18s,background-color .18s;min-width:0;color:var(--texto)}
+.ini-acc:hover{transform:translateY(-2px);border-color:var(--borde);background:var(--sup-2)}
+.ini-acc:active{transform:scale(.985)}
+.ini-acc:focus-visible{outline:2px solid var(--acento);outline-offset:3px}
+.ini-acc__ico{flex:none;width:46px;height:46px;border-radius:14px;display:grid;place-items:center}
+.ini-acc__ico svg{width:23px;height:23px}
+.ini-acc__txt{flex:1;min-width:0}
+.ini-acc__txt b{display:block;font-size:1.06rem;letter-spacing:-.015em}
+.ini-acc__txt small{display:block;color:var(--texto-2);font-size:.84rem;margin-top:3px;line-height:1.35}
+.ini-acc__ir{flex:none;width:18px;height:18px;color:var(--texto-3);align-self:flex-start}
+.ini-acc__eti{flex:none;align-self:flex-start;font-size:.7rem;font-weight:600;letter-spacing:.04em;
+  padding:3px 9px;border-radius:980px;background:var(--gris-suave);color:var(--texto-2)}
+.ini-acc--falta{cursor:default;opacity:.62}
+.ini-acc--falta:hover{transform:none;border-color:var(--borde-suave);background:var(--sup)}
+.ini-tono--verde{background:var(--verde-suave);color:var(--verde)}
+.ini-tono--cian{background:var(--cian-suave);color:var(--cian)}
+.ini-tono--violeta{background:var(--violeta-suave);color:var(--violeta)}
+.ini-tono--ambar{background:var(--ambar-suave);color:var(--ambar)}
+.ini-tono--rojo{background:var(--rojo-suave);color:var(--rojo)}
+.ini-pie{margin:18px 2px 0;color:var(--texto-3);font-size:.82rem}
+
+@media (max-width:1000px){
+  .ini-rejilla{grid-template-columns:1fr}
+  .ini-accesos{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media (max-width:620px){
+  .ini-hola{align-items:stretch}
+  .ini-perfil{width:100%}
+  .ini-accesos{grid-template-columns:1fr;gap:12px}
+  .ini-caja{padding:16px 16px}
+  .ini-eventos button{grid-template-columns:44px 1fr;gap:12px}
+  .ini-ev__est{grid-column:2}
+}
+@media (prefers-reduced-motion:reduce){.ini-acc,.ini-acc:hover{transition:none;transform:none}}

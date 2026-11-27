@@ -4706,7 +4706,173 @@ function enganchesRotacion(dependencias, conDeps) {
   };
 }
 
+// ------------------------------------------------------------- inicio
+/* La portada (27-11-2026, pedido de gerencia, inspirada en iCloud): quién
+   entró, lo que viene en el calendario, sus tareas y accesos grandes a cada
+   área. Tres reglas:
+   · Nada inventado. El calendario son los cierres de periodo reales de
+     /agenda; si la cuenta no ve cobranza, se dice. Tareas no existen todavía
+     en el sistema, y la caja lo dice en vez de mostrar un cero que parezca
+     una cuenta.
+   · Cada acceso sale solo si la cuenta tiene el permiso de esa pantalla, con
+     la misma regla que la lateral (VISTAS[k].modulo). Contabilidad no está
+     construida en este panel y se muestra como tal, apagada.
+   · Los accesos llevan a las pantallas que ya existen: no hay copias. */
+
+const ICONO_INICIO = {
+  calendario: '<rect x="3.5" y="5" width="17" height="15" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
+  tareas: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+  cobranza: '<path d="M12 3v18M16.5 7.5c0-1.9-2-3-4.5-3s-4.5 1.2-4.5 3.2c0 4.6 9 2.4 9 7 0 2-2 3.3-4.5 3.3s-4.5-1.1-4.5-3"/>',
+  ventas: '<path d="M6 18 18 6M9 6h9v9"/>',
+  operaciones: '<path d="M12 3 4.5 6v5.5c0 4.6 3.2 8.2 7.5 9.5 4.3-1.3 7.5-4.9 7.5-9.5V6L12 3Z"/>',
+  contabilidad: '<rect x="5" y="3.5" width="14" height="17" rx="2.5"/><path d="M8.5 8h7M8.5 12h7M8.5 16h4"/>',
+  personas: '<circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"/><circle cx="17" cy="9.5" r="2.4"/><path d="M15.8 14.2c2.4-.3 4.3 1.2 4.7 4"/>',
+  flecha: '<path d="M7 17 17 7M9 7h8v8"/>',
+};
+const icono = (k, clase = "") =>
+  `<svg class="${clase}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONO_INICIO[k]}</svg>`;
+
+/** ¿La cuenta abre esta vista del panel? La misma regla que la lateral. */
+const abreVista = k => {
+  const m = VISTAS[k] && VISTAS[k].modulo;
+  if (!VISTAS[k]) return false;
+  return !m || (Array.isArray(m) ? m : [m]).some(x => estado.usuario.permisos.includes(x));
+};
+const tienePermiso = (...ps) => ps.some(p => estado.usuario.permisos.includes(p));
+
+/** Los accesos que esta cuenta puede ver, en el orden de la portada. */
+function accesosInicio() {
+  const A = [];
+  if (abreVista("panel")) A.push({ k: "cobranza", tit: "Cobranza", sub: "Periodos, facturas y pagos", vista: "panel", tono: "verde" });
+  const ventas = abreVista("cotizaciones") ? "cotizaciones" : abreVista("contactos") ? "contactos" : null;
+  if (ventas) A.push({ k: "ventas", tit: "Ventas", sub: "Contactos web y cotizaciones", vista: ventas, tono: "cian" });
+  const oper = abreVista("servicio") ? "servicio" : abreVista("libro") ? "libro" : abreVista("rotacion") ? "rotacion" : null;
+  if (oper) A.push({ k: "operaciones", tit: "Operaciones", sub: "Servicios, turnos y asistencia", vista: oper, tono: "violeta" });
+  // Contabilidad no tiene pantalla en este panel. Se muestra apagada a quien
+  // trabaja con la plata de la empresa, para que se sepa que falta y no que
+  // se perdió.
+  if (tienePermiso("facturacion", "usuarios")) {
+    A.push({ k: "contabilidad", tit: "Contabilidad", sub: "Todavía no está en este panel", tono: "ambar", falta: true });
+  }
+  // Personas vive en su propia página (/rrhh): se entra con RRHH, Prevención
+  // (documentos) o remuneraciones, igual que allá.
+  if (tienePermiso("rrhh", "documentos", "remuneraciones")) {
+    A.push({ k: "personas", tit: "Personas", sub: "Trabajadores y documentación", href: "/rrhh", tono: "rojo" });
+  }
+  if (abreVista("calendario")) A.push({ k: "calendario", tit: "Calendario", sub: "Cierres y fechas de servicio", vista: "calendario", tono: "cian" });
+  return A;
+}
+
+const iniciales = nombre => String(nombre || "").trim().split(/\s+/).filter(Boolean)
+  .slice(0, 2).map(p => p[0].toUpperCase()).join("") || "?";
+const rotuloRol = r => r ? r[0].toUpperCase() + r.slice(1).replace(/_/g, " ") : "";
+const fechaLarga = iso => new Intl.DateTimeFormat("es-CL", { weekday: "long", day: "numeric", month: "long" })
+  .format(new Date(iso + "T12:00:00"));
+
+/** Los próximos cierres de periodo, de este mes y el siguiente. Reales. */
+async function proximosCierres() {
+  const hoy = hoyISO();
+  const [a, m] = hoy.slice(0, 7).split("-").map(Number);
+  const sig = m === 12 ? `${a + 1}-01` : `${a}-${String(m + 1).padStart(2, "0")}`;
+  const meses = await Promise.all([pedir(`/agenda?mes=${hoy.slice(0, 7)}`), pedir(`/agenda?mes=${sig}`)]);
+  const vistos = new Set(), cierres = [];
+  for (const ag of meses) for (const c of ag.ciclos) {
+    if (vistos.has(c.id) || c.hasta < hoy || c.estado === "cerrado") continue;
+    vistos.add(c.id);
+    cierres.push(c);
+  }
+  return cierres.sort((x, y) => x.hasta.localeCompare(y.hasta));
+}
+
+async function pintarInicio() {
+  const u = estado.usuario;
+  const verCal = abreVista("calendario");
+  const accesos = accesosInicio();
+  const nombre = String(u.nombre || u.usuario).split(" ")[0];
+  const tarjeta = a => {
+    const cuerpo = `<span class="ini-acc__ico ini-tono--${a.tono}">${icono(a.k)}</span>
+      <span class="ini-acc__txt"><b>${esc(a.tit)}</b><small>${esc(a.sub)}</small></span>
+      ${a.falta ? '<span class="ini-acc__eti">Pendiente</span>' : icono("flecha", "ini-acc__ir")}`;
+    if (a.falta) return `<div class="ini-acc ini-acc--falta" aria-disabled="true">${cuerpo}</div>`;
+    if (a.href) return `<a class="ini-acc" href="${a.href}">${cuerpo}</a>`;
+    return `<button class="ini-acc" type="button" data-ir="${a.vista}">${cuerpo}</button>`;
+  };
+
+  $("#app").innerHTML = `<div class="inicio">
+    <header class="ini-hola">
+      <div>
+        <p class="ini-ceja">Oficina · Seguridad Garridos</p>
+        <h2 class="ini-tit">Hola, ${esc(nombre)}</h2>
+        <p class="ini-sub">${esc(fechaLarga(hoyISO()))}. Tu espacio de trabajo para hoy.</p>
+      </div>
+      <div class="ini-perfil">
+        <span class="ini-avatar" aria-hidden="true">${esc(iniciales(u.nombre))}</span>
+        <span><b>${esc(u.nombre)}</b><small>${esc(rotuloRol(u.rol))} · ${esc(u.usuario)}</small></span>
+      </div>
+    </header>
+
+    <div class="ini-rejilla">
+      <section class="ini-caja ini-cal">
+        <div class="ini-caja__tit">
+          <span class="ini-acc__ico ini-tono--cian">${icono("calendario")}</span>
+          <span><b>Calendario</b><small id="ini-cal-sub">${verCal ? "Próximos cierres de periodo" : "Agenda de cobranza"}</small></span>
+        </div>
+        <div id="ini-cal-lista">${verCal ? '<p class="ini-vacio">Cargando…</p>'
+          : '<p class="ini-vacio">Tu perfil no incluye el calendario de cobranza. Si lo necesitas, pídelo a gerencia.</p>'}</div>
+        ${verCal ? `<button class="ini-mas" type="button" data-ir="calendario">Ver calendario completo <span aria-hidden="true">→</span></button>` : ""}
+      </section>
+
+      <section class="ini-caja ini-tareas">
+        <div class="ini-caja__tit">
+          <span class="ini-acc__ico ini-tono--violeta">${icono("tareas")}</span>
+          <span><b>Mis tareas</b><small>Asignadas a tu usuario</small></span>
+        </div>
+        <div class="ini-vacio ini-vacio--grande">
+          <b>Todavía no hay tareas en el sistema</b>
+          El panel aún no tiene un módulo de tareas. Cuando exista, aquí verás las que te asignen.
+        </div>
+      </section>
+    </div>
+
+    ${accesos.length ? `<h3 class="ini-seccion">Accesos</h3>
+    <div class="ini-accesos">${accesos.map(tarjeta).join("")}</div>` : ""}
+    <p class="ini-pie">Los accesos se muestran según los permisos de tu cuenta.</p>
+  </div>`;
+
+  for (const b of document.querySelectorAll(".inicio [data-ir]")) b.onclick = () => ir(b.dataset.ir);
+
+  if (!verCal) return;
+  const caja = $("#ini-cal-lista");
+  try {
+    const cierres = await proximosCierres();
+    if (estado.vista !== "inicio" || !document.body.contains(caja)) return;
+    $("#ini-cal-sub").textContent = cierres.length
+      ? `${cierres.length} ${cierres.length === 1 ? "cierre" : "cierres"} de periodo por delante`
+      : "Sin cierres pendientes este mes ni el próximo";
+    caja.innerHTML = cierres.length ? `<ul class="ini-eventos">${cierres.slice(0, 5).map(c => `
+      <li><button type="button" data-ir="calendario">
+        <span class="ini-ev__dia"><b>${esc(c.hasta.slice(8, 10))}</b>${esc(new Intl.DateTimeFormat("es-CL", { month: "short" })
+          .format(new Date(c.hasta + "T12:00:00")).replace(".", ""))}</span>
+        <span class="ini-ev__txt"><b>Cierre N°${esc(c.numero)} · ${esc(c.instalacion)}</b>
+          <small>${esc(c.cliente || "")}${c.hasta === hoyISO() ? " · hoy" : ""}</small></span>
+        <span class="ini-ev__est est-${esc(c.estado)}">${esc(ROTULO[c.estado] || c.estado)}</span>
+      </button></li>`).join("")}</ul>
+      ${cierres.length > 5 ? `<p class="ini-vacio">Y ${cierres.length - 5} más en el calendario.</p>` : ""}`
+      : '<p class="ini-vacio">No hay cierres de periodo pendientes este mes ni el próximo.</p>';
+    for (const b of caja.querySelectorAll("[data-ir]")) b.onclick = () => ir(b.dataset.ir);
+  } catch (e) {
+    caja.innerHTML = `<p class="ini-vacio">No se pudo cargar el calendario: ${esc(e.message)}</p>`;
+  }
+}
+
 const VISTAS = {
+  /* La portada la ve toda cuenta de oficina: lo que muestra adentro se filtra
+     por permiso. Va con la lista de módulos de oficina y no sin módulo, para
+     que una cuenta sin ninguno siga viendo el aviso de siempre y no una
+     portada vacía. */
+  inicio: { rotulo: "Inicio", pintar: pintarInicio,
+            modulo: ["facturacion", "cotizaciones", "personal", "rrhh", "documentos",
+                     "remuneraciones", "usuarios"] },
   panel: { rotulo: "Panel", pintar: pintarPanel, modulo: "facturacion" },
   calendario: { rotulo: "Calendario", pintar: pintarCalendario, modulo: "facturacion" },
   contactos: { rotulo: "Contactos web", pintar: pintarContactos, modulo: "facturacion" },
@@ -4750,6 +4916,7 @@ const VISTAS = {
    El orden de acá manda también para qué se abre al entrar: la primera
    sección que la cuenta pueda ver. */
 const GRUPOS = [
+  { rotulo: "Espacio de trabajo", vistas: ["inicio"] },
   { rotulo: "Cobranza",    vistas: ["panel", "calendario", "pagos", "bitacora"] },
   { rotulo: "Comercial",   vistas: ["contactos", "cotizaciones"] },
   { rotulo: "Operaciones", vistas: ["servicio", "instalaciones", "extra", "rotacion", "libro", "trabajadores"] },
