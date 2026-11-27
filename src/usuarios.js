@@ -49,6 +49,8 @@ export const MODULOS = [
     abre: 'Sueldos (liquidación, finiquito y los parámetros de la ley), Transferencias y Carga masiva. Se separó de Personas el 03-11-2026 para poder dar las fichas sin dar las remuneraciones.' },
   { codigo: 'usuarios', rotulo: 'Usuarios y permisos', corto: 'Usuarios',
     abre: 'Esta pantalla: crear cuentas, restablecer contraseñas y repartir estos mismos permisos.' },
+  { codigo: 'planilla', rotulo: 'Planilla de turnos', corto: 'Planilla',
+    abre: 'La tabla semanal donde se arrastra a los guardias: qué instalación cubre cada uno, cada día, de día y de noche.' },
 ];
 
 export const CODIGOS = MODULOS.map((m) => m.codigo);

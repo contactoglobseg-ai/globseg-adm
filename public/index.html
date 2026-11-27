@@ -4446,6 +4446,270 @@ async function bajarSemanaPDF(rot, semana, msj) {
   } catch (e) { decir(msj, e.message, "error"); }
 }
 
+/* ======================================================= planilla de turnos
+
+   La tabla semanal de la gerencia: una fila por instalación, una columna por
+   día, y en cada casilla el turno de día y el de noche con los guardias que
+   van. Se arma arrastrando a los guardias desde la lista de la izquierda;
+   entre casillas se arrastra para mover y la ✕ los saca.
+
+   En una pantalla táctil arrastrar no funciona igual, así que también se
+   puede tocar: se toca a un guardia (de la lista o de la tabla) y después la
+   casilla donde va. Es el mismo camino que el arrastre.
+
+   Es lo planeado, no la asistencia. Un guardia no puede quedar en dos partes
+   el mismo día y turno: la pantalla lo avisa sin preguntarle al servidor, y
+   el servidor —la base, en realidad— lo impide igual. */
+
+const PL = { datos: null, semana: null, elegido: null, filtro: "" };
+const PL_DIAS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
+
+/** «Jorge Eduardo Arriagada Alcaino» → «Jorge Arriagada»: en la casilla
+ *  caben dos palabras; el nombre completo queda en el globo. */
+function plNombreCorto(n) {
+  const p = String(n || "").trim().split(/\s+/);
+  if (p.length >= 4) return `${p[0]} ${p[2]}`;
+  if (p.length === 3) return `${p[0]} ${p[1]}`;
+  return p.join(" ");
+}
+const plFecha = iso => { const [, m, d] = iso.split("-"); return `${d}-${m}`; };
+
+async function pintarPlanilla() {
+  const app = $("#app");
+  let d;
+  try {
+    d = await pedir("/planilla" + (PL.semana ? `?semana=${PL.semana}` : ""));
+  } catch (e) {
+    app.innerHTML = `<section class="caja"><div class="caja__tit"><h2>Planilla de turnos</h2></div>
+      <p class="vacio">${esc(e.message)}</p></section>`;
+    return;
+  }
+  PL.datos = d;
+  PL.semana = d.lunes;
+  const domingo = d.dias[6];
+  app.innerHTML = `
+    <section class="caja pl">
+      <div class="caja__tit">
+        <h2>Planilla de turnos</h2>
+        <span class="nota">Lo planeado, no la asistencia: lo que pasó se ve en el libro.</span>
+      </div>
+      <div class="pl-barra">
+        <button class="bt bt--fino bt--chico" id="pl-antes" aria-label="Semana anterior">‹</button>
+        <b class="pl-semana">Semana del ${plFecha(d.lunes)} al ${plFecha(domingo)}-${domingo.slice(0, 4)}</b>
+        <button class="bt bt--fino bt--chico" id="pl-despues" aria-label="Semana siguiente">›</button>
+        <button class="bt bt--fino bt--chico" id="pl-hoy">Esta semana</button>
+        <button class="bt bt--fino bt--chico" id="pl-copiar">Copiar la semana anterior</button>
+        <span class="mensaje" id="pl-msg"></span>
+      </div>
+      <div class="pl-cuerpo">
+        <aside class="pl-lista">
+          <input id="pl-buscar" type="search" placeholder="Buscar guardia" autocomplete="off" value="${esc(PL.filtro)}">
+          <p class="sub" style="margin:6px 2px 8px">Arrastre a la tabla, o toque y después toque la casilla.</p>
+          <div id="pl-guardias"></div>
+        </aside>
+        <div class="pl-tabla desliza" id="pl-tabla"></div>
+      </div>
+      <p class="sub" id="pl-elegido" style="padding:0 16px 14px" hidden></p>
+    </section>`;
+
+  $("#pl-antes").onclick = () => { PL.semana = plSumar(PL.semana, -7); PL.elegido = null; pintarPlanilla(); };
+  $("#pl-despues").onclick = () => { PL.semana = plSumar(PL.semana, 7); PL.elegido = null; pintarPlanilla(); };
+  $("#pl-hoy").onclick = () => { PL.semana = null; PL.elegido = null; pintarPlanilla(); };
+  $("#pl-copiar").onclick = plCopiar;
+  $("#pl-buscar").oninput = e => { PL.filtro = e.target.value; plPintarGuardias(); };
+  plPintarGuardias();
+  plPintarTabla();
+  plConectar();
+}
+
+function plSumar(iso, n) {
+  const f = new Date(iso + "T00:00:00Z");
+  f.setUTCDate(f.getUTCDate() + n);
+  return f.toISOString().slice(0, 10);
+}
+
+const plGuardia = id => PL.datos.guardias.find(g => g.id === id);
+
+function plPintarGuardias() {
+  const { guardias, asignaciones, instalaciones } = PL.datos;
+  const cuenta = new Map();
+  for (const a of asignaciones) cuenta.set(a.trabajador_id, (cuenta.get(a.trabajador_id) || 0) + 1);
+  const llano = x => String(x || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+  const q = llano(PL.filtro).split(/\s+/).filter(Boolean);
+  const lista = guardias.filter(g => q.every(p => llano(g.nombre).includes(p)));
+  const instDe = id => (instalaciones.find(i => i.id === id) || {}).nombre;
+  $("#pl-guardias").innerHTML = lista.length ? lista.map(g => {
+    const n = cuenta.get(g.id) || 0;
+    const elegido = PL.elegido && PL.elegido.trab === g.id;
+    return `<div class="pl-guardia${elegido ? " pl-elegido" : ""}" draggable="true" data-trab="${g.id}"
+        title="${esc(g.nombre)}">
+      <span class="pl-guardia__n">${esc(g.nombre)}</span>
+      <span class="pl-guardia__d">${n ? `${n} turno${n === 1 ? "" : "s"}` : "sin turnos"}${
+        instDe(g.instalacion_id) ? ` · ${esc(instDe(g.instalacion_id))}` : ""}</span>
+    </div>`;
+  }).join("") : `<p class="sub">Nadie con ese nombre.</p>`;
+}
+
+function plPintarTabla() {
+  const { dias, hoy, instalaciones, asignaciones } = PL.datos;
+  const en = new Map();
+  for (const a of asignaciones) {
+    const k = `${a.instalacion_id}|${a.fecha}|${a.turno}`;
+    if (!en.has(k)) en.set(k, []);
+    en.get(k).push(a);
+  }
+  const trabElegido = PL.elegido ? PL.elegido.trab : null;
+  const chip = a => {
+    const g = plGuardia(a.trabajador_id);
+    const nombre = g ? g.nombre : "Guardia dado de baja";
+    const marcado = trabElegido === a.trabajador_id;
+    return `<span class="pl-chip${marcado ? " pl-elegido" : ""}" draggable="true" data-asig="${a.id}"
+        data-trab="${a.trabajador_id}" title="${esc(nombre)}">${esc(plNombreCorto(nombre))}<button
+        type="button" class="pl-quitar" data-quitar="${a.id}" aria-label="Sacar a ${esc(nombre)}">✕</button></span>`;
+  };
+  const casilla = (inst, dia, turno) => {
+    const lista = en.get(`${inst.id}|${dia}|${turno}`) || [];
+    return `<div class="pl-casilla pl-${turno}${lista.length ? "" : " pl-vacia"}" data-inst="${inst.id}"
+        data-fecha="${dia}" data-turno="${turno}">
+      <span class="pl-turno">${turno === "dia" ? "Día" : "Noche"}</span>${lista.map(chip).join("")}
+    </div>`;
+  };
+  const sinCubrir = dia => instalaciones.reduce((n, i) =>
+    n + ["dia", "noche"].filter(t => !(en.get(`${i.id}|${dia}|${t}`) || []).length).length, 0);
+  $("#pl-tabla").innerHTML = `<table class="pl-t">
+    <thead><tr><th class="pl-inst">Instalación</th>${dias.map((dia, k) => `<th class="${dia === hoy ? "pl-hoy" : ""}">
+      ${PL_DIAS[k]} ${plFecha(dia)}<span class="sub">${sinCubrir(dia) ? `${sinCubrir(dia)} sin cubrir` : "todo cubierto"}</span></th>`).join("")}</tr></thead>
+    <tbody>${instalaciones.map(i => `<tr>
+      <th class="pl-inst">${esc(i.nombre)}<span class="sub">${esc([i.cliente, i.comuna].filter(Boolean).join(" · "))}</span></th>
+      ${dias.map(dia => `<td class="${dia === hoy ? "pl-hoy" : ""}">${casilla(i, dia, "dia")}${casilla(i, dia, "noche")}</td>`).join("")}
+    </tr>`).join("")}</tbody></table>`;
+}
+
+function plAvisar(texto, tipo) { decir($("#pl-msg"), texto, tipo); }
+
+function plElegir(e) {
+  PL.elegido = e;
+  const p = $("#pl-elegido");
+  if (e) {
+    const g = plGuardia(e.trab);
+    p.hidden = false;
+    p.textContent = `${g ? g.nombre : "Guardia"}: ${e.asig ? "toque la casilla adonde lo mueve" : "toque la casilla donde va"}. `
+      + "Toque de nuevo a la persona para soltarla.";
+  } else p.hidden = true;
+  plPintarGuardias();
+  plPintarTabla();
+}
+
+/** Lo que se hace al soltar (o tocar) sobre una casilla. */
+async function plSoltar(origen, casilla) {
+  const fecha = casilla.dataset.fecha, turno = casilla.dataset.turno;
+  const inst = Number(casilla.dataset.inst);
+  const { asignaciones, instalaciones } = PL.datos;
+  const g = plGuardia(origen.trab);
+  // El choque se ve acá mismo, sin ir al servidor.
+  const otra = asignaciones.find(a => a.trabajador_id === origen.trab && a.fecha === fecha
+    && a.turno === turno && a.id !== origen.asig);
+  if (otra) {
+    if (otra.instalacion_id === inst) return;
+    const donde = (instalaciones.find(i => i.id === otra.instalacion_id) || {}).nombre || "otra instalación";
+    plAvisar(`${g ? g.nombre : "Ese guardia"} ya está el ${plFecha(fecha)} de ${turno === "dia" ? "día" : "noche"} en ${donde}.`, "error");
+    return;
+  }
+  try {
+    if (origen.asig) {
+      const r = await pedir(`/planilla/${origen.asig}`, { method: "PATCH",
+        body: JSON.stringify({ fecha, turno, instalacion_id: inst }) });
+      Object.assign(asignaciones.find(a => a.id === origen.asig), r.asignacion);
+    } else {
+      const r = await pedir("/planilla", { method: "POST",
+        body: JSON.stringify({ fecha, turno, instalacion_id: inst, trabajador_id: origen.trab }) });
+      asignaciones.push(r.asignacion);
+    }
+    plAvisar("");
+  } catch (e) {
+    plAvisar(e.message, "error");
+  }
+  PL.elegido = null;
+  $("#pl-elegido").hidden = true;
+  plPintarGuardias();
+  plPintarTabla();
+}
+
+function plConectar() {
+  const raiz = $(".pl");
+  let arrastre = null;
+
+  raiz.addEventListener("dragstart", ev => {
+    const el = ev.target.closest("[data-trab]");
+    if (!el) return;
+    arrastre = { trab: Number(el.dataset.trab), asig: el.dataset.asig ? Number(el.dataset.asig) : null };
+    ev.dataTransfer.effectAllowed = "move";
+    ev.dataTransfer.setData("text/plain", String(arrastre.trab));
+  });
+  raiz.addEventListener("dragend", () => {
+    arrastre = null;
+    raiz.querySelectorAll(".pl-sobre").forEach(c => c.classList.remove("pl-sobre"));
+  });
+  raiz.addEventListener("dragover", ev => {
+    const c = ev.target.closest(".pl-casilla");
+    if (!c || !arrastre) return;
+    ev.preventDefault();
+    raiz.querySelectorAll(".pl-sobre").forEach(x => { if (x !== c) x.classList.remove("pl-sobre"); });
+    c.classList.add("pl-sobre");
+  });
+  raiz.addEventListener("dragleave", ev => {
+    const c = ev.target.closest(".pl-casilla");
+    if (c && !c.contains(ev.relatedTarget)) c.classList.remove("pl-sobre");
+  });
+  raiz.addEventListener("drop", ev => {
+    const c = ev.target.closest(".pl-casilla");
+    if (!c || !arrastre) return;
+    ev.preventDefault();
+    c.classList.remove("pl-sobre");
+    const origen = arrastre;
+    arrastre = null;
+    plSoltar(origen, c);
+  });
+
+  raiz.addEventListener("click", async ev => {
+    const q = ev.target.closest("[data-quitar]");
+    if (q) {
+      ev.stopPropagation();
+      const id = Number(q.dataset.quitar);
+      try {
+        await pedir(`/planilla/${id}`, { method: "DELETE" });
+        PL.datos.asignaciones = PL.datos.asignaciones.filter(a => a.id !== id);
+        plAvisar("");
+      } catch (e) { plAvisar(e.message, "error"); }
+      plPintarGuardias();
+      plPintarTabla();
+      return;
+    }
+    const persona = ev.target.closest(".pl-guardia, .pl-chip");
+    if (persona) {
+      const e = { trab: Number(persona.dataset.trab),
+                  asig: persona.dataset.asig ? Number(persona.dataset.asig) : null };
+      const mismo = PL.elegido && PL.elegido.trab === e.trab && PL.elegido.asig === e.asig;
+      plElegir(mismo ? null : e);
+      return;
+    }
+    const c = ev.target.closest(".pl-casilla");
+    if (c && PL.elegido) plSoltar(PL.elegido, c);
+  });
+  document.onkeydown = ev => { if (ev.key === "Escape" && PL.elegido && estado.vista === "planilla") plElegir(null); };
+}
+
+async function plCopiar() {
+  if (!confirm("¿Copiar los turnos de la semana anterior a esta?\n\nSe agrega lo que falta; "
+    + "lo que ya está puesto no se toca.")) return;
+  try {
+    const r = await pedir("/planilla/copiar", { method: "POST", body: JSON.stringify({ semana: PL.semana }) });
+    await pintarPlanilla();
+    plAvisar(`Copiados ${r.copiadas} turnos.` + (r.saltadas
+      ? ` ${r.saltadas} no se copiaron (ya estaban, el guardia se dio de baja o chocaban con algo ya puesto).` : ""), "ok");
+  } catch (e) { plAvisar(e.message, "error"); }
+}
+
 async function pintarRotacion() {
   $("#app").innerHTML = `<p class="cargando">Cargando…</p>`;
   let datos;
@@ -5151,6 +5415,7 @@ const VISTAS = {
   instalaciones: { rotulo: "Instalaciones", pintar: pintarInstalaciones, modulo: "facturacion" },
   extra: { rotulo: "Registrar extra", pintar: pintarNuevoExtra, modulo: "facturacion" },
   rotacion: { rotulo: "Rotación", pintar: pintarRotacion, modulo: "personal" },
+  planilla: { rotulo: "Planilla de turnos", pintar: pintarPlanilla, modulo: "planilla" },
   trabajadores: { rotulo: "Trabajadores", pintar: pintarTrabajadores, modulo: "personal" },
   libro: { rotulo: "Asistencia", pintar: pintarLibro, modulo: "personal" },
   bitacora: { rotulo: "Bitácora", pintar: pintarBitacora, modulo: "facturacion" },
@@ -5189,7 +5454,7 @@ const GRUPOS = [
   { rotulo: "Espacio de trabajo", vistas: ["inicio", "tareas"] },
   { rotulo: "Cobranza",    vistas: ["panel", "calendario", "pagos", "bitacora"] },
   { rotulo: "Comercial",   vistas: ["contactos", "cotizaciones"] },
-  { rotulo: "Operaciones", vistas: ["servicio", "instalaciones", "extra", "rotacion", "libro", "trabajadores"] },
+  { rotulo: "Operaciones", vistas: ["planilla", "servicio", "instalaciones", "extra", "rotacion", "libro", "trabajadores"] },
   { rotulo: "Sistema",     vistas: ["usuarios"] },
 ];
 

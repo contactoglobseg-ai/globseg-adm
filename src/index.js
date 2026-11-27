@@ -26,6 +26,7 @@ import * as docs from './documentos.js';
 import * as prev from './prevencion.js';
 import * as activos from './activos.js';
 import * as rotaciones from './rotaciones.js';
+import * as planilla from './planilla.js';
 import * as pagos from './pagos.js';
 import * as usr from './usuarios.js';
 import * as alertas from './alertas.js';
@@ -1427,6 +1428,40 @@ async function api(request, env, url, usuario) {
       return json(r);
     }
 
+    return error('Ruta no encontrada', 404);
+  }
+
+  /**
+   * Planilla de turnos: la tabla semanal donde se arrastra a los guardias. La
+   * abre el permiso `planilla`, que el 27-11-2026 tienen Joaquín, José,
+   * Sebastián y vislaj. Ver src/planilla.js.
+   */
+  if (ruta === '/planilla' || ruta.startsWith('/planilla/')) {
+    if (!puede(usuario, 'planilla')) return error('Sin acceso a este módulo', 403);
+    const sub = ruta.replace(/^\/planilla/, '') || '/';
+    if (!(await planilla.tablaLista(env))) {
+      return json({ sin_migracion: true, migracion: planilla.MIGRACION,
+                    aviso: `Falta aplicar la migración ${planilla.MIGRACION} en Supabase.` }, 503);
+    }
+    if (sub === '/' && metodo === 'GET') {
+      return json(await planilla.semana(env, url.searchParams.get('semana')));
+    }
+    if (sub === '/' && metodo === 'POST') {
+      const r = await planilla.asignar(env, usuario.usuario, cuerpo);
+      return r.error ? error(r.error, r.status) : json(r, 201);
+    }
+    if (sub === '/copiar' && metodo === 'POST') {
+      const r = await planilla.copiarAnterior(env, usuario.usuario, cuerpo.semana);
+      return r.error ? error(r.error, r.status) : json(r);
+    }
+    const mP = sub.match(/^\/(\d+)$/);
+    if (mP && metodo === 'PATCH') {
+      const r = await planilla.mover(env, usuario.usuario, Number(mP[1]), cuerpo);
+      return r.error ? error(r.error, r.status) : json(r);
+    }
+    if (mP && metodo === 'DELETE') {
+      return json(await planilla.quitar(env, usuario.usuario, Number(mP[1])));
+    }
     return error('Ruta no encontrada', 404);
   }
 
