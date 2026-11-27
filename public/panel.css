@@ -229,6 +229,15 @@ main{padding:clamp(16px,2.5vw,28px);max-width:1500px;margin-inline:auto;width:10
   padding:13px 16px;background:var(--sup-2);border-bottom:1px solid var(--borde-suave)}
 .caja__tit h2{font-size:1.02rem}
 .caja__tit .nota{font-size:.82rem;color:var(--texto-3);margin-left:auto}
+/* Las cajas plegables del panel: el título es el botón, con una flecha. */
+details.plegable>summary{list-style:none;cursor:pointer;user-select:none}
+details.plegable>summary::-webkit-details-marker{display:none}
+details.plegable>summary h2::before{content:"";display:inline-block;width:.42em;height:.42em;
+  border-right:2px solid currentColor;border-bottom:2px solid currentColor;
+  transform:rotate(-45deg);margin:0 .65em .12em 0;transition:transform .15s}
+details.plegable[open]>summary h2::before{transform:rotate(45deg)}
+details.plegable:not([open])>summary{border-bottom:0}
+details.plegable>summary:hover{background:var(--sup-3)}
 .desliza{overflow-x:auto}
 .desliza table{min-width:1080px}
 .sub{color:var(--texto-3);font-size:.8rem;display:block;margin-top:2px}

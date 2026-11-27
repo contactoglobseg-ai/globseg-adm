@@ -578,11 +578,11 @@ function pintarPanel() {
   </dl>`;
 
   html += tablaCiclos("Pendientes de cobro", pendientes,
-    "Nada pendiente. Cuando un periodo cumpla 30 días aparece acá.");
+    "Nada pendiente. Cuando un periodo cumpla 30 días aparece acá.", true);
 
   const cerrados = porEstado("cerrado"), enCurso = porEstado("en_curso");
-  if (enCurso.length) html += tablaCiclos("Periodos en curso", enCurso, "");
-  if (cerrados.length) html += tablaCiclos("Cerrados", cerrados, "");
+  if (enCurso.length) html += tablaCiclos("Periodos en curso", enCurso, "", false);
+  if (cerrados.length) html += tablaCiclos("Cerrados", cerrados, "", false);
 
   html += tablaSueltos(sueltos);
   $("#app").innerHTML = html;
@@ -590,12 +590,33 @@ function pintarPanel() {
 }
 
 
-function tablaCiclos(titulo, filas, vacio) {
+/* Las tablas del panel se pliegan: un clic en el título las abre o las cierra
+   y cada computador recuerda cómo las dejó. Lo que pide trabajo —pendientes
+   de cobro, extras sin asignar— parte abierto; en curso y cerrados, que se
+   consultan de vez en cuando, parten cerrados. */
+const PLEGADO = "adm-panel-abiertas";
+function abiertaPanel(clave, porDefecto) {
+  try {
+    const m = JSON.parse(localStorage.getItem(PLEGADO) || "{}");
+    return clave in m ? !!m[clave] : porDefecto;
+  } catch { return porDefecto; }
+}
+function recordarPanel(clave, abierta) {
+  try {
+    const m = JSON.parse(localStorage.getItem(PLEGADO) || "{}");
+    m[clave] = abierta;
+    localStorage.setItem(PLEGADO, JSON.stringify(m));
+  } catch { /* sin almacenamiento, simplemente no se recuerda */ }
+}
+const abrePlegable = (clave, titulo, nota, porDefecto) =>
+  `<details class="caja plegable" data-plegar="${esc(clave)}"${abiertaPanel(clave, porDefecto) ? " open" : ""}>
+    <summary class="caja__tit"><h2>${esc(titulo)}</h2><span class="nota">${nota}</span></summary>`;
+
+function tablaCiclos(titulo, filas, vacio, abierta = true) {
   if (!filas.length && !vacio) return "";
   const total = filas.reduce((t, c) => t + c.total_neto, 0);
-  let h = `<section class="caja"><div class="caja__tit"><h2>${esc(titulo)}</h2>
-    <span class="nota">${filas.length} · ${clp(total)} neto</span></div>`;
-  if (!filas.length) return h + `<p class="vacio">${esc(vacio)}</p></section>`;
+  let h = abrePlegable(titulo, titulo, `${filas.length} · ${clp(total)} neto`, abierta);
+  if (!filas.length) return h + `<p class="vacio">${esc(vacio)}</p></details>`;
   h += `<div class="desliza"><table><thead><tr>
       ${cabeceraSel("ciclos")}
       <th>Instalación</th><th>Servicio</th><th>Periodo</th><th>Estado</th>
@@ -637,7 +658,7 @@ function tablaCiclos(titulo, filas, vacio) {
       ${formCiclo(c)}
     </td></tr>`;
   }
-  return h + "</tbody></table></div></section>";
+  return h + "</tbody></table></div></details>";
 }
 
 function formCiclo(c) {
@@ -701,9 +722,8 @@ function notaDePrecio(e) {
 }
 
 function tablaSueltos(sueltos) {
-  let h = `<section class="caja"><div class="caja__tit">
-    <h2>Servicios extra sin asignar</h2>
-    <span class="nota">${sueltos.length} · ${clp(sueltos.reduce((t, e) => t + e.monto_neto, 0))} neto</span></div>`;
+  let h = abrePlegable("Servicios extra sin asignar", "Servicios extra sin asignar",
+    `${sueltos.length} · ${clp(sueltos.reduce((t, e) => t + e.monto_neto, 0))} neto`, sueltos.length > 0);
   if (!sueltos.length) {
     h += `<p class="vacio">Todos los servicios extra están asignados a un periodo.</p>`;
   } else {
@@ -735,11 +755,14 @@ function tablaSueltos(sueltos) {
     }
     h += "</tbody></table></div>";
   }
-  return h + "</section>";
+  return h + "</details>";
 }
 
 function conectarPanel() {
   conectarSeleccion();
+  for (const d of document.querySelectorAll("details[data-plegar]")) {
+    d.ontoggle = () => recordarPanel(d.dataset.plegar, d.open);
+  }
   const f = estado.panelFiltro;
   $("#f-empresa").onchange = ev => { f.empresa = ev.target.value; pintarPanel(); };
   $("#f-orden").onchange = ev => { f.orden = ev.target.value; pintarPanel(); };
@@ -973,6 +996,50 @@ async function pintarServicios() {
  */
 let abrirFormInst = false;
 
+/* Las regiones de Chile, de norte a sur. El campo «Región» era texto libre y
+   la misma se escribió de varias formas («RM», «Metropolitana», «Region
+   Metropolitana»), así que la vista por región las junta con `regionDe` y el
+   formulario ahora da a elegir de esta lista: lo ya escrito no se toca, y al
+   volver a guardar una instalación queda con el nombre de la lista. */
+const REGIONES = [
+  ["Arica y Parinacota", ["arica", "parinacota"], "xv"],
+  ["Tarapacá", ["tarapaca", "iquique"], "i"],
+  ["Antofagasta", ["antof", "antf"], "ii"],
+  ["Atacama", ["atacama", "copiapo"], "iii"],
+  ["Coquimbo", ["coquimbo"], "iv"],
+  ["Valparaíso", ["valpara"], "v"],
+  ["Metropolitana", ["metrop", "santiago"], "rm"],
+  ["O'Higgins", ["higgins", "libertador"], "vi"],
+  ["Maule", ["maule"], "vii"],
+  ["Ñuble", ["nuble"], "xvi"],
+  ["Biobío", ["biobio", "bio bio"], "viii"],
+  ["La Araucanía", ["araucan"], "ix"],
+  ["Los Ríos", ["los rios"], "xiv"],
+  ["Los Lagos", ["los lagos"], "x"],
+  ["Aysén", ["aysen", "aisen"], "xi"],
+  ["Magallanes", ["magallanes"], "xii"],
+];
+/** El nombre de la lista para lo que se haya escrito; `null` si está vacío y
+ *  lo escrito tal cual si no se reconoce (se ve, pero aparte). */
+function regionDe(texto) {
+  const t = String(texto ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().replace(/[^a-z ]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!t) return null;
+  for (const [nombre, claves] of REGIONES) if (claves.some(c => t.includes(c))) return nombre;
+  const sola = t.replace(/\b(region|de|del|la)\b/g, "").replace(/\s+/g, "");
+  for (const [nombre, , romano] of REGIONES) if (sola === romano) return nombre;
+  return String(texto).trim();
+}
+function selectRegion(valor) {
+  const r = regionDe(valor);
+  const conocida = !r || REGIONES.some(([n]) => n === r);
+  return `<select name="region">
+    <option value="">Sin indicar</option>
+    ${REGIONES.map(([n]) => `<option${n === r ? " selected" : ""}>${esc(n)}</option>`).join("")}
+    ${conocida ? "" : `<option selected value="${esc(valor)}">${esc(valor)}</option>`}
+  </select>`;
+}
+
 /**
  * Las dependencias de una instalación: los lugares separados que hay dentro
  * de un mismo contrato —los cuatro parques de Copec RM—, entre los que rota
@@ -1064,6 +1131,17 @@ async function pintarInstalaciones() {
   // Las que están en las listas y no tienen calle. Se avisa arriba porque es
   // lo que frena un contrato, y de baja ya no se le asigna gente a nadie.
   const sinCalle = instalaciones.filter(i => i.activa && !i.direccion);
+  // Vista por región: todas agrupadas de norte a sur, o una sola.
+  const FR = estado.filtroInst || (estado.filtroInst = { region: "" });
+  const SIN = "Sin región";
+  const regionFila = i => regionDe(i.region) || SIN;
+  const orden = n => { const k = REGIONES.findIndex(([x]) => x === n); return k < 0 ? (n === SIN ? 99 : 50) : k; };
+  const regiones = [...new Set(instalaciones.map(regionFila))].sort((a, b) => orden(a) - orden(b));
+  if (FR.region && !regiones.includes(FR.region)) FR.region = "";
+  const visibles = instalaciones
+    .filter(i => !FR.region || regionFila(i) === FR.region)
+    .sort((a, b) => orden(regionFila(a)) - orden(regionFila(b)));
+  const sinRegion = instalaciones.filter(i => !regionDe(i.region)).length;
 
   $("#app").innerHTML = `
     <div style="display:flex;align-items:center;gap:14px;margin-bottom:18px;flex-wrap:wrap">
@@ -1102,7 +1180,7 @@ async function pintarInstalaciones() {
           <label class="campo"><span>Comuna</span>
             <input name="comuna" placeholder="Dónde queda"></label>
           <label class="campo"><span>Región</span>
-            <input name="region" placeholder="Opcional"></label>
+            ${selectRegion("")}</label>
         </div>
         <div class="pie-form">
           <button class="bt" type="submit">Agregar</button>
@@ -1114,19 +1192,34 @@ async function pintarInstalaciones() {
     <section class="caja">
       <div class="caja__tit"><h2>Instalaciones cargadas</h2>
         <span class="nota">Marque varias para darlas de baja o eliminarlas</span></div>
+      ${instalaciones.length ? `<div class="rejilla">
+        <label class="campo" style="grid-column:span 2"><span>Región</span>
+          <select id="i-region">
+            <option value="">Todas, agrupadas por región</option>
+            ${regiones.map(r => `<option value="${esc(r)}"${r === FR.region ? " selected" : ""}>${
+              esc(r)} (${instalaciones.filter(i => regionFila(i) === r).length})</option>`).join("")}
+          </select></label>
+        ${sinRegion ? `<p class="sub" style="grid-column:span 2;align-self:end;margin:0 0 10px">
+          ${sinRegion === 1 ? "Una no tiene" : `${sinRegion} no tienen`} la región puesta:
+          se agrega con «Editar».</p>` : ""}
+      </div>` : ""}
       ${instalaciones.length ? `<div class="desliza"><table style="min-width:900px"><thead><tr>
         ${cabeceraSel("instalaciones")}
         <th>Instalación</th><th>Cliente</th><th>Dónde</th>
         <th class="num">Servicios</th><th class="num">Extras</th><th>Situación</th><th></th>
       </tr></thead><tbody>
-        ${instalaciones.map(i => `<tr${i.activa ? "" : ' style="opacity:.6"'}>
+        ${visibles.map((i, k) => `${!FR.region && (k === 0 || regionFila(visibles[k - 1]) !== regionFila(i))
+          ? `<tr class="fila-grupo"><td colspan="8" style="background:var(--sup-2);font-weight:600;padding:9px 12px">${
+              esc(regionFila(i))}<span class="sub" style="display:inline;margin-left:8px;font-weight:400">${
+              visibles.filter(x => regionFila(x) === regionFila(i)).length}</span></td></tr>` : ""}
+        <tr${i.activa ? "" : ' style="opacity:.6"'}>
           ${celdaSel("instalaciones", i.id)}
           <td><b>${esc(i.nombre)}</b></td>
           <td>${esc(i.cliente)}</td>
           <td>${i.direccion
             ? esc(i.direccion)
             : '<span class="sello e-solicitar_oc">Falta la calle</span>'}
-            <span class="sub">${esc([i.comuna, i.region].filter(Boolean).join(" · ") || "—")}</span></td>
+            <span class="sub">${esc([i.comuna, regionDe(i.region)].filter(Boolean).join(" · ") || "—")}</span></td>
           <td class="num">${i.servicios || "—"}</td>
           <td class="num">${i.extras || "—"}</td>
           <td><span class="sello ${i.activa ? "e-cerrado" : "e-en_curso"}">${
@@ -1143,6 +1236,7 @@ async function pintarInstalaciones() {
     </section>`;
 
   conectarSeleccion();
+  if ($("#i-region")) $("#i-region").onchange = e => { FR.region = e.target.value; pintarInstalaciones(); };
 
   $("#nueva-inst").onclick = () => { abrirFormInst = !abrirFormInst; pintarInstalaciones(); };
 
@@ -1221,7 +1315,7 @@ function formInstalacion(i) {
       <label class="campo"><span>Comuna</span>
         <input name="comuna" value="${esc(i.comuna || "")}" placeholder="Dónde queda"></label>
       <label class="campo"><span>Región</span>
-        <input name="region" value="${esc(i.region || "")}" placeholder="Opcional"></label>
+        ${selectRegion(i.region || "")}</label>
       <label class="campo"><span>¿Sale en los desplegables?</span>
         <select name="activa">
           <option value="si"${i.activa ? " selected" : ""}>Sí, está en las listas</option>
@@ -2160,6 +2254,19 @@ async function pintarContactos() {
 async function pintarTrabajadores() {
   const { trabajadores } = await pedir("/trabajadores");
   const inst = (estado.catalogos?.instalaciones) || [];
+  // El filtro se recuerda mientras la página esté abierta: dar de baja a uno
+  // repinta la lista y no debería devolver a «Todas».
+  const F = estado.filtroTrab || (estado.filtroTrab = { inst: "", texto: "" });
+  // Las instalaciones que tienen gente, por nombre, y al final los sin asignar.
+  const grupos = new Map();
+  for (const t of trabajadores) {
+    const id = t.instalacion_id ? String(t.instalacion_id) : "sin";
+    if (!grupos.has(id)) grupos.set(id, [id, t.instalacion || "Sin instalación asignada", 0]);
+    if (t.activo) grupos.get(id)[2]++;
+  }
+  const instTrab = [...grupos.values()].sort((a, b) =>
+    a[0] === "sin" ? 1 : b[0] === "sin" ? -1 : a[1].localeCompare(b[1], "es"));
+  if (F.inst && !grupos.has(F.inst)) F.inst = "";
 
   $("#app").innerHTML = `
     <section class="caja">
@@ -2197,12 +2304,28 @@ async function pintarTrabajadores() {
       <div class="caja__tit"><h2>Trabajadores</h2>
         <span class="nota">${trabajadores.filter(t => t.activo).length} activos
           de ${trabajadores.length}</span></div>
-      ${trabajadores.length ? `<div class="desliza"><table>
+      ${trabajadores.length ? `<div class="rejilla">
+        <label class="campo" style="grid-column:span 2"><span>Instalación</span>
+          <select id="t-inst">
+            <option value="">Todas, agrupadas por instalación</option>
+            ${instTrab.map(([id, nombre, n]) => `<option value="${esc(id)}"${
+              id === F.inst ? " selected" : ""}>${esc(nombre)} (${n} activos)</option>`).join("")}
+          </select></label>
+        <label class="campo" style="grid-column:span 2"><span>Buscar</span>
+          <input id="t-buscar" type="search" autocomplete="off" value="${esc(F.texto)}"
+            placeholder="Nombre, RUT o usuario"></label>
+      </div>
+      <div class="desliza"><table>
         <thead><tr>
           <th>Nombre</th><th>RUT</th><th>Usuario</th><th>Cargo</th>
           <th>Instalación</th><th>Último ingreso</th><th>Estado</th><th></th>
-        </tr></thead><tbody>
-        ${trabajadores.map(t => `<tr${t.activo ? "" : ' class="fila--cerrado"'}>
+        </tr></thead><tbody id="t-filas"></tbody></table></div>
+      <p class="vacio" id="t-nada" hidden>Nadie calza con ese filtro.</p>`
+      : `<p class="vacio">Todavía no hay trabajadores cargados.
+           El primero que cree ya puede entrar a asistencia.seggarridos.com.</p>`}
+    </section>`;
+
+  const filaTrab = t => `<tr${t.activo ? "" : ' class="fila--cerrado"'}>
           <td><b>${esc(t.nombre)}</b>${t.telefono ? `<span class="sub">${esc(t.telefono)}</span>` : ""}</td>
           <td class="nowrap num">${esc(t.rut)}</td>
           <td class="nowrap"><b>${esc(t.usuario)}</b></td>
@@ -2224,11 +2347,50 @@ async function pintarTrabajadores() {
             <button class="bt bt--fino bt--chico" data-clave="${t.id}"
               title="Vuelve la clave al RUT">Clave al RUT</button>
           </td>
-        </tr>`).join("")}
-        </tbody></table></div>`
-      : `<p class="vacio">Todavía no hay trabajadores cargados.
-           El primero que cree ya puede entrar a asistencia.seggarridos.com.</p>`}
-    </section>`;
+        </tr>`;
+
+  // Filtrar no vuelve a pedir nada ni repinta la pantalla: solo rearma las
+  // filas, así el texto del buscador no pierde el foco mientras se escribe.
+  const pintarFilasTrab = () => {
+    const cuerpo = $("#t-filas");
+    if (!cuerpo) return;
+    // Cada palabra por separado, sin tildes: «alan araya» encuentra a
+    // «Araya Gonzales Alan». Con tres o más dígitos también busca en el RUT.
+    const llano = x => String(x ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+    const palabras = llano(F.texto).split(/\s+/).filter(Boolean);
+    const qRut = F.texto.replace(/[^0-9kK]/g, "").toLowerCase();
+    const calza = t => {
+      if (!palabras.length) return true;
+      const donde = llano(`${t.nombre} ${t.usuario}`);
+      if (palabras.every(p => donde.includes(p))) return true;
+      return qRut.length >= 3 && String(t.rut).replace(/[^0-9kK]/g, "").toLowerCase().includes(qRut);
+    };
+    const deInst = t => (t.instalacion_id ? String(t.instalacion_id) : "sin");
+    const lista = trabajadores.filter(t => (!F.inst || deInst(t) === F.inst) && calza(t));
+    let html = "";
+    if (F.inst) html = lista.map(filaTrab).join("");
+    else {
+      // Todas: un bloque por instalación, en el orden del selector, y los
+      // activos primero dentro de cada una (así llegan de la base).
+      for (const [id, nombre] of instTrab) {
+        const suyos = lista.filter(t => deInst(t) === id);
+        if (!suyos.length) continue;
+        const activos = suyos.filter(t => t.activo).length;
+        html += `<tr class="fila-grupo"><td colspan="8" style="background:var(--sup-2);
+          font-weight:600;padding:9px 12px">${esc(nombre)}
+          <span class="sub" style="display:inline;margin-left:8px;font-weight:400">${activos} activo${
+            activos === 1 ? "" : "s"}${suyos.length - activos ? ` · ${suyos.length - activos} de baja` : ""}</span></td></tr>`
+          + suyos.map(filaTrab).join("");
+      }
+    }
+    cuerpo.innerHTML = html;
+    $("#t-nada").hidden = !!lista.length;
+  };
+  pintarFilasTrab();
+  if ($("#t-inst")) {
+    $("#t-inst").onchange = e => { F.inst = e.target.value; pintarFilasTrab(); };
+    $("#t-buscar").oninput = e => { F.texto = e.target.value; pintarFilasTrab(); };
+  }
 
   const f = $("#f-trab");
   const previo = $("#previo");
@@ -2264,19 +2426,19 @@ async function pintarTrabajadores() {
       pintarTrabajadores();
     } catch (e) { alert(e.message); }
   };
-  document.querySelectorAll("[data-baja]").forEach(b => {
-    b.onclick = () => cambiar(b.dataset.baja, { activo: b.dataset.activo !== "true" },
+  // Los botones se escuchan en la tabla y no uno por uno: las filas se
+  // rearman cada vez que se filtra.
+  if ($("#t-filas")) $("#t-filas").onclick = ev => {
+    const b = ev.target.closest("button");
+    if (!b) return;
+    if (b.dataset.baja) cambiar(b.dataset.baja, { activo: b.dataset.activo !== "true" },
       b.dataset.activo === "true"
         ? "¿Dar de baja? No podrá entrar a marcar, y lo que ya marcó se conserva."
         : null);
-  });
-  document.querySelectorAll("[data-desbloquear]").forEach(b => {
-    b.onclick = () => cambiar(b.dataset.desbloquear, { desbloquear: true });
-  });
-  document.querySelectorAll("[data-clave]").forEach(b => {
-    b.onclick = () => cambiar(b.dataset.clave, { restablecer_clave: true },
+    else if (b.dataset.desbloquear) cambiar(b.dataset.desbloquear, { desbloquear: true });
+    else if (b.dataset.clave) cambiar(b.dataset.clave, { restablecer_clave: true },
       "¿Volver la clave a su RUT? Es lo único que se puede hacer: la clave guardada no la ve nadie.");
-  });
+  };
 }
 
 async function pintarLibro() {
