@@ -30,6 +30,7 @@ import * as pagos from './pagos.js';
 import * as usr from './usuarios.js';
 import * as alertas from './alertas.js';
 import * as mandante from './mandante.js';
+import * as tareas from './tareas.js';
 import { redireccionHttps, cabecerasSeguridad, conCabeceras, soloHttps }
   from './seguridad.js';
 import { ipDe, huellaDe, revisarLimite, limpiarHuellas, MENSAJES as MENSAJES_LIMITE,
@@ -336,7 +337,8 @@ async function api(request, env, url, usuario) {
   const esSubidaDeArchivo = metodo === 'POST'
     && (/^\/rrhh\/documentos\/\d+\/archivo$/.test(ruta)
         || /^\/pagos\/estados\/\d+\/archivo$/.test(ruta)
-        || /^\/documentos\/prevencion(\/carpeta|\/guardados)?$/.test(ruta));
+        || /^\/documentos\/prevencion(\/carpeta|\/guardados)?$/.test(ruta)
+        || /^\/tareas\/\d+\/archivo$/.test(ruta));
 
   // PUT entra desde el 04-11-2026: la semana de la rotación se manda entera y
   // reemplaza lo que había, que es exactamente lo que significa PUT. Era la
@@ -401,6 +403,50 @@ async function api(request, env, url, usuario) {
   // Las cuentas de los guardias se leen acá para verlas junto a las de la
   // oficina, pero quien las toca sigue siendo `/trabajadores/:id`, que pide
   // `personal`: Joaquín no perdió ningún botón de los que ya usaba.
+  // ------------------------------------------------------------- tareas
+  // Pedidos entre cuentas de la oficina (src/tareas.js). Los abre cualquier
+  // cuenta con algún módulo; adentro, cada tarea la ven solo quien la pidió y
+  // a quien se la pidieron.
+  if (ruta === '/tareas' || ruta.startsWith('/tareas/')) {
+    if (!usuario.permisos?.length) return error('Sin acceso a este módulo', 403);
+    const yo = usuario.usuario;
+    const hostPedido = (request.headers.get('host') || url.host).split(':')[0].toLowerCase();
+    const base = `${hostPedido === 'localhost' || hostPedido === '127.0.0.1' ? 'http' : 'https'}://${request.headers.get('host') || url.host}`;
+    const resp = (r, ok = 200) => (r.error ? error(r.error, r.status) : json(r, ok));
+
+    if (ruta === '/tareas' && metodo === 'GET') return json(await tareas.listar(env, yo));
+    if (ruta === '/tareas' && metodo === 'POST') return resp(await tareas.crear(env, yo, cuerpo, base), 201);
+    let mT = ruta.match(/^\/tareas\/(\d+)$/);
+    if (mT && metodo === 'GET') return resp(await tareas.ver(env, Number(mT[1]), yo));
+    mT = ruta.match(/^\/tareas\/(\d+)\/(hecha|devuelta|anulada|reabrir)$/);
+    if (mT && metodo === 'POST') return resp(await tareas.cambiar(env, Number(mT[1]), yo, mT[2], cuerpo.nota, base));
+    mT = ruta.match(/^\/tareas\/(\d+)\/comentarios$/);
+    if (mT && metodo === 'POST') return resp(await tareas.comentar(env, Number(mT[1]), yo, cuerpo.texto), 201);
+    mT = ruta.match(/^\/tareas\/(\d+)\/avisar$/);
+    if (mT && metodo === 'POST') return json(await tareas.avisarNueva(env, Number(mT[1]), yo, base));
+    mT = ruta.match(/^\/tareas\/(\d+)\/archivo$/);
+    if (mT && metodo === 'POST') {
+      if (Number(request.headers.get('content-length') || 0) > arch.MAX_BYTES) {
+        return error('El archivo pesa más de 10 MB', 413);
+      }
+      const bytes = new Uint8Array(await request.arrayBuffer());
+      let nombre = '';
+      try { nombre = decodeURIComponent(request.headers.get('x-archivo-nombre') || ''); } catch (_) {}
+      return resp(await tareas.subirArchivo(env, Number(mT[1]), yo, bytes, nombre), 201);
+    }
+    if (mT && metodo === 'GET') {
+      const a = await tareas.archivo(env, Number(mT[1]), yo);
+      if (!a) return error('Esa tarea no tiene archivo', 404);
+      return new Response(a.contenido, { headers: {
+        'content-type': a.tipo, 'content-disposition': arch.comoAdjunto(a.nombre),
+        ...(a.tipo === 'application/pdf' ? {} : { 'content-security-policy': "default-src 'none'" }),
+        'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY',
+        'cache-control': 'no-store, private', ...soloHttps(),
+      } });
+    }
+    return error('Ruta no encontrada', 404);
+  }
+
   if (ruta === '/usuarios' || ruta.startsWith('/usuarios/')) {
     if (!puede(usuario, 'usuarios')) return error('Sin acceso a este módulo', 403);
 
@@ -2537,7 +2583,7 @@ const RELACIONES = [
   'articulos', 'entregas', 'v_entregas',
   'remuneraciones_mes', 'estados_pago', 'estado_pago_archivos',
   'bancos', 'roles_permisos', 'v_cuentas',
-  'fichas_ingreso', 'intentos_publicos',
+  'fichas_ingreso', 'intentos_publicos', 'tareas', 'tareas_comentarios',
   'v_personal', 'v_documentos', 'v_documentos_generados', 'v_estados_pago',
   'v_envios_prevencion',
   'documentos_prevencion', 'v_documentos_prevencion',

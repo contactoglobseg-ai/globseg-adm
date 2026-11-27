@@ -4706,14 +4706,243 @@ function enganchesRotacion(dependencias, conDeps) {
   };
 }
 
+// ------------------------------------------------------------- tareas
+/* Pedidos entre cuentas de la oficina (27-11-2026). Ver src/tareas.js.
+   «Para mí» son las que me pidieron; «Lo que pedí», las que pedí yo. Cada
+   tarea la ven solo esas dos cuentas. Al pedirla le llega un correo a la
+   otra persona; al cerrarla, a quien la pidió. */
+const TAR = { datos: null, pestana: "para_mi", abierta: null, nueva: false, error: null };
+
+const ESTADO_TAREA = { pendiente: ["Pendiente", "e-en_curso"], hecha: ["Hecha", "e-cerrado"],
+                       devuelta: ["Devuelta", "e-rechazada"], anulada: ["Anulada", "e-borrador"] };
+
+async function cargarTareas() {
+  try { TAR.datos = await pedir("/tareas"); TAR.error = null; }
+  catch (e) { TAR.datos = null; TAR.error = e.message; }
+  return TAR.datos;
+}
+const nombreDe = u => (TAR.datos?.personas || []).find(p => p.usuario === u)?.nombre || u;
+const atrasada = t => t.estado === "pendiente" && t.vence && t.vence < hoyISO();
+/** Urgentes primero, después la que vence antes, después la más vieja. */
+const ordenTareas = (a, b) => (b.prioridad === "urgente") - (a.prioridad === "urgente")
+  || String(a.vence || "9999").localeCompare(String(b.vence || "9999"))
+  || String(a.creado_en).localeCompare(String(b.creado_en));
+
+function filaTarea(t, ver) {
+  const [rot, sello] = ESTADO_TAREA[t.estado] || [t.estado, ""];
+  const quien = ver === "pedidas" ? `Para ${nombreDe(t.para_usuario)}` : `De ${nombreDe(t.pedida_por)}`;
+  return `<li><button type="button" class="tar-fila" data-tarea="${t.id}">
+    <span class="tar-fila__txt"><b>${t.prioridad === "urgente" ? '<span class="tar-urg">Urgente</span> ' : ""}${esc(t.titulo)}</b>
+      <small>${esc(t.para_usuario === t.pedida_por ? "Recordatorio propio" : quien)}${t.vence
+        ? ` · <span class="${atrasada(t) ? "tar-atrasada" : ""}">${atrasada(t) ? "atrasada, era para el " : "para el "}${fecha(t.vence)}</span>` : ""}${
+        t.comentarios ? ` · ${t.comentarios} ${t.comentarios === 1 ? "comentario" : "comentarios"}` : ""}${t.tiene_archivo ? " · con adjunto" : ""}</small></span>
+    ${t.estado === "pendiente" ? "" : `<span class="sello ${sello}">${rot}</span>`}
+  </button></li>`;
+}
+
+/** El bloque de la portada: las pendientes que me pidieron. */
+async function pintarMisTareasInicio() {
+  const caja = $("#ini-tareas-cuerpo");
+  if (!caja) return;
+  await cargarTareas();
+  if (!document.body.contains(caja)) return;
+  if (!TAR.datos) {
+    caja.innerHTML = `<p class="ini-vacio">Las tareas todavía no están disponibles: ${esc(TAR.error || "")}</p>`;
+    return;
+  }
+  const pend = TAR.datos.para_mi.filter(t => t.estado === "pendiente").sort(ordenTareas);
+  const sub = $("#ini-tareas-sub");
+  if (sub) sub.textContent = pend.length ? `${pend.length} ${pend.length === 1 ? "pendiente" : "pendientes"}` : "Asignadas a tu usuario";
+  caja.innerHTML = (pend.length
+    ? `<ul class="tar-lista">${pend.slice(0, 4).map(t => filaTarea(t, "para_mi")).join("")}</ul>
+       ${pend.length > 4 ? `<p class="ini-vacio">Y ${pend.length - 4} más.</p>` : ""}`
+    : `<div class="ini-vacio ini-vacio--grande"><b>No tienes tareas pendientes</b>Cuando alguien te pida algo, aparecerá aquí.</div>`)
+    + `<div class="tar-acciones"><button class="bt bt--chico" type="button" id="ini-pedir">Pedir una tarea</button>
+       <button class="ini-mas" type="button" data-ir="tareas">Ver todas <span aria-hidden="true">→</span></button></div>`;
+  for (const b of caja.querySelectorAll("[data-tarea]")) b.onclick = () => { TAR.abierta = Number(b.dataset.tarea); TAR.nueva = false; ir("tareas"); };
+  for (const b of caja.querySelectorAll("[data-ir]")) b.onclick = () => { TAR.abierta = null; TAR.nueva = false; ir(b.dataset.ir); };
+  $("#ini-pedir").onclick = () => { TAR.abierta = null; TAR.nueva = true; ir("tareas"); };
+}
+
+async function pintarTareas() {
+  if (TAR.nueva) return pintarNuevaTarea();
+  if (TAR.abierta) return pintarTarea(TAR.abierta);
+  $("#app").innerHTML = `<p class="cargando">Cargando…</p>`;
+  await cargarTareas();
+  if (!TAR.datos) {
+    $("#app").innerHTML = aviso("ojo", "Las tareas todavía no están disponibles. ", TAR.error || "");
+    return;
+  }
+  const D = TAR.datos;
+  const grupos = {
+    para_mi: D.para_mi.filter(t => t.estado === "pendiente").sort(ordenTareas),
+    pedidas: D.pedidas.filter(t => t.estado === "pendiente" || t.estado === "devuelta")
+      .sort((a, b) => (b.estado === "devuelta") - (a.estado === "devuelta") || ordenTareas(a, b)),
+    cerradas: [...D.para_mi, ...D.pedidas.filter(t => t.para_usuario !== t.pedida_por || !D.para_mi.some(x => x.id === t.id))]
+      .filter((t, i, xs) => t.estado !== "pendiente" && !(t.estado === "devuelta" && t.pedida_por === estado.usuario.usuario)
+        && xs.findIndex(x => x.id === t.id) === i)
+      .sort((a, b) => String(b.cerrada_en || b.creado_en).localeCompare(String(a.cerrada_en || a.creado_en))),
+  };
+  const P = [["para_mi", "Para mí"], ["pedidas", "Lo que pedí"], ["cerradas", "Cerradas"]];
+  const lista = grupos[TAR.pestana] || [];
+  $("#app").innerHTML = `<section class="caja">
+    <div class="caja__tit"><h2>Tareas</h2>
+      <span class="nota">Solo las ven quien la pidió y a quien se la pidieron</span>
+      <button class="bt bt--chico" type="button" id="t-nueva">Pedir una tarea</button></div>
+    <div class="tar-pestanas" role="tablist">${P.map(([k, r]) => `<button type="button" role="tab" data-pest="${k}"
+      aria-selected="${k === TAR.pestana}">${r}<span>${grupos[k].length}</span></button>`).join("")}</div>
+    ${lista.length ? `<ul class="tar-lista tar-lista--pantalla">${lista.map(t => filaTarea(t, TAR.pestana === "pedidas" ? "pedidas"
+      : (t.pedida_por === estado.usuario.usuario && t.para_usuario !== t.pedida_por ? "pedidas" : "para_mi"))).join("")}</ul>`
+      : `<p class="vacio">${{ para_mi: "No tienes tareas pendientes.", pedidas: "No tienes pedidos abiertos.",
+          cerradas: "Todavía no hay tareas cerradas." }[TAR.pestana]}</p>`}
+  </section>`;
+  $("#t-nueva").onclick = () => { TAR.nueva = true; pintarTareas(); };
+  for (const b of document.querySelectorAll("[data-pest]")) b.onclick = () => { TAR.pestana = b.dataset.pest; pintarTareas(); };
+  for (const b of document.querySelectorAll("[data-tarea]")) b.onclick = () => { TAR.abierta = Number(b.dataset.tarea); pintarTareas(); };
+}
+
+async function pintarNuevaTarea() {
+  if (!TAR.datos) await cargarTareas();
+  if (!TAR.datos) { $("#app").innerHTML = aviso("ojo", "Las tareas todavía no están disponibles. ", TAR.error || ""); return; }
+  const yo = estado.usuario.usuario;
+  const otros = TAR.datos.personas.filter(p => p.usuario !== yo);
+  $("#app").innerHTML = `<p style="margin-bottom:14px"><button class="bt bt--fino bt--chico" id="t-volver">← Volver a las tareas</button></p>
+  <section class="caja"><div class="caja__tit"><h2>Pedir una tarea</h2>
+    <span class="nota">Le llega un correo y le queda en su portada</span></div>
+    <form id="f-tarea">
+      <div class="rejilla">
+        <label class="campo"><span>Para quién *</span><select name="para_usuario" required>
+          <option value="">Elija…</option>
+          ${otros.map(p => `<option value="${esc(p.usuario)}">${esc(p.nombre)}</option>`).join("")}
+          <option value="${esc(yo)}">Yo mismo (recordatorio)</option></select></label>
+        <label class="campo"><span>Prioridad</span><select name="prioridad">
+          <option value="normal">Normal</option><option value="urgente">Urgente</option></select></label>
+        <label class="campo"><span>Para cuándo</span><input type="date" name="vence"></label>
+        <label class="campo" style="grid-column:1/-1"><span>Qué necesita *</span>
+          <input name="titulo" required maxlength="200" autocomplete="off" placeholder="Por ejemplo: emitir la factura de Puelche de noviembre"></label>
+        <label class="campo" style="grid-column:1/-1"><span>Detalle</span>
+          <textarea name="detalle" rows="4" maxlength="4000" placeholder="Lo que haga falta para hacerla sin preguntar"></textarea></label>
+        <label class="campo" style="grid-column:1/-1"><span>Adjuntar una foto o PDF (opcional, hasta 10 MB)</span>
+          <input type="file" name="archivo" accept="image/*,application/pdf"></label>
+      </div>
+      <div class="pie-form"><button class="bt" type="submit">Pedir la tarea</button><span class="mensaje"></span></div>
+    </form></section>`;
+  $("#t-volver").onclick = () => { TAR.nueva = false; pintarTareas(); };
+  const f = $("#f-tarea");
+  f.onsubmit = async ev => {
+    ev.preventDefault();
+    const m = f.querySelector(".mensaje"), bt = f.querySelector("button[type=submit]");
+    const archivo = f.archivo.files[0];
+    if (archivo && archivo.size > 10 * 1048576) return decir(m, "El archivo pesa más de 10 MB.", "error");
+    decir(m, "Guardando…"); bt.disabled = true;
+    try {
+      const datos = Object.fromEntries(new FormData(f));
+      delete datos.archivo;
+      const r = await pedir("/tareas", { method: "POST", body: JSON.stringify({ ...datos, con_archivo: !!archivo }) });
+      let aviso = r.aviso;
+      if (archivo) {
+        decir(m, "Subiendo el adjunto…");
+        const s = await fetch(`/api/tareas/${r.tarea.id}/archivo`, { method: "POST", credentials: "same-origin",
+          headers: { "x-archivo-nombre": encodeURIComponent(archivo.name) }, body: archivo });
+        if (!s.ok) recado((await s.json().catch(() => ({}))).error || "El adjunto no se pudo subir", "error");
+        if (datos.para_usuario !== estado.usuario.usuario) aviso = await pedir(`/tareas/${r.tarea.id}/avisar`, { method: "POST", body: "{}" });
+      }
+      if (aviso && !aviso.ok && !aviso.propia) recado(`La tarea quedó pedida, pero el correo no salió: ${aviso.error}`, "error");
+      else recado(datos.para_usuario === estado.usuario.usuario ? "Recordatorio guardado" : "Tarea pedida y avisada por correo");
+      TAR.nueva = false; TAR.abierta = r.tarea.id;
+      await cargarTareas();
+      pintarTareas();
+    } catch (e) { decir(m, e.message, "error"); bt.disabled = false; }
+  };
+}
+
+async function pintarTarea(id) {
+  $("#app").innerHTML = `<p class="cargando">Cargando…</p>`;
+  if (!TAR.datos) await cargarTareas();
+  let d;
+  try { d = await pedir(`/tareas/${id}`); }
+  catch (e) { TAR.abierta = null; $("#app").innerHTML = aviso("mal", "No se pudo abrir la tarea. ", e.message); return; }
+  const t = d.tarea, yo = estado.usuario.usuario;
+  const soyPara = t.para_usuario === yo, soyQuien = t.pedida_por === yo;
+  const [rot, sello] = ESTADO_TAREA[t.estado] || [t.estado, ""];
+  const hora = s => new Date(s).toLocaleString("es-CL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  $("#app").innerHTML = `<p style="margin-bottom:14px"><button class="bt bt--fino bt--chico" id="t-volver">← Volver a las tareas</button></p>
+  <section class="caja">
+    <div class="caja__tit"><h2>${esc(t.titulo)}</h2>
+      ${t.prioridad === "urgente" ? '<span class="tar-urg">Urgente</span>' : ""}
+      <span class="sello ${sello}">${rot}</span></div>
+    <div class="tar-meta">
+      <div><span>Pedida por</span><b>${esc(nombreDe(t.pedida_por))}</b></div>
+      <div><span>Para</span><b>${esc(nombreDe(t.para_usuario))}</b></div>
+      <div><span>Para cuándo</span><b class="${atrasada(t) ? "tar-atrasada" : ""}">${t.vence ? fecha(t.vence) + (atrasada(t) ? " (atrasada)" : "") : "Sin fecha"}</b></div>
+      <div><span>Pedida el</span><b>${hora(t.creado_en)}</b></div>
+    </div>
+    ${t.detalle ? `<p class="tar-detalle">${esc(t.detalle)}</p>` : ""}
+    ${t.tiene_archivo ? `<p class="tar-adjunto"><a class="bt bt--fino bt--chico" href="/api/tareas/${t.id}/archivo" target="_blank" rel="noopener">Ver adjunto</a>
+      <span class="sub" style="margin:0">${esc(t.archivo_nombre || "")}</span></p>` : ""}
+    ${t.estado !== "pendiente" ? `<div class="tar-cierre"><b>${t.estado === "hecha" ? "Cerrada como hecha" : t.estado === "devuelta" ? "Devuelta" : "Anulada"}
+      por ${esc(nombreDe(t.cerrada_por))}${t.cerrada_en ? " el " + hora(t.cerrada_en) : ""}</b>${t.nota_cierre ? `<p>${esc(t.nota_cierre)}</p>` : ""}</div>` : ""}
+    <div class="pie-form" style="padding-top:4px">
+      ${soyPara && t.estado === "pendiente" ? `<button class="bt" type="button" id="t-hecha">Marcar como hecha</button>
+        <button class="bt bt--fino" type="button" id="t-devolver">Devolver</button>` : ""}
+      ${soyQuien && t.estado === "pendiente" && !soyPara ? `<button class="bt bt--fino" type="button" id="t-anular">Anular</button>` : ""}
+      ${soyQuien && t.estado !== "pendiente" ? `<button class="bt bt--fino" type="button" id="t-reabrir">Reabrir</button>` : ""}
+      <span class="mensaje" id="t-m"></span>
+    </div>
+  </section>
+  <section class="caja">
+    <div class="caja__tit"><h2>Comentarios</h2><span class="nota">${d.comentarios.length}</span></div>
+    ${d.comentarios.length ? `<ul class="tar-coment">${d.comentarios.map(c => `<li class="${c.autor === yo ? "propio" : ""}">
+      <b>${esc(nombreDe(c.autor))}</b><small>${hora(c.creado_en)}</small><p>${esc(c.texto)}</p></li>`).join("")}</ul>`
+      : `<p class="vacio">Sin comentarios todavía.</p>`}
+    <form id="f-coment" class="tar-nuevo-coment">
+      <textarea name="texto" rows="2" maxlength="2000" placeholder="Escriba un comentario…" required></textarea>
+      <button class="bt bt--chico" type="submit">Comentar</button>
+    </form>
+  </section>`;
+  $("#t-volver").onclick = () => { TAR.abierta = null; pintarTareas(); };
+  const m = $("#t-m");
+  const hacer = async (accion, nota) => {
+    decir(m, "Guardando…");
+    try {
+      const r = await pedir(`/tareas/${t.id}/${accion}`, { method: "POST", body: JSON.stringify({ nota }) });
+      if (r.aviso && !r.aviso.ok && !r.aviso.propia) recado(`Quedó guardado, pero el correo no salió: ${r.aviso.error}`, "error");
+      await cargarTareas();
+      pintarTarea(t.id);
+    } catch (e) { decir(m, e.message, "error"); }
+  };
+  if ($("#t-hecha")) $("#t-hecha").onclick = () => {
+    const nota = prompt("¿Quiere dejar una nota para quien la pidió? (opcional)\n\nPor ejemplo: «Listo, factura 1234 emitida».", "");
+    if (nota !== null) hacer("hecha", nota);
+  };
+  if ($("#t-devolver")) $("#t-devolver").onclick = () => {
+    const nota = prompt("¿Por qué la devuelve? Se lo vamos a decir a quien la pidió.");
+    if (nota !== null && nota.trim()) hacer("devuelta", nota);
+  };
+  if ($("#t-anular")) $("#t-anular").onclick = () => {
+    if (confirm("¿Anular esta tarea? Deja de estar pendiente para la otra persona.")) hacer("anulada", "");
+  };
+  if ($("#t-reabrir")) $("#t-reabrir").onclick = () => {
+    const nota = prompt("¿Qué le dice al reabrirla? (opcional, queda como comentario)", "");
+    if (nota !== null) hacer("reabrir", nota);
+  };
+  const fc = $("#f-coment");
+  fc.onsubmit = async ev => {
+    ev.preventDefault();
+    try {
+      await pedir(`/tareas/${t.id}/comentarios`, { method: "POST", body: JSON.stringify({ texto: fc.texto.value }) });
+      pintarTarea(t.id);
+    } catch (e) { recado(e.message, "error"); }
+  };
+}
+
 // ------------------------------------------------------------- inicio
 /* La portada (27-11-2026, pedido de gerencia, inspirada en iCloud): quién
    entró, lo que viene en el calendario, sus tareas y accesos grandes a cada
    área. Tres reglas:
    · Nada inventado. El calendario son los cierres de periodo reales de
-     /agenda; si la cuenta no ve cobranza, se dice. Tareas no existen todavía
-     en el sistema, y la caja lo dice en vez de mostrar un cero que parezca
-     una cuenta.
+     /agenda; si la cuenta no ve cobranza, se dice. Las tareas son las reales
+     de la tabla `tareas` (ver «Tareas» más arriba).
    · Cada acceso sale solo si la cuenta tiene el permiso de esa pantalla, con
      la misma regla que la lateral (VISTAS[k].modulo). Contabilidad no está
      construida en este panel y se muestra como tal, apagada.
@@ -4860,12 +5089,9 @@ async function pintarInicio() {
       <section class="ini-caja ini-tareas">
         <div class="ini-caja__tit">
           <span class="ini-acc__ico ini-tono--violeta">${icono("tareas")}</span>
-          <span><b>Mis tareas</b><small>Asignadas a tu usuario</small></span>
+          <span><b>Mis tareas</b><small id="ini-tareas-sub">Asignadas a tu usuario</small></span>
         </div>
-        <div class="ini-vacio ini-vacio--grande">
-          <b>Todavía no hay tareas en el sistema</b>
-          El panel aún no tiene un módulo de tareas. Cuando exista, aquí verás las que te asignen.
-        </div>
+        <div id="ini-tareas-cuerpo" class="ini-tareas__cuerpo"><p class="ini-vacio">Cargando…</p></div>
       </section>
       </div>
     </div>
@@ -4877,6 +5103,7 @@ async function pintarInicio() {
 
   for (const b of document.querySelectorAll(".inicio [data-ir]")) b.onclick = () => ir(b.dataset.ir);
 
+  pintarMisTareasInicio().catch(() => {});
   if (abreVista("panel")) pintarPorFacturar().catch(e => {
     const c = $("#ini-fac-cuerpo");
     if (c) c.innerHTML = `<p class="ini-vacio">No se pudo revisar: ${esc(e.message)}</p>`;
@@ -4911,6 +5138,9 @@ const VISTAS = {
      que una cuenta sin ninguno siga viendo el aviso de siempre y no una
      portada vacía. */
   inicio: { rotulo: "Inicio", pintar: pintarInicio,
+            modulo: ["facturacion", "cotizaciones", "personal", "rrhh", "documentos",
+                     "remuneraciones", "usuarios"] },
+  tareas: { rotulo: "Tareas", pintar: pintarTareas,
             modulo: ["facturacion", "cotizaciones", "personal", "rrhh", "documentos",
                      "remuneraciones", "usuarios"] },
   panel: { rotulo: "Panel", pintar: pintarPanel, modulo: "facturacion" },
@@ -4956,7 +5186,7 @@ const VISTAS = {
    El orden de acá manda también para qué se abre al entrar: la primera
    sección que la cuenta pueda ver. */
 const GRUPOS = [
-  { rotulo: "Espacio de trabajo", vistas: ["inicio"] },
+  { rotulo: "Espacio de trabajo", vistas: ["inicio", "tareas"] },
   { rotulo: "Cobranza",    vistas: ["panel", "calendario", "pagos", "bitacora"] },
   { rotulo: "Comercial",   vistas: ["contactos", "cotizaciones"] },
   { rotulo: "Operaciones", vistas: ["servicio", "instalaciones", "extra", "rotacion", "libro", "trabajadores"] },
@@ -4967,7 +5197,10 @@ const GRUPOS = [
  *  a lo que se está mirando ahora y quedaría apuntando a otra cosa. Lo llama
  *  `ir()`, en comun.js; la página de Personas no tiene tablas con casillas y
  *  no define este gancho. */
-function alCambiarVista() {
+function alCambiarVista(vista) {
+  // Salir de Tareas cierra la tarea abierta: volver por la lateral muestra la
+  // lista, no lo último que se miró.
+  if (estado.vista === "tareas" && vista !== "tareas") { TAR.abierta = null; TAR.nueva = false; }
   // La contraseña temporal se muestra una sola vez: si quien la generó se fue
   // a otra pantalla, ya no la va a encontrar al volver. Es a propósito, y por
   // eso el recuadro dice que hay que anotarla en el momento.

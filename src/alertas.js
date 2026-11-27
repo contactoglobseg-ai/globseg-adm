@@ -288,7 +288,7 @@ export function armarCorreo(estado, lista, nuevas, { url = 'https://adm.seggarri
 }
 
 /** Manda por Resend. Devuelve { ok, error }. Sin clave no intenta. */
-async function mandarCorreo(env, para, { asunto, html, texto }) {
+export async function mandarCorreo(env, para, { asunto, html, texto }) {
   if (!env.RESEND_API_KEY) {
     return { ok: false, error: 'Falta configurar el envío de correos (secreto RESEND_API_KEY del Worker)' };
   }
