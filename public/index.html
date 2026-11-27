@@ -4784,6 +4784,33 @@ async function proximosCierres() {
   return cierres.sort((x, y) => x.hasta.localeCompare(y.hasta));
 }
 
+/** Lo que hay que facturar: los periodos en «Pendiente de facturación» del
+ *  panel de cobranza, con su neto. Los que todavía esperan la OC se nombran
+ *  aparte, porque esos aún no se pueden facturar. Datos reales de /panel. */
+async function pintarPorFacturar() {
+  if (!estado.panel) estado.panel = await pedir("/panel");
+  const caja = $("#ini-fac-cuerpo");
+  if (!caja || estado.vista !== "inicio") return;
+  const ciclos = estado.panel.ciclos || [];
+  const listos = ciclos.filter(c => c.estado === "pendiente_facturacion")
+    .sort((a, b) => String(a.hasta).localeCompare(String(b.hasta)));
+  const sinOc = ciclos.filter(c => c.estado === "solicitar_oc").length;
+  const neto = listos.reduce((t, c) => t + (Number(c.total_neto) || 0), 0);
+  caja.innerHTML = listos.length ? `
+    <p class="ini-cifra"><b>${listos.length}</b> ${listos.length === 1 ? "documento por facturar" : "documentos por facturar"}
+      <span>${clp(neto)} neto</span></p>
+    <ul class="ini-fac">${listos.slice(0, 3).map(c => `<li><button type="button" data-ir="panel">
+      <span><b>N°${esc(c.numero)} · ${esc(c.instalacion)}</b><small>${esc(c.cliente || "")} · cerró el ${fecha(c.hasta)}</small></span>
+      <span class="ini-fac__monto">${clp(c.total_neto)}</span></button></li>`).join("")}</ul>
+    ${listos.length > 3 ? `<p class="ini-vacio">Y ${listos.length - 3} más en el panel.</p>` : ""}
+    ${sinOc ? `<p class="ini-vacio">Además, ${sinOc} ${sinOc === 1 ? "espera" : "esperan"} la orden de compra antes de poder facturarse.</p>` : ""}
+    <button class="ini-mas" type="button" data-ir="panel">Ir a facturar <span aria-hidden="true">→</span></button>`
+    : `<p class="ini-vacio ini-vacio--ok">No hay documentos por facturar.</p>
+       ${sinOc ? `<p class="ini-vacio">${sinOc} ${sinOc === 1 ? "periodo espera" : "periodos esperan"} la orden de compra.</p>
+         <button class="ini-mas" type="button" data-ir="panel">Ver en el panel <span aria-hidden="true">→</span></button>` : ""}`;
+  for (const b of caja.querySelectorAll("[data-ir]")) b.onclick = () => ir(b.dataset.ir);
+}
+
 async function pintarInicio() {
   const u = estado.usuario;
   const verCal = abreVista("calendario");
@@ -4822,6 +4849,14 @@ async function pintarInicio() {
         ${verCal ? `<button class="ini-mas" type="button" data-ir="calendario">Ver calendario completo <span aria-hidden="true">→</span></button>` : ""}
       </section>
 
+      <div class="ini-col">
+      ${abreVista("panel") ? `<section class="ini-caja ini-facturar" id="ini-facturar">
+        <div class="ini-caja__tit">
+          <span class="ini-acc__ico ini-tono--ambar">${icono("contabilidad")}</span>
+          <span><b>Por facturar</b><small>Periodos cerrados esperando su factura</small></span>
+        </div>
+        <div id="ini-fac-cuerpo"><p class="ini-vacio">Cargando…</p></div>
+      </section>` : ""}
       <section class="ini-caja ini-tareas">
         <div class="ini-caja__tit">
           <span class="ini-acc__ico ini-tono--violeta">${icono("tareas")}</span>
@@ -4832,6 +4867,7 @@ async function pintarInicio() {
           El panel aún no tiene un módulo de tareas. Cuando exista, aquí verás las que te asignen.
         </div>
       </section>
+      </div>
     </div>
 
     ${accesos.length ? `<h3 class="ini-seccion">Accesos</h3>
@@ -4841,6 +4877,10 @@ async function pintarInicio() {
 
   for (const b of document.querySelectorAll(".inicio [data-ir]")) b.onclick = () => ir(b.dataset.ir);
 
+  if (abreVista("panel")) pintarPorFacturar().catch(e => {
+    const c = $("#ini-fac-cuerpo");
+    if (c) c.innerHTML = `<p class="ini-vacio">No se pudo revisar: ${esc(e.message)}</p>`;
+  });
   if (!verCal) return;
   const caja = $("#ini-cal-lista");
   try {

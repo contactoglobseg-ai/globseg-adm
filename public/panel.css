@@ -647,3 +647,21 @@ body.hay-seleccion .recado{bottom:104px}
   .ini-ev__est{grid-column:2}
 }
 @media (prefers-reduced-motion:reduce){.ini-acc,.ini-acc:hover{transition:none;transform:none}}
+/* La columna derecha de la portada: por facturar arriba, tareas abajo. */
+.ini-col{display:flex;flex-direction:column;gap:16px;min-width:0}
+.ini-col .ini-tareas{flex:1}
+.ini-cifra{margin:14px 0 4px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;font-size:.92rem;color:var(--texto-2)}
+.ini-cifra b{font-size:2.1rem;line-height:1;letter-spacing:-.03em;color:var(--ambar);font-variant-numeric:tabular-nums}
+.ini-cifra span{width:100%;font-weight:600;color:var(--texto)}
+.ini-fac{list-style:none;margin:8px 0 0;padding:0}
+.ini-fac li+li{border-top:1px solid var(--borde-suave)}
+.ini-fac button{all:unset;box-sizing:border-box;width:100%;display:flex;align-items:center;gap:10px;
+  padding:9px 4px;cursor:pointer;border-radius:var(--r-s)}
+.ini-fac button:hover{background:var(--sup-3)}
+.ini-fac button:focus-visible{outline:2px solid var(--acento);outline-offset:2px}
+.ini-fac button>span:first-child{flex:1;min-width:0}
+.ini-fac b{display:block;font-size:.88rem;font-weight:600;overflow-wrap:anywhere}
+.ini-fac small{display:block;color:var(--texto-3);font-size:.78rem;margin-top:1px}
+.ini-fac__monto{font-weight:600;font-size:.86rem;white-space:nowrap;font-variant-numeric:tabular-nums}
+.ini-vacio--ok{color:var(--verde);font-weight:500}
+.ini-facturar .ini-mas{margin-top:12px;width:100%}
