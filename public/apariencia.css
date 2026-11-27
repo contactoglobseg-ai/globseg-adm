@@ -129,6 +129,12 @@
   }
 }
 *,*::before,*::after{box-sizing:border-box}
+/* La lista que se despliega de un <select> la dibuja el sistema, no la página:
+   con el fondo translúcido del campo, Windows la pintaba blanca y con la letra
+   clara del tema oscuro, y no se leía nada hasta pasar el mouse. Las opciones
+   llevan fondo y letra sólidos del tema, en claro y en oscuro. */
+select option,select optgroup{background-color:var(--sup-solido);color:var(--texto)}
+select option:disabled{color:var(--texto-3)}
 [hidden]{display:none!important}
 /* Todo el texto va en rem, así que mover esta base mueve la página entera. */
 html{font-size:calc(16px * var(--escala))}
